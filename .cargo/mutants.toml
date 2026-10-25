@@ -12,7 +12,8 @@
 # `harness-dataguard`'s in-memory store, notifier and clock are the fakes
 # its tests inject (a lie there fails the engine's tests, the test's
 # finding); its PostgreSQL store is judged against a real PostgreSQL only
-# (`DATAGUARD_PG_URL`, an `#[ignore]`d test), not by the mutants.
+# (`DATAGUARD_PG_URL`, `#[ignore]`d tests the CI's `postgres` job runs),
+# not by the mutants.
 exclude_globs = [
   "**/main.rs",
   "crates/view-render/**",
@@ -85,6 +86,15 @@ exclude_re = [
   # Equivalent: `Path::join` with an absolute folder is that folder, so an
   # absolute `SCCACHE_DIR` joined to the home is the same path.
   "toolchain\\.rs:.*replace match guard named\\.is_relative\\(\\) with true in cache_variables$",
+  # Never compile: `Outcome<T>` is core's alias of `Result<T, Halt>`, and
+  # cargo-mutants reads the return type by its name, not as a `Result`, so it
+  # writes `Outcome::new(..)`, `Outcome::from(..)`, `Outcome::from_iter(..)`,
+  # none of which exist on a `Result` (37% of the plan's mutants were
+  # unviable, 86% of them these; 3047 of the workspace's 14862 listed on
+  # 2026-10-25). Nothing was ever caught among them. The functions keep
+  # their operator and match-arm mutants; a whole-body `Ok(..)` mutant
+  # would need the signature written `Result<T, Halt>`.
+  "-> (\\w+::)*Outcome<.*> with Outcome::(new|from|from_iter)\\(",
 ]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI

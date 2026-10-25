@@ -140,11 +140,14 @@ jobs:
           path: rotation/mutants.out
           if-no-files-found: ignore
 
-  # The two Postgres clients the harness ships, against a real server, as a
+  # The Postgres clients the harness ships, against a real server, as a
   # role that is no superuser (the factory's own is none): the watch's sweep
-  # (`PgDatabases`), and the scratch-database guard products install, which
-  # must drop its database even when its test panics. Both tests are
-  # `#[ignore]`d in the `ci` job, which has no server.
+  # (`PgDatabases`), the scratch-database guard products install, which
+  # must drop its database even when its test panics, and
+  # `harness-dataguard`'s `PgStore`, the write side every product's server
+  # runs (each test works in a schema of its own, dropped at its end, so
+  # they run in parallel). All are `#[ignore]`d in the `ci` job, which has
+  # no server.
   postgres:
     name: postgres
     runs-on: ubuntu-latest
@@ -170,6 +173,9 @@ jobs:
       - run: cargo test -p harness-architecture --test scratch_db -- --ignored
         env:
           SCRATCH_DB_URL: postgres://app:app@localhost:5432/app
+      - run: cargo test -p harness-dataguard --all-features --lib -- --ignored postgres::tests
+        env:
+          DATAGUARD_PG_URL: postgres://app:app@localhost:5432/app
 
   # The pinned `rust-version` means nothing unless something builds with it.
   msrv:

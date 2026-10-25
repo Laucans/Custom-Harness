@@ -502,14 +502,12 @@ mod tests {
     }
 
     /// Against a real PostgreSQL: `DATAGUARD_PG_URL=postgres://… cargo test
-    /// --features postgres -- --ignored`. The harness's own Docker service
-    /// (`scripts/postgres.sh`) serves one.
+    /// --all-features -- --ignored`, as the CI's `postgres` job runs them.
+    /// The harness's own Docker service (`scripts/postgres.sh`) serves one.
     #[tokio::test]
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn the_contract_s_scenario_runs_on_postgres() {
-        let Some(mut scratch) = Scratch::new("contract").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("contract").await;
         let store = PgStore::open(scratch.client().await).await.expect("opened");
         let result = CommandResult {
             command_id: "c_1".to_string(),
@@ -600,9 +598,11 @@ mod tests {
     }
 
     impl Scratch {
-        /// The schema, created; `None` without `DATAGUARD_PG_URL`.
-        async fn new(name: &str) -> Option<Self> {
-            let url = std::env::var("DATAGUARD_PG_URL").ok()?;
+        /// The schema, created; panics without `DATAGUARD_PG_URL`, so a
+        /// run missing it fails instead of passing on nothing.
+        async fn new(name: &str) -> Self {
+            let url = std::env::var("DATAGUARD_PG_URL")
+                .expect("DATAGUARD_PG_URL: these #[ignore]d tests need a PostgreSQL");
             let schema = format!("dataguard_test_{name}_{}", std::process::id());
             let (admin, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
                 .await
@@ -614,12 +614,12 @@ mod tests {
                 ))
                 .await
                 .expect("a scratch schema");
-            Some(Self {
+            Self {
                 url,
                 schema,
                 admin,
                 drivers: vec![driver],
-            })
+            }
         }
 
         /// A connection whose tables are the scratch schema's.
@@ -741,9 +741,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn a_projection_writes_the_product_s_table_in_the_apply_transaction() {
-        let Some(mut scratch) = Scratch::new("projected").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("projected").await;
         let (engine, _) = ledger_engine(&mut scratch).await;
         engine.submit(set_limit(5000)).await.expect("queued");
         let results = engine.run_once().await.expect("ran");
@@ -772,9 +770,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn a_refused_projection_rolls_back_the_write_and_the_command_is_rejected() {
-        let Some(mut scratch) = Scratch::new("refused").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("refused").await;
         let (engine, notifier) = ledger_engine(&mut scratch).await;
         engine.submit(set_limit(5000)).await.expect("queued");
         engine.run_once().await.expect("applied");
@@ -824,9 +820,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn read_only_answers_a_capability_s_query_and_never_writes() {
-        let Some(mut scratch) = Scratch::new("reads").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("reads").await;
         let setup = scratch.client().await;
         setup
             .batch_execute(
@@ -916,9 +910,7 @@ mod tests {
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn random_ids_are_distinct_uuids_postgres_accepts() {
         use crate::store::{Ids, RandomIds};
-        let Some(mut scratch) = Scratch::new("ids").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("ids").await;
         let client = scratch.client().await;
         client
             .batch_execute("CREATE TABLE ids (id uuid PRIMARY KEY)")
@@ -1036,9 +1028,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn a_row_only_the_product_s_tables_hold_is_hydrated_into_the_base() {
-        let Some(mut scratch) = Scratch::new("hydrate").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("hydrate").await;
         let based = Arc::new(Based::default());
         let engine = fixture_engine(&mut scratch, &based).await;
         let sql = scratch.client().await;
@@ -1110,9 +1100,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a PostgreSQL at DATAGUARD_PG_URL"]
     async fn an_attachment_is_kept_in_the_queue_and_the_journal_and_answered_once_applied() {
-        let Some(mut scratch) = Scratch::new("attached").await else {
-            return;
-        };
+        let mut scratch = Scratch::new("attached").await;
         let based = Arc::new(Based::default());
         let engine = fixture_engine(&mut scratch, &based).await;
         let queued = engine.submit(set_limit(5000)).await.expect("queued");

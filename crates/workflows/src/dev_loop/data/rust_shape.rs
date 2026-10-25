@@ -869,6 +869,70 @@ mod tests {
         assert!(shape.contains("pub fn after()"), "{shape}");
     }
 
+    /// The cleaned code of each line, as text.
+    fn cleaned(source: &str) -> Vec<String> {
+        clean(source)
+            .iter()
+            .map(|line| line.code.iter().collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_block_comment_nests_and_closes_only_at_its_own_depth() {
+        let source = "/* outer\n /* inner */ still */ pub fn a() {}\npub fn b() {} /* x /* y */ z */ pub fn c() {}\n";
+        assert_eq!(
+            cleaned(source),
+            ["", " pub fn a() {}", "pub fn b() {}  pub fn c() {}"]
+        );
+    }
+
+    #[test]
+    fn an_escaped_quote_never_ends_a_string_even_on_its_next_line() {
+        let source = "pub const S: &str = \"a\nx\\\" still\";\npub fn after() {}\n";
+        assert_eq!(
+            cleaned(source),
+            ["pub const S: &str = \"…", "\";", "pub fn after() {}"]
+        );
+    }
+
+    #[test]
+    fn a_raw_string_ends_only_at_a_quote_followed_by_all_its_hashes() {
+        let source = "pub const R: &str = r##\"a \"# b\"##; pub fn after() {}\n";
+        assert_eq!(
+            cleaned(source),
+            ["pub const R: &str = \"…\"; pub fn after() {}"]
+        );
+    }
+
+    #[test]
+    fn an_r_or_a_b_ending_an_identifier_never_prefixes_a_literal() {
+        let source = "pub const F: (&str, &[u8]) = (for\"x\", ab\"y\");\n";
+        assert_eq!(
+            cleaned(source),
+            ["pub const F: (&str, &[u8]) = (for\"…\", ab\"…\");"]
+        );
+    }
+
+    #[test]
+    fn a_byte_literal_and_an_escaped_char_are_emptied_whole() {
+        let source = r##"pub const L: (u8, &[u8], &[u8], [char; 4]) = (b'"', b"a\"b", br#"#c"d"#, ['\'', '\\', '\u{41}', '"']); pub fn after() {}"##;
+        assert_eq!(
+            cleaned(source),
+            [
+                "pub const L: (u8, &[u8], &[u8], [char; 4]) = (b'…', \"…\", \"…\", ['…', '…', '…', '…']); pub fn after() {}"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_lone_slash_divides_and_opens_no_comment() {
+        let source = "pub const D: u32 = 6 / 3 * 2; pub fn after() {}\n";
+        assert_eq!(
+            cleaned(source),
+            ["pub const D: u32 = 6 / 3 * 2; pub fn after() {}"]
+        );
+    }
+
     /// Whether the generics of `line` balance as the reader counts them:
     /// outside brackets and braces, before a value's `=`, `->` and `=>`
     /// closing nothing.
@@ -924,6 +988,15 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn whatever_a_nested_comment_holds_the_code_around_it_is_kept(
+            outer in "[a-z #\"'\\\\]{0,12}",
+            inner in "[a-z #\"'\\\\]{0,12}",
+        ) {
+            let source = format!("pub fn a() {{}} /* {outer} /* {inner} */ {outer} */ pub fn b() {{}}\n");
+            prop_assert_eq!(cleaned(&source), ["pub fn a() {}  pub fn b() {}"]);
+        }
+
         #[test]
         fn any_text_shapes_without_panicking_and_every_signature_balances(source in ".{0,400}") {
             for visibility in [Visibility::Crate, Visibility::External] {

@@ -325,7 +325,8 @@ strictly increasing positions whatever happens). The engine's tests run the
 contract's scenario end to end on the in-memory store (`MemoryStore::refusing`
 stands for a projection that refuses). The PostgreSQL mappings are pure
 (`postgres/values.rs`) and tested without a database. The PostgreSQL store's
-tests are `#[ignore]`d and need `DATAGUARD_PG_URL`, each in a scratch schema
+tests are `#[ignore]`d and need `DATAGUARD_PG_URL` (the CI's `postgres` job
+runs them), each in a scratch schema
 it drops: the contract's scenario, a projection writing a product table in
 the apply transaction, a refused one rolling both back, `ReadOnly` answering
 and refusing a write, `RandomIds` accepted as distinct uuids, a row loaded
