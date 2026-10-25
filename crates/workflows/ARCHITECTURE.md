@@ -462,8 +462,9 @@ issue carrying `harness:needs-decision`: the business advice wanted a
 decision, the arbiter could not settle one, a task's PR still does not merge
 after `MAX_FIXES` repairs, or a milestone's landing PR does
 (`milestone_merge::escalate`, one escalation for both: the owner is the
-task, or the milestone; never while a lane repairs the PR, never over an
-owner's answer to the review question; a landing PR red or conflicting past
+task, or the milestone; never while a lane repairs the PR or holds its
+owner — a decision on it running, its label already taken off —, never over an owner's
+answer to the review question; a landing PR red or conflicting past
 its repairs alike; a `harness:pr-fix` PR past its cap that no merge path
 covers — a task PR never put under review — through
 `milestone_merge::exhausted_repairs`, on the task its body closes), a session stopped
@@ -659,8 +660,8 @@ say nothing of a conflict) — a conflicting PR is `Conflicting`, a merge GitHub
 refuses is `MergeRefused`, both told as warnings and never a `Halt` that stops
 the watch; a red one is asked a repair (`harness:pr-fix`) within the cap and,
 past it, `Escalated` — a decision asked on the milestone
-(`milestone_merge::escalate`; not while a lane repairs it, `Config::repairing`,
-nor while it waits, `contest::held`) — and is the **merge train** when the plan has a graph (`data/merge_train`):
+(`milestone_merge::escalate`; not while a lane repairs it or decides on its
+milestone, `Config::repairing`, nor while it waits, `contest::held`) — and is the **merge train** when the plan has a graph (`data/merge_train`):
 a consumer waits on the producers of what it reads (`WaitingOnProducers`,
 whatever its number) — those the graph's edges name, and those of what any
 of its tasks needs, closed tasks included (`merge_train::landing_waits`: the

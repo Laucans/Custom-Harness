@@ -708,7 +708,7 @@ async fn snapshot(
     );
     let rules = gh.issues_labelled(labels::RULES, "open").await?;
     let (prs_waiting, prs_to_fix, closed_rules) =
-        repairs_due(gh, &task_prs, (&fixable, &reviewable), &rules, log).await?;
+        repairs_due(gh, &task_prs, (&fixable, &reviewable), &rules, running, log).await?;
     let prs_to_review = prs_worth_reviewing(gh, &reviewable).await?;
     // The plan's graph, when the plan wrote one: what orders the milestones
     // and says which may build side by side.
@@ -810,12 +810,14 @@ async fn snapshot(
 /// is not resumed yet, and one a decision told to wait — no repair, no
 /// decision on its task, no merge (`common::contest`). Its review runs.
 /// A PR labelled for repair past its cap that no merge path escalates is
-/// escalated here (`milestone_merge::exhausted_repairs`).
+/// escalated here (`milestone_merge::exhausted_repairs`) — never while a
+/// lane holds its task (`running`, the lanes' keys).
 async fn repairs_due(
     gh: &dyn GitHub,
     task_prs: &[Pr],
     (fixable, reviewable): (&[Pr], &[Pr]),
     rules: &[Issue],
+    running: &[u64],
     log: &Logbook,
 ) -> Outcome<(Vec<(Pr, contest::PrWait)>, Vec<Pr>, Vec<Issue>)> {
     let closed = gh.issues_labelled(labels::RULES, "closed").await?;
@@ -826,9 +828,14 @@ async fn repairs_due(
     let due = candidates::due(gh, &fixable, &reviewable).await?;
     // Past their repairs, the PRs no merge path escalates (a task PR never
     // put under review): one decision asked on the task each.
-    let exhausted =
-        harness_workflows::milestone_merge::exhausted_repairs(gh, &fixable, &reviewable, log)
-            .await?;
+    let exhausted = harness_workflows::milestone_merge::exhausted_repairs(
+        gh,
+        &fixable,
+        &reviewable,
+        running,
+        log,
+    )
+    .await?;
     for (task, pr) in exhausted {
         log.event(&Event::RepairsExhausted {
             task,
@@ -1464,7 +1471,7 @@ mod tests {
         );
         // The repairs read the closed rules' issues first.
         assert!(
-            repairs_due(&NoGitHub, &[], (&[], &[]), &[], &Logbook::null())
+            repairs_due(&NoGitHub, &[], (&[], &[]), &[], &[], &Logbook::null())
                 .await
                 .is_err()
         );

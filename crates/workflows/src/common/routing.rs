@@ -426,6 +426,11 @@ pub struct Job {
     pub cost: Cost,
     /// The issue or PR it works on: one job per key at a time.
     pub key: u64,
+    /// The other issues or PRs it works on (`holds`): a job one of whose
+    /// holds is a session's — a lane's key, or a paid job's picked this
+    /// tick — waits, as for its own key. A free job's key never holds one
+    /// back: it runs within the tick.
+    pub holds: Vec<u64>,
     /// The jobs that may never run side by side share a group: the
     /// technical refinement reads code a task may be changing, the test
     /// debt has one writable checkout.
@@ -536,6 +541,7 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
                 _ => None,
             },
             weight: earned(&route, milestone).saturating_add(waited(&route).min(AGE_CAP)),
+            holds: holds(snapshot, &route),
             route,
             key,
         })
@@ -553,6 +559,54 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
 
 /// A route found, the issue or PR it works on, and its milestone if known.
 type Found = (Route, u64, Option<u64>);
+
+/// The issues and PRs a route works on beside its key: a decision, the
+/// open PRs of the issue it decides on; a repair, the issues its PR
+/// delivers — a task, or a milestone for its landing PR.
+///
+/// A decision and a repair of the same task never run side by side, nor
+/// does either start beside the other's lane (`ForgeDesMondes`' #542,
+/// 2026-10-25: a second decision on #542 started beside the repair of PR
+/// #547 the first one had asked for, the same "repair" paid twice).
+fn holds(snapshot: &Snapshot, route: &Route) -> Vec<u64> {
+    match route {
+        Route::Decide { issue } => snapshot
+            .deciding
+            .iter()
+            .filter(|asked| asked.number == *issue)
+            .flat_map(|asked| {
+                snapshot
+                    .task_prs
+                    .iter()
+                    .filter(move |pr| delivers(pr, asked))
+                    .filter_map(|pr| pr.num.parse::<u64>().ok())
+            })
+            .collect(),
+        Route::PrFix { pr } => snapshot
+            .prs_to_fix
+            .iter()
+            .filter(|open| open.num == *pr)
+            .flat_map(|open| {
+                snapshot
+                    .boards
+                    .iter()
+                    .flat_map(|board| &board.tasks)
+                    .chain(&snapshot.deciding)
+                    .chain(&snapshot.milestones)
+                    .filter(move |issue| delivers(open, issue))
+                    .map(|issue| issue.number)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `pr` delivers `issue`: a task's PR on its declared branch or
+/// naming it in its title, or a milestone's landing PR, from its branch.
+fn delivers(pr: &Pr, issue: &Issue) -> bool {
+    crate::dev_loop::data::tasks::pr_names_task(pr, issue)
+        || crate::common::branching::milestone_number(&pr.head) == Some(issue.number)
+}
 
 /// The milestone an issue belongs to, when a board read this tick holds it.
 fn milestone_of_issue(snapshot: &Snapshot, number: u64) -> Option<u64> {
@@ -906,9 +960,11 @@ pub struct Plan {
 ///
 /// Every free job, and paid ones for the `slots` free lanes — none when
 /// `paid` is false, a quota rest. One job per issue or PR (`running` and
-/// those taken now), one per exclusive group (`held` and those taken now);
-/// a job on a lane already is not waiting, one held back by a group or a
-/// slot is.
+/// those taken now); a job's [`Job::holds`] wait only on sessions — a
+/// lane's key, or a paid job's picked now — since a free job runs within
+/// the tick. One per exclusive group (`held` and those taken now); a job
+/// on a lane already — its key or one of its holds — is not waiting, one
+/// held back by a group or a slot is.
 #[must_use]
 pub fn plan(
     jobs: Vec<Job>,
@@ -918,10 +974,13 @@ pub fn plan(
     paid: bool,
 ) -> Plan {
     let mut taken: Vec<u64> = running.to_vec();
+    // What a hold may collide with: a lane's key or a paid job's picked now.
+    // A free job runs within the tick and never beside a session.
+    let mut sessions: Vec<u64> = running.to_vec();
     let mut groups: Vec<&'static str> = held.to_vec();
     let mut picked = Plan::default();
     for job in jobs {
-        if taken.contains(&job.key) {
+        if taken.contains(&job.key) || job.holds.iter().any(|hold| sessions.contains(hold)) {
             continue;
         }
         if job.exclusive.is_some_and(|group| groups.contains(&group)) {
@@ -936,7 +995,10 @@ pub fn plan(
         groups.extend(job.exclusive);
         match job.cost {
             Cost::Free => picked.free.push(job),
-            Cost::Paid => picked.paid.push(job),
+            Cost::Paid => {
+                sessions.push(job.key);
+                picked.paid.push(job);
+            }
         }
     }
     picked
@@ -3615,8 +3677,128 @@ mod tests {
             route,
             cost,
             key,
+            holds: Vec::new(),
             exclusive,
         }
+    }
+
+    #[test]
+    fn a_decision_and_a_repair_of_one_task_never_run_side_by_side() {
+        // ForgeDesMondes' #542, 2026-10-25: a second decision on #542
+        // started beside the repair of PR #547 the first one had asked for.
+        let mut task = issue(542, &[labels::AGENT, labels::NEEDS_DECISION]);
+        task.body = "## Scope\n\nbranch: feat/journal\n".to_string();
+        let mut repaired = pr("547", "milestone/28-journal");
+        repaired.head = "feat/journal".to_string();
+        let mut landing = pr("560", "main_agent");
+        landing.head = "milestone/28-journal".to_string();
+        let mut stranger = pr("548", "milestone/28-journal");
+        stranger.head = "feat/other".to_string();
+        let snapshot = Snapshot {
+            deciding: vec![task.clone(), issue(28, &[labels::NEEDS_DECISION])],
+            milestones: vec![issue(28, &[labels::MILESTONE])],
+            boards: vec![board(28, vec![task])],
+            task_prs: vec![repaired.clone(), stranger.clone(), landing.clone()],
+            prs_to_fix: vec![repaired, stranger, landing],
+            ..empty()
+        };
+        let decide_542 = Route::Decide { issue: 542 };
+        let fix_547 = Route::PrFix {
+            pr: "547".to_string(),
+        };
+        assert_eq!(holds(&snapshot, &decide_542), [547]);
+        // The task sits on its board and among the decisions asked: listed
+        // twice, which a hold check never minds.
+        let fix_holds = holds(&snapshot, &fix_547);
+        assert!(fix_holds.iter().all(|hold| *hold == 542), "{fix_holds:?}");
+        assert!(fix_holds.contains(&542), "{fix_holds:?}");
+        assert_eq!(
+            holds(&snapshot, &Route::Decide { issue: 28 }),
+            [560],
+            "a milestone's decision holds its landing PR"
+        );
+        let landing_holds = holds(
+            &snapshot,
+            &Route::PrFix {
+                pr: "560".to_string(),
+            },
+        );
+        assert!(
+            landing_holds.iter().all(|hold| *hold == 28),
+            "{landing_holds:?}"
+        );
+        assert!(landing_holds.contains(&28), "{landing_holds:?}");
+        let none: [u64; 0] = [];
+        assert_eq!(
+            holds(
+                &snapshot,
+                &Route::PrFix {
+                    pr: "548".to_string()
+                }
+            ),
+            none
+        );
+        assert_eq!(holds(&snapshot, &Route::Decide { issue: 9 }), none);
+        let started = |running: &[u64]| -> Vec<Route> {
+            plan(schedule(&snapshot, running, &|_| 0), running, &[], 5, true)
+                .paid
+                .into_iter()
+                .map(|job| job.route)
+                .collect()
+        };
+        let picked = started(&[]);
+        assert!(
+            !(picked.contains(&decide_542) && picked.contains(&fix_547)),
+            "one of the two in a tick: {picked:?}"
+        );
+        assert!(picked.contains(&Route::PrFix {
+            pr: "548".to_string()
+        }));
+        // Either one on a lane holds the other back.
+        let beside_the_decision = started(&[542]);
+        assert!(
+            !beside_the_decision.contains(&fix_547),
+            "{beside_the_decision:?}"
+        );
+        let beside_the_repair = started(&[547]);
+        assert!(
+            !beside_the_repair.contains(&decide_542),
+            "{beside_the_repair:?}"
+        );
+        assert!(beside_the_repair.contains(&Route::Decide { issue: 28 }));
+    }
+
+    #[test]
+    fn a_red_landing_pr_is_repaired_beside_its_milestone_merge() {
+        // A red landing PR keeps its milestone ready to merge every tick:
+        // the free merge job on key 28 never holds back the repair.
+        let mut landing = pr("560", "main_agent");
+        landing.head = "milestone/28-journal".to_string();
+        let snapshot = Snapshot {
+            milestones: vec![issue(28, &[labels::MILESTONE])],
+            ready_to_merge: vec![28],
+            task_prs: vec![landing.clone()],
+            prs_to_fix: vec![landing],
+            ..empty()
+        };
+        let fix_560 = Route::PrFix {
+            pr: "560".to_string(),
+        };
+        let picked = plan(schedule(&snapshot, &[], &|_| 0), &[], &[], 5, true);
+        let free: Vec<Route> = picked.free.into_iter().map(|job| job.route).collect();
+        let paid: Vec<Route> = picked.paid.into_iter().map(|job| job.route).collect();
+        assert!(
+            free.contains(&Route::MergeMainAgent { milestone: 28 }),
+            "{free:?}"
+        );
+        assert!(paid.contains(&fix_560), "{paid:?}");
+        // A session on the milestone still holds the repair back.
+        let beside = plan(schedule(&snapshot, &[28], &|_| 0), &[28], &[], 5, true);
+        assert!(
+            !beside.paid.iter().any(|job| job.route == fix_560),
+            "{:?}",
+            beside.paid
+        );
     }
 
     #[test]

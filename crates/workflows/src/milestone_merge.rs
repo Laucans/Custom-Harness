@@ -71,9 +71,14 @@ pub fn candidates<'a>(board: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issue, &'a
 ///
 /// The caller passes `open` without the PRs that wait
 /// (`contest::not_waiting`): a waiting PR is neither escalated nor merged.
-/// `repairing` holds the PRs a lane repairs now, by number: one is not
-/// escalated while its repair runs — its last repair's marker is posted
-/// before the session, the checks still red from the push before.
+/// `held` holds the issues and PRs the lanes work on now, by number (the
+/// lanes' keys). A PR held is not escalated while its repair runs — its
+/// last repair's marker is posted before the session, the checks still red
+/// from the push before. A task held — a decision taken on it, which takes
+/// `harness:needs-decision` off before its session — is neither merged nor
+/// escalated: asked again, the question is decided twice
+/// (`ForgeDesMondes`' #542, PR #547, 2026-10-25: two "repair" verdicts
+/// three minutes apart).
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
@@ -82,14 +87,15 @@ pub async fn ready_to_merge<'a>(
     gh: &dyn GitHub,
     board: &'a [Issue],
     open: &'a [Pr],
-    repairing: &[u64],
+    held: &[u64],
 ) -> Outcome<(Option<(&'a Issue, &'a Pr)>, Vec<(u64, String)>)> {
     let mut escalated = Vec::new();
     for (task, pr) in candidates(board, open) {
-        if pr
-            .num
-            .parse::<u64>()
-            .is_ok_and(|number| repairing.contains(&number))
+        if held.contains(&task.number)
+            || pr
+                .num
+                .parse::<u64>()
+                .is_ok_and(|number| held.contains(&number))
         {
             continue;
         }
@@ -140,7 +146,9 @@ pub async fn ready_to_merge<'a>(
 /// `harness:to-review` (`ForgeDesMondes`' #498) — is escalated here on the
 /// task its body closes (`delivery::closed_task`), [`escalate`] asking once.
 /// The caller passes `to_fix` without the PRs a lane repairs now and those
-/// that wait (`contest::not_waiting`): neither is escalated.
+/// that wait (`contest::not_waiting`): neither is escalated. Nor is one
+/// whose task a lane holds (`held`, the lanes' keys): a decision taken on
+/// it is not asked again ([`ready_to_merge`]).
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from a read of a PR, its comments or its
@@ -149,6 +157,7 @@ pub async fn exhausted_repairs(
     gh: &dyn GitHub,
     to_fix: &[Pr],
     to_review: &[Pr],
+    held: &[u64],
     log: &Logbook,
 ) -> Outcome<Vec<(u64, String)>> {
     let mut escalated = Vec::new();
@@ -178,6 +187,9 @@ pub async fn exhausted_repairs(
             ));
             continue;
         };
+        if held.contains(&task) {
+            continue;
+        }
         let owner = gh.issue(task).await?;
         if escalate(gh, &owner, pr, &comments).await? {
             escalated.push((task, pr.reference()));
@@ -1385,6 +1397,7 @@ mod tests {
             &gh,
             &to_fix,
             &[pr("97", "feat/under-review")],
+            &[],
             &Logbook::null(),
         )
         .await
@@ -1524,5 +1537,118 @@ mod tests {
             .await
             .expect("merged");
         assert!(!gh.writes().iter().any(|w| matches!(w, Wrote::Body(68, _))));
+    }
+
+    /// PR #547's comments when decide #1 started: two repairs, the review
+    /// still blocking.
+    fn exhausted_547() -> String {
+        format!(
+            "{}{}\n{}\n",
+            format!("{}\n", review::FIX_MARKER).repeat(review::MAX_FIXES),
+            review::MARKER,
+            review::BLOCKING
+        )
+    }
+
+    /// The board and the GitHub of `ForgeDesMondes`' #542 (PR #547), with
+    /// the PR's comments as `comments`.
+    fn incident(comments: &str) -> (Vec<Issue>, Vec<Pr>, FakeGitHub) {
+        let board = vec![task(
+            542,
+            &[labels::AGENT, labels::REVIEW_PENDING],
+            "feat/journal",
+        )];
+        let open = vec![pr("547", "feat/journal")];
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![("547".to_string(), comments.to_string())],
+            pr_checks: HashMap::from([("547".to_string(), false)]),
+            failing_checks: HashMap::from([(
+                "547".to_string(),
+                vec!["rust — FAILURE".to_string()],
+            )]),
+            issues: vec![
+                Issue {
+                    number: 547,
+                    body: "Closes #542".to_string(),
+                    ..Issue::default()
+                },
+                board[0].clone(),
+            ],
+            ..FakeGitHub::default()
+        };
+        (board, open, gh)
+    }
+
+    /// How many times a decision was asked on #542 — one decide each.
+    fn asked(gh: &FakeGitHub) -> usize {
+        gh.writes()
+            .iter()
+            .filter(|w| **w == Wrote::Label(542, labels::NEEDS_DECISION.to_string()))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn the_duplicate_decide_of_542_is_one_decide() {
+        // ForgeDesMondes' #542, PR #547, 2026-10-25: decide took the label
+        // off before its session, the next tick saw the task blocked and
+        // unasked, asked again, and a second decide paid the same "repair".
+        let mut decides = 0;
+        // Tick 1: two repairs, still blocked — the harness decides.
+        let (board, open, gh) = incident(&exhausted_547());
+        let (_, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
+        assert_eq!(escalated, [(542, "#547".to_string())]);
+        decides += asked(&gh);
+        // Tick 2: decide #1 runs on a lane keyed #542, the label taken off.
+        let (board, open, gh) = incident(&exhausted_547());
+        let (found, escalated) = ready_to_merge(&gh, &board, &open, &[542])
+            .await
+            .expect("read");
+        assert!(found.is_none() && escalated.is_empty(), "{escalated:?}");
+        let escalated = exhausted_repairs(&gh, &open, &[], &[542], &Logbook::null())
+            .await
+            .expect("read");
+        assert!(escalated.is_empty(), "{escalated:?}");
+        assert_eq!(gh.writes(), [] as [Wrote; 0]);
+        decides += asked(&gh);
+        // Tick 3: decide #1 decided to repair once more; its lane is free,
+        // the repair not run yet — decided, repairing.
+        let repairing = format!(
+            "{}{}\nrepair once more\n",
+            exhausted_547(),
+            review::DECIDED_MARKER
+        );
+        let (board, open, gh) = incident(&repairing);
+        let (_, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
+        assert!(escalated.is_empty(), "{escalated:?}");
+        let escalated = exhausted_repairs(&gh, &open, &[], &[], &Logbook::null())
+            .await
+            .expect("read");
+        assert!(escalated.is_empty(), "{escalated:?}");
+        decides += asked(&gh);
+        assert_eq!(decides, 1, "one decide on #542");
+    }
+
+    #[tokio::test]
+    async fn a_task_a_lane_holds_is_escalated_by_no_path() {
+        // Without the lane, both paths ask: the guard is the lane alone.
+        let (board, open, gh) = incident(&exhausted_547());
+        let (_, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
+        assert_eq!(escalated.len(), 1);
+        let (_, open, gh) = incident(&exhausted_547());
+        let escalated = exhausted_repairs(&gh, &open, &[], &[], &Logbook::null())
+            .await
+            .expect("read");
+        assert_eq!(escalated, [(542, "#547".to_string())]);
+        // A lane on another number holds nothing here.
+        let (board, open, gh) = incident(&exhausted_547());
+        let (_, escalated) = ready_to_merge(&gh, &board, &open, &[541])
+            .await
+            .expect("read");
+        assert_eq!(escalated.len(), 1);
+        let (_, open, gh) = incident(&exhausted_547());
+        let escalated = exhausted_repairs(&gh, &open, &[], &[541], &Logbook::null())
+            .await
+            .expect("read");
+        assert_eq!(escalated.len(), 1);
     }
 }

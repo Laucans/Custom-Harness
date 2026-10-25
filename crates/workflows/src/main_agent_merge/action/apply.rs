@@ -195,8 +195,8 @@ async fn conflicting(
 }
 
 /// Asks the decision on a landing PR past its repairs — never while a lane
-/// repairs it, nor while it waits (`common::contest::held`); answers
-/// whether it asked now.
+/// repairs it or decides on its milestone, nor while it waits
+/// (`common::contest::held`); answers whether it asked now.
 async fn past_its_repairs(
     ports: &Ports,
     config: &Config,
@@ -204,10 +204,13 @@ async fn past_its_repairs(
     pr: &harness_core::domain::Pr,
     comments: &str,
 ) -> Outcome<bool> {
-    let repairing = pr
-        .num
-        .parse::<u64>()
-        .is_ok_and(|n| config.repairing.contains(&n));
+    // A decision taken on the milestone takes its label off before its
+    // session: asked again, it is decided twice (`ForgeDesMondes`' #542).
+    let repairing = config.repairing.contains(&milestone.number)
+        || pr
+            .num
+            .parse::<u64>()
+            .is_ok_and(|n| config.repairing.contains(&n));
     Ok(!repairing
         && !contest::held(ports.gh.as_ref(), pr, comments).await?
         && crate::milestone_merge::escalate(ports.gh.as_ref(), milestone, pr, comments).await?)
@@ -598,6 +601,19 @@ mod tests {
             "{:?}",
             gh.writes()
         );
+        // Nor while a decision on its milestone runs on a lane (#542).
+        let gh = Rc::new(red_landing(&used));
+        let config = Config {
+            repairing: vec![4],
+            ..config_fake::config()
+        };
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config, 4)
+            .await
+            .expect("a verdict");
+        assert!(matches!(
+            outcome,
+            MergeOutcome::Escalated { asked: false, .. }
+        ));
         // Nor while it waits on a contract change its repair stopped on.
         let gh = Rc::new(red_landing(&format!(
             "{used}{}",

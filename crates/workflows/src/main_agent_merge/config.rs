@@ -4,10 +4,11 @@
 pub struct Config {
     /// The branch a milestone's PR targets — `main_agent`.
     pub base_branch: String,
-    /// The PRs a lane repairs right now, by number — the lane holds the
-    /// repair's lock: a landing PR whose repair still runs is not escalated
-    /// (its last repair's marker is posted before its session, while the
-    /// checks are still red from the push before).
+    /// The issues and PRs the lanes work on right now, by number (their
+    /// keys): a landing PR whose repair still runs is not escalated (its
+    /// last repair's marker is posted before its session, while the checks
+    /// are still red from the push before), nor one whose milestone a
+    /// decision is being taken on.
     pub repairing: Vec<u64>,
 }
 

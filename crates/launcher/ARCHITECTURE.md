@@ -167,9 +167,16 @@ catch-ups and the merges, a few GitHub calls — and starts the paid ones heavie
 per free lane: a task as the dev loop's `--task` child, anything else as
 `harness route <kind> <n>` in its own `router-lane-<k>` checkout. **Nothing
 paid runs in the watch's process**, so a long session never keeps the
-lanes from being refilled. One job per issue or PR at a time; the technical
-refinement, the test debt and the planner one at a time each (an exclusive
-group a lane holds). With one lane, `routing::decide` — the schedule's
+lanes from being refilled. One job per issue or PR at a time — a job's
+key and its holds (`Job::holds`): a decision holds the open PRs of the
+issue it decides on, a repair the task or milestone its PR delivers, so a
+decision and a repair of the same task never run side by side, nor does
+either start beside the other's lane (W, `ForgeDesMondes`' #542). A hold
+waits only on a session (a lane's key, a paid job picked this tick), never
+on a free job: a red landing PR's milestone is ready to merge every tick,
+and its free merge must not starve the repair; the
+technical refinement, the test debt and the planner one at a time each (an
+exclusive group a lane holds). With one lane, `routing::decide` — the schedule's
 first job — runs in the tick, as before.
 
 **The rules' waits are read once per landing** (`router/mod.rs::rule_waits`):
@@ -387,8 +394,12 @@ A landing PR red or conflicting past its repairs is
 recorded once, when the decision was asked; a `harness:pr-fix` PR past its
 cap no merge path covers is escalated by `repairs_due`
 (`milestone_merge::exhausted_repairs`), `RepairsExhausted` the same way; the lanes' numbers (`Busy::numbers`) go in as
-`main_agent_merge::Config::repairing`, and the train's `ready_to_merge` gets
-the same `running`: a PR a lane repairs is never escalated under it.
+`main_agent_merge::Config::repairing`, and the train's `ready_to_merge` and
+`repairs_due`'s `exhausted_repairs` get the same `running`: a PR a lane
+repairs is never escalated under it, nor a PR whose task or milestone a lane
+holds — `decide` takes `harness:needs-decision` off before its session, and
+asked again meanwhile the question was decided twice (W, `ForgeDesMondes`'
+#542, PR #547, 2026-10-25: two "repair" verdicts three minutes apart).
 `decide` gets the integration branch as `Config::integration` (the shared
 checkout's branch), `pr_fix` gets it as `Config::integration` and a `GitCli`
 on its checkout as its `Git` port (`dispatch/pr_fix.rs`, the composition
