@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use harness_core::domain::Outcome;
+use harness_core::domain::{Halt, Outcome};
 use harness_core::ports::shell::disk::Disk;
 
 /// A disk in memory: what it holds can be read, what it wrote can be read back.
@@ -21,6 +21,8 @@ pub struct FakeDisk {
     pub written: RefCell<Vec<(PathBuf, String)>>,
     /// Every removal, a folder's or a file's, in order.
     pub removed: RefCell<Vec<PathBuf>>,
+    /// Whether every write is refused, as a full or read-only disk does.
+    pub refuses_writes: bool,
 }
 
 impl FakeDisk {
@@ -84,6 +86,9 @@ impl Disk for FakeDisk {
         self.existing.get(path).cloned()
     }
     fn write_to_string(&self, path: &Path, content: &str) -> Outcome<()> {
+        if self.refuses_writes {
+            return Err(Halt::Failed(format!("{} is read-only", path.display())));
+        }
         self.written
             .borrow_mut()
             .push((path.to_path_buf(), content.to_string()));

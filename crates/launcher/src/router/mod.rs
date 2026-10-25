@@ -67,6 +67,7 @@ use crate::adapters::sink::Both;
 use crate::adapters::spending;
 use crate::cli::WatchArgs;
 use crate::dispatch::data_snapshot;
+use crate::dispatch::dev_loop::now_seconds;
 use crate::dispatch::lanes::Lanes;
 
 use routes::dispatch;
@@ -208,6 +209,13 @@ async fn drain(lanes: &mut Lanes, log: &Logbook) -> Outcome<()> {
     Ok(())
 }
 
+/// The catch-ups' read of the integration branch's head this tick
+/// (`catch_up::read_head`, at the clock's second): whether the board must
+/// be read in full for them.
+async fn catching_up(gh: &dyn GitHub, pulse: &mut Pulse, integration: &str) -> Outcome<bool> {
+    catch_up::read_head(gh, &mut pulse.catch_ups, integration, now_seconds()).await
+}
+
 /// One pass: read the snapshot, decide, dispatch.
 async fn tick(
     args: &WatchArgs,
@@ -245,7 +253,7 @@ async fn tick(
     // checks while a branch waits on them (one more): a push that moves no
     // issue — an upgrade, a human's — and the green that follows it are
     // what the catch-ups follow.
-    let catching_up = catch_up::read_head(gh.as_ref(), &mut pulse.catch_ups, &args.branch).await?;
+    let catching_up = catching_up(gh.as_ref(), pulse, &args.branch).await?;
     if routing::may_skip(pulse, &activity, freed, catching_up) {
         pulse.stayed_quiet();
         log.debug("quiet: nothing moved on the board — no snapshot read");
@@ -277,7 +285,7 @@ async fn tick(
     // its checks: the push that turns it green moves no issue. The
     // catch-ups due at the head just read, once its own checks are green.
     pulse.read_in_full(etag, watching_ci || routing::base_red(&found));
-    routing::read_catch_ups(&mut found, pulse, crate::dispatch::dev_loop::now_seconds());
+    routing::read_catch_ups(&mut found, pulse, now_seconds(), log);
     // A PR held on a settled contest is told once it stalls; a rules' task
     // held on its faithful PR is released past the bound — before the taps,
     // which read the hold.

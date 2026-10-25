@@ -172,6 +172,10 @@ impl GitHub for NoGitHub {
     async fn commit_checks(&self, _branch: &str, _sha: &str) -> Outcome<Option<bool>> {
         Ok(None)
     }
+
+    async fn commit_time(&self, _sha: &str) -> Outcome<Option<u64>> {
+        Ok(None)
+    }
 }
 
 /// What every method of [`NoGitHub`] answers.

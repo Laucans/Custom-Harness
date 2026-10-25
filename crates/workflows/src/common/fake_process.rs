@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use harness_core::domain::Outcome;
+use harness_core::domain::{Halt, Outcome};
 use harness_core::ports::shell::process::{Process, Ran};
 
 /// A process runner in memory.
@@ -18,6 +18,9 @@ pub struct FakeProcess {
     pub ran: RefCell<Vec<(String, Vec<String>, PathBuf)>>,
     /// How long each run was given, in order.
     pub timeouts: RefCell<Vec<Duration>>,
+    /// The programs that cannot start: their run is an error, recorded all
+    /// the same.
+    pub unlaunchable: Vec<String>,
 }
 
 impl FakeProcess {
@@ -52,6 +55,9 @@ impl Process for FakeProcess {
         self.ran
             .borrow_mut()
             .push((program.to_string(), args.to_vec(), cwd.to_path_buf()));
+        if self.unlaunchable.iter().any(|p| p == program) {
+            return Err(Halt::Failed(format!("{program} cannot be launched")));
+        }
         let mut answers = self.answers.borrow_mut();
         Ok(if answers.is_empty() {
             Self::ran("", "", 0)

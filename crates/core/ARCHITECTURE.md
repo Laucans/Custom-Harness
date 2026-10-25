@@ -83,8 +83,8 @@ traits exchange). **A port decides, an adapter calls.**
 
 ```
 agent         Session, SessionFactory (open, fork), SessionSpec, Reply, Base — a fork branches from a Base the round holds in `Context::base`
-shell/git     Repo, Repos — reads answer, setup verbs return `Ran`
-shell/github  GitHub — a failed read is never an empty list; files written (put_file) and deleted (delete_file) as one commit on GitHub, no checkout
+shell/git     Repo, Repos — reads answer, setup verbs return `Ran`; the catch-up's verbs (merge, take_theirs, remove, merge_base, show, stage_paths, merge_file, push_head) refuse or read nothing by default
+shell/github  GitHub — a failed read is never an empty list; commit_time, a commit's date, what a wait on its checks counts from; files written (put_file) and deleted (delete_file) as one commit on GitHub, no checkout
 shell/disk    Disk — exists so deletion is testable (remove_file refused by default: a disk that does not say how never pretends it removed)
 shell/process Ran, last_line — what a shell port hands back
 shell/database Databases, OwnedDatabase, Dropping, Dropped — the databases the factory's role owns, and drops that never take one in use, bounded by a deadline

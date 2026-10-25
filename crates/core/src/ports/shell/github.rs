@@ -446,6 +446,19 @@ pub trait GitHub {
     /// listed at all.
     async fn commit_checks(&self, branch: &str, sha: &str) -> Outcome<Option<bool>>;
 
+    /// When commit `sha` was committed (its committer date), in seconds
+    /// since the Unix epoch — `None` when GitHub has no such commit or no
+    /// readable date.
+    ///
+    /// What a wait on that commit's own checks counts from: the second it
+    /// landed, not the second a watch first read it (a restart reads every
+    /// head anew).
+    ///
+    /// # Errors
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) when the
+    /// commit cannot be read.
+    async fn commit_time(&self, sha: &str) -> Outcome<Option<u64>>;
+
     /// The file `file` of the artifact `artifact` the latest finished run of
     /// the workflow `workflow` on `branch` kept — `None` when no finished run
     /// is there, or it kept no such file. A board with no CI keeps nothing.

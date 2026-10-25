@@ -142,6 +142,9 @@ pub struct FakeGitHub {
     /// `commit_checks` answers, by sha. An absent key is `None` — no run of
     /// that commit yet.
     pub commit_checks: HashMap<String, Option<bool>>,
+    /// `commit_time` answers, by sha. An absent key is `None` — no date
+    /// read.
+    pub commit_times: HashMap<String, u64>,
     /// `changed_files` answers, by the compare asked (`base...head`, as
     /// GitHub writes it). An absent key is no change at all: a test that
     /// never mentions it merges on GitHub.
@@ -570,6 +573,11 @@ impl GitHub for FakeGitHub {
             ));
         }
         Ok(self.commit_checks.get(sha).copied().flatten())
+    }
+
+    async fn commit_time(&self, sha: &str) -> Outcome<Option<u64>> {
+        self.ok()?;
+        Ok(self.commit_times.get(sha).copied())
     }
 
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {

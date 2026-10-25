@@ -5,7 +5,8 @@
 //! uses it to prove a clone was made, files committed, a branch pushed —
 //! and that a dry run asked for none of it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
@@ -39,6 +40,21 @@ pub struct FakeRepos {
     /// The branches that exist, local and on `origin`; `None`: every branch
     /// asked about exists.
     branches: Option<Rc<(Vec<String>, Vec<String>)>>,
+    /// One conflict set per `merge`, in order, replacing `conflicts` when
+    /// there are some: past the last, a merge is clean.
+    rounds: Rc<Vec<Vec<(String, String)>>>,
+    /// How many merges were asked.
+    merges: Rc<Cell<usize>>,
+    /// Whether a merge is left in progress: a conflicting merge until it
+    /// is aborted or committed.
+    in_merge: Rc<Cell<bool>>,
+    /// What `show` answers, by spec (`:2:<path>`, `<sha>:<path>`).
+    shown: Rc<HashMap<String, String>>,
+    /// What `merge_base` answers.
+    base: Option<String>,
+    /// What each `merge_file` answers, in order; past the end, a clean
+    /// merge printing `merged <ours>`.
+    merged_files: Rc<RefCell<Vec<Ran>>>,
 }
 
 impl FakeRepos {
@@ -111,6 +127,78 @@ impl FakeRepos {
         }
     }
 
+    /// A `git` whose successive merges conflict on these sets, each file
+    /// with its status code: the first merge on `first`, the second on
+    /// `second` (empty: clean), any later one clean.
+    pub fn conflicting_then(first: &[(&str, &str)], second: &[(&str, &str)]) -> Self {
+        let owned = |files: &[(&str, &str)]| -> Vec<(String, String)> {
+            files
+                .iter()
+                .map(|(code, file)| ((*code).to_string(), (*file).to_string()))
+                .collect()
+        };
+        Self {
+            rounds: Rc::new(vec![owned(first), owned(second)]),
+            ..Self::default()
+        }
+    }
+
+    /// The same `git`, its verbs starting with one of these prefixes
+    /// failing.
+    #[must_use]
+    pub fn failing_too(self, prefixes: &[&'static str]) -> Self {
+        Self {
+            failing: Rc::new(prefixes.to_vec()),
+            ..self
+        }
+    }
+
+    /// The same `git`, whose merge base of any two commits is `sha`.
+    #[must_use]
+    pub fn with_merge_base(self, sha: &str) -> Self {
+        Self {
+            base: Some(sha.to_string()),
+            ..self
+        }
+    }
+
+    /// The same `git`, whose `show` answers these texts by spec.
+    #[must_use]
+    pub fn showing(self, blobs: &[(&str, &str)]) -> Self {
+        Self {
+            shown: Rc::new(
+                blobs
+                    .iter()
+                    .map(|(spec, text)| ((*spec).to_string(), (*text).to_string()))
+                    .collect(),
+            ),
+            ..self
+        }
+    }
+
+    /// The same `git`, whose three-way merges of files answer these, in
+    /// order.
+    #[must_use]
+    pub fn merging_files(self, answers: Vec<Ran>) -> Self {
+        Self {
+            merged_files: Rc::new(RefCell::new(answers)),
+            ..self
+        }
+    }
+
+    /// The conflicts of the merge asked last.
+    fn current_conflicts(&self) -> Vec<(String, String)> {
+        if self.rounds.is_empty() {
+            return self.conflicts.as_ref().clone();
+        }
+        self.merges
+            .get()
+            .checked_sub(1)
+            .and_then(|at| self.rounds.get(at))
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// The verbs asked so far, in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.borrow().clone()
@@ -141,6 +229,19 @@ pub struct FakeRepo {
 }
 
 impl FakeRepo {
+    fn pushed(&self, verb: &str, branch: &str) -> Ran {
+        let mut ran = self.note(verb);
+        if self.repos.rejects_push {
+            ran.code = Some(1);
+            ran.stderr = format!(
+                " ! [rejected]        {branch} -> {branch} (fetch first)\n\
+                 error: failed to push some refs\n\
+                 hint: Updates were rejected because the remote contains work that you do not"
+            );
+        }
+        ran
+    }
+
     fn note(&self, verb: &str) -> Ran {
         self.repos
             .calls
@@ -168,7 +269,8 @@ impl Repo for FakeRepo {
         Ok("abc1234".to_string())
     }
     async fn dirty_files(&self) -> Outcome<Vec<String>> {
-        if self.repos.conflicts.is_empty() {
+        let conflicts = self.repos.current_conflicts();
+        if conflicts.is_empty() {
             return Ok(self
                 .repos
                 .rewritten
@@ -176,9 +278,7 @@ impl Repo for FakeRepo {
                 .map(|path| format!("M  {path}"))
                 .collect());
         }
-        Ok(self
-            .repos
-            .conflicts
+        Ok(conflicts
             .iter()
             .map(|(code, path)| format!("{code} {path}"))
             .collect())
@@ -256,28 +356,27 @@ impl Repo for FakeRepo {
         Ok(self.note("stage_all"))
     }
     async fn commit(&self, message: &str) -> Outcome<Ran> {
+        self.repos.in_merge.set(false);
         Ok(self.note(&format!("commit {message}")))
     }
     async fn push(&self, branch: &str) -> Outcome<Ran> {
-        let mut ran = self.note(&format!("push {branch}"));
-        if self.repos.rejects_push {
-            ran.code = Some(1);
-            ran.stderr = format!(
-                " ! [rejected]        {branch} -> {branch} (fetch first)\n\
-                 error: failed to push some refs\n\
-                 hint: Updates were rejected because the remote contains work that you do not"
-            );
-        }
-        Ok(ran)
+        Ok(self.pushed(&format!("push {branch}"), branch))
+    }
+    async fn push_head(&self, branch: &str) -> Outcome<Ran> {
+        Ok(self.pushed(&format!("push HEAD:{branch}"), branch))
     }
     async fn create_orphan_branch(&self, name: &str) -> Outcome<Ran> {
         Ok(self.note(&format!("create_orphan_branch {name}")))
     }
     async fn merge(&self, reference: &str) -> Outcome<Ran> {
         let mut ran = self.note(&format!("merge {reference}"));
-        if !self.repos.conflicts.is_empty() {
+        self.repos
+            .merges
+            .set(self.repos.merges.get().saturating_add(1));
+        if !self.repos.current_conflicts().is_empty() {
             ran.code = Some(1);
             ran.stdout = "CONFLICT (content): Merge conflict".to_string();
+            self.repos.in_merge.set(true);
         }
         Ok(ran)
     }
@@ -288,9 +387,49 @@ impl Repo for FakeRepo {
         Ok(self.note(&format!("remove {path}")))
     }
     async fn merge_in_progress(&self) -> Outcome<bool> {
-        Ok(!self.repos.conflicts.is_empty())
+        Ok(self.repos.in_merge.get())
     }
     async fn abort_merge(&self) -> Outcome<Ran> {
+        self.repos.in_merge.set(false);
         Ok(self.note("abort_merge"))
+    }
+    async fn merge_base(&self, a: &str, b: &str) -> Outcome<Option<String>> {
+        self.note(&format!("merge_base {a} {b}"));
+        Ok(self.repos.base.clone())
+    }
+    async fn show(&self, spec: &str) -> Outcome<Option<String>> {
+        let ran = self.note(&format!("show {spec}"));
+        Ok(ran
+            .ok()
+            .then(|| self.repos.shown.get(spec).cloned())
+            .flatten())
+    }
+    async fn stage_paths(&self, paths: &[String]) -> Outcome<Ran> {
+        Ok(self.note(&format!("stage_paths {}", paths.join(" "))))
+    }
+    async fn merge_file(&self, ours: &Path, base: &Path, theirs: &Path) -> Outcome<Ran> {
+        let noted = self.note(&format!(
+            "merge_file {} {} {}",
+            ours.display(),
+            base.display(),
+            theirs.display()
+        ));
+        if !noted.ok() {
+            // An error, never a count of conflicts.
+            return Ok(Ran {
+                code: Some(255),
+                ..noted
+            });
+        }
+        let mut answers = self.repos.merged_files.borrow_mut();
+        Ok(if answers.is_empty() {
+            Ran {
+                code: Some(0),
+                stdout: format!("merged {}", ours.display()),
+                stderr: String::new(),
+            }
+        } else {
+            answers.remove(0)
+        })
     }
 }

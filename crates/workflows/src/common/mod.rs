@@ -24,6 +24,7 @@ pub mod decision;
 pub mod delivery;
 pub mod dossier;
 pub mod explore;
+pub(crate) mod handler_split;
 pub mod hierarchy;
 pub mod json_reply;
 pub mod labels;

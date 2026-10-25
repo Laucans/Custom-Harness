@@ -25,13 +25,20 @@ agent/    claude_cli   one process per turn, stitched with `--resume`
 shell/    process      the only place in the crate that spawns a subprocess; `Processes`
                        carries the variables it was built with (`with_env`: the
                        launcher's toolchain `PATH`) to every child it spawns
-          git          GitCli, GitRepos — every call names the repo with `-C <root>`
+          git          GitCli, GitRepos — every call names the repo with `-C <root>`;
+                       `show` hands a blob back as-is (never trimmed: it is
+                       written back byte for byte), `merge_file` is `merge-file -p`
+                       (stdout the merge, exit the conflict count), `push_head` is
+                       `push origin HEAD:refs/heads/<branch>` (the catch-up's
+                       detached `HEAD`, never forced)
           github       GhCli — issues go through `gh api`, not `gh issue`; a PR's
                        check rows keep, per run id and job name, the newest attempt
                        only (`latest_per_job`: a re-run's SUCCESS or PENDING hides
                        its old FAILURE), never collapsed across runs (a landing PR's
                        `push` and `pull_request` runs stay apart); `delete_file`
-                       is a contents API DELETE against the blob's sha
+                       is a contents API DELETE against the blob's sha;
+                       `commit_time` reads `commit.committer.date` (ISO 8601 read
+                       in a few lines, `epoch_of`, no date crate)
           disk         RealDisk
           database     whether the product's database answers (a TCP connect), and
                        PgDatabases — the databases the factory's role owns and a plain

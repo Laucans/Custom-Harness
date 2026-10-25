@@ -35,18 +35,31 @@
 //!   landing PR is asked for a repair (`harness:pr-fix`, the repair cap
 //!   applies, its prompt asks for a merge of the base); without one, it is
 //!   said and left ([`route_residual`]). GitHub's merge alone is tried
-//!   again every [`PARK_SECONDS`] at the same head — a hand or the repair
-//!   may have merged the base meanwhile; the branch's tasks wait until it
-//!   takes it, and without a landing PR each try says so again;
-//! - **failed** — parked for [`PARK_SECONDS`], said once.
+//!   again every [`RETRY_SECONDS`] at the same head — a hand or the repair
+//!   may have merged the base meanwhile, and that merge is the test and the
+//!   act at once; the branch's tasks wait until it takes it, and without a
+//!   landing PR the first try says so again, once per head;
+//! - **failed** — parked for [`PARK_SECONDS`], said once; GitHub's merge
+//!   alone is tried meanwhile every [`RETRY_SECONDS`], unless taking the
+//!   head stales the bundles (only the harness's checkout rebuilds them).
+//!
+//! A milestone's tasks wait while its branch lags the head
+//! ([`CatchUps::holding`]): from the head's move until the branch holds it
+//! — the head's checks still running, the catch-up due, deferred or
+//! unsettled — so no task starts on a base that misses what just landed.
+//! A head whose checks never conclude (no workflow runs on it) holds them
+//! [`LAG_HOLD_SECONDS`] from its commit, then lets them go, said once. A
+//! catch-up that settles a branch has the next tick read the board in full
+//! ([`CatchUps::reread`]), and so does an expired hold and a retry due: the
+//! released tasks start then, not after the quiet ticks.
 //!
 //! What a watch remembers of it lives in [`CatchUps`], inside the router's
 //! `Pulse`: pure, the time handed in. Two writers never meet on a branch: a
 //! catch-up waits while a lane works on its milestone's landing PR (read
 //! here, the label being gone once the repair started), the router holds
 //! that repair while the catch-up is due, and the milestone's tasks while
-//! its branch is behind or could not take the base; a task PR whose
-//! session still runs is never refreshed under it ([`Busy`]).
+//! its branch lags the head or could not take it; a task PR whose session
+//! still runs is never refreshed under it ([`Busy`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -60,10 +73,24 @@ use crate::common::labels;
 use crate::dev_loop::data::board::Board;
 use crate::dev_loop::data::tasks;
 
-/// How long a catch-up that failed waits before it is tried again, and how
-/// long a residual conflict waits before GitHub's merge is tried again at
-/// the same head: an hour, as a lane's parked task does.
+/// How long a catch-up that failed waits before it is tried again in the
+/// harness's checkout: an hour, as a lane's parked task does.
 pub const PARK_SECONDS: u64 = 3600;
+
+/// How often GitHub's merge alone is tried again at the same head.
+///
+/// For a residual conflict, and for a failure still parked: a hand or the
+/// repair may have merged the base meanwhile, and that merge is the test
+/// and the act at once (a 409 every five minutes per branch, nothing else).
+pub const RETRY_SECONDS: u64 = 300;
+
+/// How long a branch lagging an unjudged head holds its tasks.
+///
+/// Counted from that head's commit: twice the product's CI (`main_agent`'s,
+/// ~10 min on 2026-10-24). Past it the head is taken as one with no CI run
+/// — its tasks start on their branch as it is, said once — so a head no
+/// workflow judges never freezes the plant.
+pub const LAG_HOLD_SECONDS: u64 = 1200;
 
 /// How many catch-ups a tick makes in the harness's own checkout: each one
 /// a mount, a merge, the mock-up's bundles and `cargo metadata`, inside the
@@ -77,6 +104,26 @@ pub struct Residual {
     pub head: String,
     /// The second from which GitHub's merge is tried again at that head.
     pub retry_at: u64,
+    /// Whether a retry without a landing PR already warned at that head:
+    /// said once, quiet after.
+    pub reminded: bool,
+}
+
+/// A catch-up that failed, waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Parked {
+    /// The second from which it is tried again in the harness's checkout.
+    pub until: u64,
+    /// The second from which GitHub's merge alone is tried again meanwhile.
+    pub recheck_at: u64,
+}
+
+impl Parked {
+    /// The second its next try is due, whichever kind.
+    #[must_use]
+    pub fn next(self) -> u64 {
+        self.recheck_at.min(self.until)
+    }
 }
 
 /// What a watch remembers of its catch-ups, tick to tick.
@@ -88,13 +135,19 @@ pub struct CatchUps {
     /// `Some(false)` red — `None` until they concluded; read until green,
     /// forgotten at each move.
     pub verdict: Option<bool>,
+    /// When that head was committed (its commit's date, the reading's when
+    /// that cannot be read): what a lag hold counts from
+    /// ([`LAG_HOLD_SECONDS`]). Forgotten at each move.
+    pub seen_at: Option<u64>,
+    /// The head whose lag hold ran out and was said so: said once.
+    pub lag_told: Option<String>,
     /// The head each milestone branch was last brought to by this watch.
     pub held: BTreeMap<u64, String>,
     /// The milestones whose branch met a conflict no script solves: at
     /// which head, and when GitHub's merge alone is tried again there.
     pub residual: BTreeMap<u64, Residual>,
-    /// The second until which a failed catch-up waits.
-    pub parked: BTreeMap<u64, u64>,
+    /// The failed catch-ups, waiting.
+    pub parked: BTreeMap<u64, Parked>,
     /// The catch-ups in the harness's checkout this tick may still make.
     pub local_left: u32,
     /// Whether a building branch was behind the head at the last full
@@ -105,12 +158,16 @@ pub struct CatchUps {
     /// left by the tick's single local catch-up, one whose push raced
     /// another: the board is read in full next tick for them.
     pub outstanding: BTreeSet<u64>,
+    /// A catch-up settled a branch since the last full read: the next tick
+    /// reads the board in full, so the tasks it released start then rather
+    /// than after the quiet ticks.
+    pub reread: bool,
 }
 
 impl CatchUps {
     /// Keeps the head read this tick: whether it moved since the last one
-    /// (the first read is a move), its verdict forgotten if it did. An
-    /// absent branch keeps the last head.
+    /// (the first read is a move), its verdict and its date forgotten if it
+    /// did. An absent branch keeps the last head.
     pub fn moved(&mut self, head: Option<String>) -> bool {
         let Some(head) = head else {
             return false;
@@ -118,21 +175,31 @@ impl CatchUps {
         let moved = self.head.as_ref() != Some(&head);
         if moved {
             self.verdict = None;
+            self.seen_at = None;
         }
         self.head = Some(head);
         moved
     }
 
     /// A full read of the board at `now`: the catch-ups due, each milestone
-    /// with its branch ([`Self::due`]), and the milestones whose branch
-    /// could not take the base ([`Self::holding`]). Allows this tick its
-    /// local catch-up, and remembers what is behind and what is due.
+    /// with its branch ([`Self::due`]), and the milestones whose tasks wait
+    /// ([`Self::holding`]). Forgets the residual and parked marks of a
+    /// branch that is no target any more or holds the head, allows this
+    /// tick its local catch-up, and remembers what is behind and what is
+    /// due.
     pub fn read(&mut self, milestones: &[Issue], now: u64) -> (Vec<(u64, String)>, Vec<u64>) {
+        let kept: BTreeSet<u64> = targets(milestones)
+            .into_iter()
+            .map(|(number, _)| number)
+            .filter(|number| self.head.is_none() || self.held.get(number) != self.head.as_ref())
+            .collect();
+        self.residual.retain(|number, _| kept.contains(number));
+        self.parked.retain(|number, _| kept.contains(number));
         let due = self.due(milestones, now);
         self.local_left = LOCAL_PER_TICK;
         self.behind_seen = !self.behind(milestones).is_empty();
         self.outstanding = due.iter().map(|(number, _)| *number).collect();
-        (due, self.holding(now))
+        (due, self.holding(milestones, now))
     }
 
     /// The building milestones whose branch this watch has not brought to
@@ -147,17 +214,18 @@ impl CatchUps {
             .collect()
     }
 
-    /// Whether a failed catch-up of `milestone` still waits at `now`.
+    /// Whether a failed catch-up of `milestone` still waits at `now` for
+    /// its next try in the harness's checkout.
     fn parked_at(&self, milestone: u64, now: u64) -> bool {
         self.parked
             .get(&milestone)
-            .is_some_and(|until| *until > now)
+            .is_some_and(|parked| parked.until > now)
     }
 
     /// The catch-ups due at `now`, each milestone with its branch: those
-    /// behind the head, not parked, and — met with a residual conflict at
-    /// this head — only once its retry is due; none unless the head's own
-    /// checks are green.
+    /// behind the head — a failure still parked only once its recheck on
+    /// GitHub is due, one met with a residual conflict at this head only
+    /// once its retry is; none unless the head's own checks are green.
     #[must_use]
     pub fn due(&self, milestones: &[Issue], now: u64) -> Vec<(u64, String)> {
         if self.verdict != Some(true) {
@@ -166,7 +234,7 @@ impl CatchUps {
         self.behind(milestones)
             .into_iter()
             .filter(|(number, _)| {
-                !self.parked_at(*number, now)
+                self.parked.get(number).is_none_or(|p| p.next() <= now)
                     && (!self.residual_here(*number)
                         || self
                             .residual
@@ -184,10 +252,28 @@ impl CatchUps {
             .is_some_and(|met| self.head.as_ref() == Some(&met.head))
     }
 
-    /// The milestones whose branch could not take the base — a conflict no
-    /// script solves, or a failure still parked at `now`: their tasks wait.
+    /// Whether a branch behind the head still waits on its verdict at
+    /// `now`: from the head's commit for [`LAG_HOLD_SECONDS`] — a head
+    /// whose date is unknown, always.
+    fn lag_holds(&self, now: u64) -> bool {
+        self.seen_at
+            .is_none_or(|at| now < at.saturating_add(LAG_HOLD_SECONDS))
+    }
+
+    /// The milestones whose tasks wait at `now`: their branch could not
+    /// take the base (a conflict no script solves, a failure still parked),
+    /// or it lags the head — the head green and the catch-up not made yet,
+    /// or the head's checks not concluded within [`LAG_HOLD_SECONDS`]. A
+    /// branch that lags is no base to build on: a task started there misses
+    /// what the head brought (#219, 2026-10-24: started a minute after the
+    /// milestone it needed landed, stopped "missing").
     #[must_use]
-    pub fn holding(&self, now: u64) -> Vec<u64> {
+    pub fn holding(&self, milestones: &[Issue], now: u64) -> Vec<u64> {
+        let lagging = if self.verdict == Some(true) || self.lag_holds(now) {
+            self.behind(milestones)
+        } else {
+            Vec::new()
+        };
         let mut held: Vec<u64> = self
             .residual
             .keys()
@@ -195,13 +281,43 @@ impl CatchUps {
             .chain(
                 self.parked
                     .iter()
-                    .filter(|(_, until)| **until > now)
+                    .filter(|(_, parked)| parked.until > now)
                     .map(|(number, _)| *number),
             )
+            .chain(lagging.into_iter().map(|(number, _)| number))
             .collect();
         held.sort_unstable();
         held.dedup();
         held
+    }
+
+    /// The head whose lag hold ran out at `now` with no verdict, with the
+    /// milestones it releases — once per head: the next calls answer
+    /// `None`. A head that concluded is none: green makes the catch-ups
+    /// due, red holds the tasks on its own (`base_red`).
+    pub fn lag_expiry(&mut self, milestones: &[Issue], now: u64) -> Option<(String, Vec<u64>)> {
+        let head = self.head.clone()?;
+        if self.verdict.is_some() || self.lag_holds(now) || self.lag_told.as_ref() == Some(&head) {
+            return None;
+        }
+        self.lag_told = Some(head.clone());
+        let released: Vec<u64> = self
+            .behind(milestones)
+            .into_iter()
+            .map(|(number, _)| number)
+            .collect();
+        (!released.is_empty()).then_some((head, released))
+    }
+
+    /// Whether a try is due at `now` that no other read asks for: a
+    /// residual's retry or a parked failure's, the head green.
+    fn retry_due(&self, now: u64) -> bool {
+        self.verdict == Some(true)
+            && (self.parked.values().any(|parked| parked.next() <= now)
+                || self
+                    .residual
+                    .iter()
+                    .any(|(number, met)| self.residual_here(*number) && met.retry_at <= now))
     }
 
     /// What a catch-up of `milestone` to the head came to, remembered: a
@@ -215,31 +331,45 @@ impl CatchUps {
                 self.held.insert(milestone, head);
                 self.residual.remove(&milestone);
                 self.parked.remove(&milestone);
+                self.reread = true;
             }
             CaughtUp::Residual(_) => {
                 self.residual.insert(
                     milestone,
                     Residual {
                         head,
-                        retry_at: now.saturating_add(PARK_SECONDS),
+                        retry_at: now.saturating_add(RETRY_SECONDS),
+                        reminded: false,
                     },
                 );
                 self.parked.remove(&milestone);
             }
             CaughtUp::Failed(_) => {
-                self.parked
-                    .insert(milestone, now.saturating_add(PARK_SECONDS));
+                self.parked.insert(
+                    milestone,
+                    Parked {
+                        until: now.saturating_add(PARK_SECONDS),
+                        recheck_at: now.saturating_add(RETRY_SECONDS),
+                    },
+                );
             }
             CaughtUp::Deferred => return,
         }
         self.outstanding.remove(&milestone);
     }
 
-    /// A residual conflict GitHub still refuses at the same head: tried
-    /// again in [`PARK_SECONDS`].
-    fn retry_later(&mut self, milestone: u64, now: u64) {
+    /// A try of `milestone` that came to nothing at `now` — GitHub still
+    /// refuses at the same head, or a lane works on the landing PR: its
+    /// residual retry and its parked recheck wait [`RETRY_SECONDS`] more,
+    /// and it is settled until then.
+    fn wait(&mut self, milestone: u64, now: u64) {
+        let later = now.saturating_add(RETRY_SECONDS);
         if let Some(met) = self.residual.get_mut(&milestone) {
-            met.retry_at = now.saturating_add(PARK_SECONDS);
+            met.retry_at = later;
+        }
+        if let Some(parked) = self.parked.get_mut(&milestone) {
+            parked.recheck_at = later;
+            parked.until = parked.until.max(later);
         }
         self.outstanding.remove(&milestone);
     }
@@ -248,21 +378,31 @@ impl CatchUps {
 /// Reads the integration branch's head, and its own checks while they are
 /// awaited: whether this tick must read the board in full for the catch-ups.
 ///
-/// The head is one call; its checks one more, while a building branch is
-/// behind it — or it just moved — and it is not green: still running, or
-/// red (a failed job run again may turn it green; a red base reads the
-/// board every tick anyway). The board is read in full when the head moved,
-/// when its verdict just came in or changed (a green that moves no issue),
-/// or when a catch-up due is still unsettled ([`CatchUps::outstanding`]).
+/// The head is one call — and on a move, its commit's date, what a lag
+/// hold counts from (a read that fails counts from `now`); its checks one
+/// more, while a building branch is behind it — or it just moved — and it
+/// is not green: still running, or red (a failed job run again may turn it
+/// green; a red base reads the board every tick anyway). The board is read
+/// in full when the head moved, when its verdict just came in or changed (a
+/// green that moves no issue), when a catch-up due is still unsettled
+/// ([`CatchUps::outstanding`]), when one settled since the last full read
+/// ([`CatchUps::reread`]: its tasks start now), when a lag hold just ran
+/// out, or when a residual's retry or a parked failure's try is due.
 ///
 /// # Errors
-/// Either read failing: the tick stops, as on any read of GitHub.
+/// The head's or its checks' read failing: the tick stops, as on any read
+/// of GitHub.
 pub async fn read_head(
     gh: &dyn GitHub,
     catch_ups: &mut CatchUps,
     integration: &str,
+    now: u64,
 ) -> Outcome<bool> {
     let moved = catch_ups.moved(gh.branch_sha(integration).await?);
+    if moved && let Some(head) = catch_ups.head.clone() {
+        let committed = gh.commit_time(&head).await.ok().flatten();
+        catch_ups.seen_at = Some(committed.map_or(now, |at| at.min(now)));
+    }
     let judged = if let Some(head) = catch_ups.head.clone()
         && catch_ups.verdict != Some(true)
         && (moved || catch_ups.behind_seen)
@@ -274,7 +414,13 @@ pub async fn read_head(
     } else {
         false
     };
-    Ok(moved || judged || !catch_ups.outstanding.is_empty())
+    let settled = std::mem::take(&mut catch_ups.reread);
+    let expired = catch_ups.behind_seen
+        && catch_ups.verdict.is_none()
+        && !catch_ups.lag_holds(now)
+        && catch_ups.lag_told != catch_ups.head;
+    let retry = catch_ups.retry_due(now);
+    Ok(moved || judged || !catch_ups.outstanding.is_empty() || settled || expired || retry)
 }
 
 /// The milestones a catch-up keeps up, with their branch, in number order:
@@ -350,7 +496,8 @@ pub struct Target<'a> {
 /// merge that stales the mock-up's bundles ([`staled`], either side) goes
 /// to `local` without GitHub's merge, its rebuild named ([`BaseHead`]). A
 /// branch already met with a residual conflict at this head is tried on
-/// GitHub only, and said again while it has no landing PR. Held: the open
+/// GitHub only, warned once while it has no landing PR; a failure still
+/// parked too, unless the merge stales the bundles. Held: the open
 /// task PRs into the branch take it ([`refresh_task_prs`]), but those a
 /// lane works on (`busy`). Residual: [`route_residual`]. Failed: parked,
 /// said once. A dry run writes nothing and takes the branch as held, so its
@@ -389,23 +536,37 @@ pub async fn catch_up(
             "{branch}: a repair works on its landing PR {} — it takes {integration} after",
             pr.reference()
         ));
-        catch_ups.outstanding.remove(&milestone);
+        catch_ups.wait(milestone, now);
         return CaughtUp::Deferred;
     }
-    // At a head already met with a residual conflict, GitHub alone: a hand
-    // or the repair merges the base, rebuilding what it staled.
-    let rebuild = if catch_ups.residual_here(milestone) {
+    // At a head already met with a residual conflict, and for a failure
+    // still parked, GitHub alone: a hand or the repair merges the base,
+    // rebuilding what it staled.
+    let residual = catch_ups.residual_here(milestone);
+    let parked = catch_ups.parked_at(milestone, now);
+    let rebuild = if residual {
         Vec::new()
     } else {
         rebuild_for(gh, target, &head, log).await
     };
+    if parked && !rebuild.is_empty() {
+        let why = "taking it stales the mock-up's bundles";
+        return still_parked(target, catch_ups, now, why, log);
+    }
     let local_because = if rebuild.is_empty() {
         match gh.merge_branch(branch, &head).await {
             Ok(()) => None,
-            Err(refused) if catch_ups.residual_here(milestone) => {
-                catch_ups.retry_later(milestone, now);
-                remind(target, landing.as_ref(), &refused, log);
+            Err(refused) if residual => {
+                let first = catch_ups
+                    .residual
+                    .get_mut(&milestone)
+                    .is_some_and(|met| !std::mem::replace(&mut met.reminded, true));
+                catch_ups.wait(milestone, now);
+                remind(target, landing.as_ref(), &refused, first, log);
                 return CaughtUp::Deferred;
+            }
+            Err(refused) if parked => {
+                return still_parked(target, catch_ups, now, refused.reason(), log);
             }
             Err(refused) => Some(format!("GitHub refused it: {}", refused.reason())),
         }
@@ -417,7 +578,7 @@ pub async fn catch_up(
     };
     let caught = match local_because {
         None => {
-            log.say(&format!("{branch} holds {integration}"));
+            log.say(&held_line(target, residual, parked));
             CaughtUp::OnGitHub
         }
         Some(why) if catch_ups.local_left == 0 => {
@@ -442,11 +603,49 @@ pub async fn catch_up(
         }
         CaughtUp::Residual(files) => route_residual(gh, target, files, log).await,
         CaughtUp::Failed(why) => log.warn(&format!(
-            "{branch} cannot take {integration}: {why} — tried again in an hour, its tasks wait"
+            "{branch} cannot take {integration}: {why} — GitHub's merge tried again every five \
+             minutes, the harness's checkout in an hour; its tasks wait"
         )),
         CaughtUp::Deferred => {}
     }
     caught
+}
+
+/// What is said of `target`'s branch once GitHub's merge holds it: a
+/// residual mark or a park it ends too.
+fn held_line(target: Target<'_>, residual: bool, parked: bool) -> String {
+    let Target {
+        branch,
+        integration,
+        ..
+    } = target;
+    if residual {
+        format!(
+            "{branch} holds {integration} now (merged outside the watch) — its residual mark goes"
+        )
+    } else if parked {
+        format!("{branch} holds {integration} on GitHub's merge — its park ends")
+    } else {
+        format!("{branch} holds {integration}")
+    }
+}
+
+/// A recheck of a parked failure that came to nothing (`why`): it waits for
+/// the next, and the harness's checkout for the park's end.
+fn still_parked(
+    target: Target<'_>,
+    catch_ups: &mut CatchUps,
+    now: u64,
+    why: &str,
+    log: &Logbook,
+) -> CaughtUp {
+    log.debug(&format!(
+        "{} still cannot take {} on GitHub ({why}) — tried in the harness's checkout once its \
+         park is over",
+        target.branch, target.integration
+    ));
+    catch_ups.wait(target.milestone, now);
+    CaughtUp::Deferred
 }
 
 /// The generators a merge of `incoming` into `receiving` runs even when it
@@ -505,9 +704,10 @@ fn commands(regenerators: &[Regenerator]) -> String {
 }
 
 /// A residual conflict GitHub's merge still refuses at the same head:
-/// quiet while the landing PR's repair has it; without one, said again —
-/// the branch waits for a hand, and its tasks with it.
-fn remind(target: Target<'_>, landing: Option<&Pr>, refused: &Halt, log: &Logbook) {
+/// quiet while the landing PR's repair has it; without one, warned the
+/// `first` time at this head — the branch waits for a hand, and its tasks
+/// with it — quiet after.
+fn remind(target: Target<'_>, landing: Option<&Pr>, refused: &Halt, first: bool, log: &Logbook) {
     let Target {
         branch,
         integration,
@@ -520,10 +720,14 @@ fn remind(target: Target<'_>, landing: Option<&Pr>, refused: &Halt, log: &Logboo
             refused.reason(),
             pr.reference()
         )),
-        None => log.warn(&format!(
+        None if first => log.warn(&format!(
             "{branch} still cannot take {integration} ({}): a conflict no script solves, and no \
-             landing PR to repair — merge {integration} into it by hand; its tasks wait, tried \
-             again in an hour",
+             landing PR to repair — merge {integration} into it by hand; its tasks wait, GitHub's \
+             merge tried again every five minutes",
+            refused.reason()
+        )),
+        None => log.debug(&format!(
+            "{branch} still cannot take {integration} on GitHub ({}) — waiting for a hand",
             refused.reason()
         )),
     }
@@ -849,69 +1053,110 @@ mod tests {
     }
 
     #[test]
-    fn a_failure_is_parked_an_hour_and_holds_its_tasks_meanwhile() {
+    fn a_failure_is_parked_an_hour_rechecked_on_github_and_holds_its_tasks_meanwhile() {
         let mut catch_ups = at("h1");
         let all = building();
         catch_ups.record(6, &CaughtUp::Failed("npx offline".to_string()), 100);
-        assert_eq!(catch_ups.parked.get(&6), Some(&(100 + PARK_SECONDS)));
+        let parked = Parked {
+            until: 100 + PARK_SECONDS,
+            recheck_at: 100 + RETRY_SECONDS,
+        };
+        assert_eq!(catch_ups.parked.get(&6), Some(&parked));
+        assert_eq!(parked.next(), 100 + RETRY_SECONDS);
         assert_eq!(catch_ups.due(&all, 101).len(), 1, "#6 parked");
-        assert_eq!(catch_ups.holding(101), [6]);
+        assert!(catch_ups.holding(&all, 101).contains(&6));
+        let recheck = 100 + RETRY_SECONDS;
+        assert_eq!(catch_ups.due(&all, recheck - 1).len(), 1);
+        assert_eq!(catch_ups.due(&all, recheck).len(), 2, "its recheck is due");
+        catch_ups.wait(6, recheck);
+        assert_eq!(
+            catch_ups.parked.get(&6),
+            Some(&Parked {
+                until: 100 + PARK_SECONDS,
+                recheck_at: recheck + RETRY_SECONDS
+            }),
+            "a recheck that came to nothing waits five more minutes, the park unchanged"
+        );
         let expiry = 100 + PARK_SECONDS;
-        assert_eq!(catch_ups.holding(expiry - 1), [6]);
-        assert!(catch_ups.holding(expiry).is_empty(), "the park is over");
-        assert_eq!(catch_ups.due(&all, expiry).len(), 2, "tried again");
+        catch_ups.record(7, &CaughtUp::OnGitHub, 0);
+        assert_eq!(catch_ups.holding(&all, expiry - 1), [6]);
+        catch_ups.held.insert(6, "h1".to_string());
+        assert_eq!(catch_ups.holding(&all, expiry - 1), [6], "parked");
+        catch_ups.held.remove(&6);
+        assert_eq!(
+            catch_ups.holding(&all, expiry),
+            [6],
+            "the park is over: it lags"
+        );
+        assert_eq!(catch_ups.due(&all, expiry).len(), 1, "tried again");
+        // An expired park a lane holds back is tried five minutes later.
+        catch_ups.wait(6, expiry + 7);
+        assert_eq!(
+            catch_ups.parked.get(&6),
+            Some(&Parked {
+                until: expiry + 7 + RETRY_SECONDS,
+                recheck_at: expiry + 7 + RETRY_SECONDS
+            })
+        );
         catch_ups.record(6, &CaughtUp::OnGitHub, expiry);
         assert!(
-            catch_ups.parked.is_empty() && catch_ups.holding(expiry).is_empty(),
+            catch_ups.parked.is_empty() && catch_ups.holding(&all, expiry).is_empty(),
             "nothing expected"
         );
+        assert!(catch_ups.reread, "the next tick reads the board in full");
     }
 
     #[test]
     fn a_residual_conflict_holds_its_tasks_until_the_branch_takes_the_base() {
         let mut catch_ups = at("h1");
+        let all = building();
+        catch_ups.record(7, &CaughtUp::OnGitHub, 0);
         catch_ups.record(6, &CaughtUp::Failed("x".to_string()), 0);
         catch_ups.record(6, &CaughtUp::Residual(vec!["a.rs".to_string()]), 0);
         assert_eq!(
             catch_ups.residual.get(&6),
             Some(&Residual {
                 head: "h1".to_string(),
-                retry_at: PARK_SECONDS
+                retry_at: RETRY_SECONDS,
+                reminded: false,
             })
         );
         assert!(catch_ups.parked.is_empty(), "a residual is no failure");
-        assert_eq!(catch_ups.holding(0), [6]);
+        assert_eq!(catch_ups.holding(&all, 0), [6]);
+        catch_ups.held.clear();
         assert_eq!(
-            catch_ups.due(&building(), PARK_SECONDS - 1),
+            catch_ups.due(&all, RETRY_SECONDS - 1),
             [(7, "milestone/7-sound".to_string())],
             "not due again at this head before its retry: its landing PR's repair is not held"
         );
         assert_eq!(
-            catch_ups.due(&building(), PARK_SECONDS).len(),
+            catch_ups.due(&all, RETRY_SECONDS).len(),
             2,
             "its retry on GitHub is due"
         );
-        catch_ups.retry_later(6, PARK_SECONDS);
+        catch_ups.wait(6, RETRY_SECONDS);
         assert_eq!(
             catch_ups.residual.get(&6).map(|met| met.retry_at),
-            Some(2 * PARK_SECONDS)
+            Some(2 * RETRY_SECONDS)
         );
-        catch_ups.retry_later(9, 0);
+        catch_ups.wait(9, 0);
         assert!(!catch_ups.residual.contains_key(&9), "nothing to retry");
         assert!(catch_ups.moved(Some("h2".to_string())));
         catch_ups.verdict = Some(true);
-        assert_eq!(catch_ups.due(&building(), 0).len(), 2, "a new head");
-        assert_eq!(catch_ups.holding(0), [6], "its tasks still wait");
+        assert_eq!(catch_ups.due(&all, 0).len(), 2, "a new head");
+        assert_eq!(catch_ups.holding(&all, 0), [6, 7], "both lag h2");
         catch_ups.record(6, &CaughtUp::Deferred, 0);
-        assert_eq!(catch_ups.holding(0), [6], "a deferral changes nothing");
-        catch_ups.record(6, &CaughtUp::Locally(Vec::new()), 0);
         assert!(
-            catch_ups.holding(0).is_empty() && catch_ups.residual.is_empty(),
-            "nothing expected"
+            catch_ups.holding(&all, 0).contains(&6),
+            "a deferral changes nothing"
         );
+        catch_ups.record(6, &CaughtUp::Locally(Vec::new()), 0);
+        assert!(catch_ups.residual.is_empty(), "nothing expected");
+        assert_eq!(catch_ups.holding(&all, 0), [7], "#6 holds h2");
         let mut unread = CatchUps::default();
         unread.record(6, &CaughtUp::OnGitHub, 0);
         assert!(unread.held.is_empty(), "no head read: nothing to remember");
+        assert!(!unread.reread);
     }
 
     #[test]
@@ -921,7 +1166,7 @@ mod tests {
         catch_ups.record(7, &CaughtUp::Failed("x".to_string()), 0);
         let (due, held) = catch_ups.read(&building(), 1);
         assert_eq!(due, [(6, "milestone/6-media".to_string())]);
-        assert_eq!(held, [7]);
+        assert_eq!(held, [6, 7], "#6 lags until its catch-up, #7 is parked");
         assert_eq!(catch_ups.local_left, LOCAL_PER_TICK);
         assert!(catch_ups.behind_seen);
         assert_eq!(catch_ups.outstanding, BTreeSet::from([6]));
@@ -935,6 +1180,151 @@ mod tests {
         assert!(!catch_ups.behind_seen, "nothing behind");
         assert_eq!(LOCAL_PER_TICK, 1);
         assert_eq!(PARK_SECONDS, 3600);
+        assert_eq!(RETRY_SECONDS, 300);
+        assert_eq!(LAG_HOLD_SECONDS, 1200);
+    }
+
+    #[test]
+    fn a_full_read_forgets_the_marks_of_a_branch_landed_or_holding_the_head() {
+        let mut catch_ups = at("h1");
+        for number in [4, 5, 6, 7] {
+            catch_ups.record(number, &CaughtUp::Failed("x".to_string()), 0);
+        }
+        catch_ups.record(9, &CaughtUp::Residual(vec!["a.rs".to_string()]), 0);
+        catch_ups.held.insert(7, "h1".to_string());
+        catch_ups.read(&building(), 0);
+        assert_eq!(
+            catch_ups.parked.keys().copied().collect::<Vec<_>>(),
+            [6],
+            "#4 closed, #5 waits for its merge, #7 holds h1"
+        );
+        assert!(catch_ups.residual.is_empty(), "#9 is no target");
+        // No head read yet: nothing is known to hold it, every mark kept.
+        let mut headless = CatchUps::default();
+        headless.parked.insert(
+            6,
+            Parked {
+                until: 9,
+                recheck_at: 9,
+            },
+        );
+        headless.read(&building(), 0);
+        assert_eq!(headless.parked.len(), 1);
+    }
+
+    #[test]
+    fn a_branch_lagging_a_pending_head_holds_its_tasks_before_any_catch_up_is_due() {
+        // #219 (2026-10-24 22:07 Paris): #24 landed at 22:06, main_agent's
+        // checks still running, milestone/28 behind it — its task started
+        // on the old base and stopped "missing".
+        let mut catch_ups = CatchUps {
+            verdict: None,
+            seen_at: Some(1000),
+            ..at("h2")
+        };
+        catch_ups.held.insert(6, "h1".to_string());
+        let (due, held) = catch_ups.read(&building(), 1060);
+        assert!(due.is_empty(), "never before its own green");
+        assert_eq!(held, [6, 7], "both lag h2");
+        // Green: due, and still held until each catch-up settles.
+        catch_ups.verdict = Some(true);
+        let (due, held) = catch_ups.read(&building(), 1500);
+        assert_eq!(due.len(), 2);
+        assert_eq!(held, [6, 7]);
+        catch_ups.record(6, &CaughtUp::OnGitHub, 1500);
+        assert_eq!(catch_ups.holding(&building(), 1500), [7]);
+    }
+
+    #[test]
+    fn a_lag_hold_ends_when_the_branch_is_brought_to_the_head() {
+        let mut catch_ups = at("h1");
+        assert_eq!(catch_ups.holding(&building(), 0), [6, 7]);
+        catch_ups.record(6, &CaughtUp::Locally(Vec::new()), 0);
+        catch_ups.record(7, &CaughtUp::OnGitHub, 0);
+        assert!(catch_ups.holding(&building(), 0).is_empty(), "both hold h1");
+    }
+
+    #[test]
+    fn a_head_without_a_verdict_holds_no_longer_than_lag_hold_seconds() {
+        let mut catch_ups = CatchUps {
+            verdict: None,
+            seen_at: Some(1000),
+            ..at("h2")
+        };
+        let all = building();
+        let end = 1000 + LAG_HOLD_SECONDS;
+        assert_eq!(catch_ups.holding(&all, end - 1), [6, 7]);
+        assert!(catch_ups.lag_expiry(&all, end - 1).is_none(), "still held");
+        assert!(catch_ups.holding(&all, end).is_empty(), "let go");
+        assert_eq!(
+            catch_ups.lag_expiry(&all, end),
+            Some(("h2".to_string(), vec![6, 7]))
+        );
+        assert!(
+            catch_ups.lag_expiry(&all, end + 1).is_none(),
+            "said once per head"
+        );
+        // Red counts as no verdict yet: a rerun may turn it green.
+        let red = CatchUps {
+            verdict: Some(false),
+            seen_at: Some(1000),
+            ..at("h2")
+        };
+        assert!(red.holding(&all, end).is_empty(), "red, let go");
+        // But red is a verdict: no expiry said, the red base holds them.
+        let mut red = red;
+        assert!(red.lag_expiry(&all, end).is_none(), "red has a verdict");
+        assert!(red.lag_expiry(&all, end + 1).is_none());
+        assert_eq!(red.lag_told, None, "nothing said");
+        // Green is no expiry: the catch-ups are due.
+        let mut green = CatchUps {
+            seen_at: Some(1000),
+            ..at("h2")
+        };
+        assert_eq!(green.holding(&all, end), [6, 7]);
+        assert!(green.lag_expiry(&all, end).is_none());
+        // Nothing behind: nothing to say, but no more reads asked for it.
+        let mut caught = CatchUps {
+            verdict: None,
+            seen_at: Some(1000),
+            ..at("h2")
+        };
+        caught.held.insert(6, "h2".to_string());
+        caught.held.insert(7, "h2".to_string());
+        assert!(caught.lag_expiry(&all, end).is_none());
+        assert_eq!(caught.lag_told.as_deref(), Some("h2"));
+        assert!(
+            CatchUps::default().lag_expiry(&all, end).is_none(),
+            "no head"
+        );
+        // A date unknown holds until the verdict.
+        let unknown = CatchUps {
+            verdict: None,
+            ..at("h2")
+        };
+        assert_eq!(unknown.holding(&all, u64::MAX), [6, 7]);
+    }
+
+    #[test]
+    fn a_new_head_restarts_the_lag_clock() {
+        let mut catch_ups = CatchUps {
+            verdict: Some(true),
+            seen_at: Some(1000),
+            lag_told: Some("h1".to_string()),
+            ..at("h1")
+        };
+        assert!(catch_ups.moved(Some("h2".to_string())));
+        assert_eq!((catch_ups.verdict, catch_ups.seen_at), (None, None));
+        catch_ups.seen_at = Some(5000);
+        assert_eq!(
+            catch_ups.holding(&building(), 5000 + LAG_HOLD_SECONDS - 1),
+            [6, 7]
+        );
+        assert_eq!(
+            catch_ups.lag_expiry(&building(), 5000 + LAG_HOLD_SECONDS),
+            Some(("h2".to_string(), vec![6, 7])),
+            "h1's warning never speaks for h2"
+        );
     }
 
     /// A GitHub whose `main_agent` points at `head`, its checks answering
@@ -959,7 +1349,7 @@ mod tests {
         let mut catch_ups = CatchUps::default();
         let gh = base_at("h1", &[("h1", Some(true))]);
         assert!(
-            read_head(&gh, &mut catch_ups, "main_agent")
+            read_head(&gh, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
@@ -967,7 +1357,7 @@ mod tests {
         catch_ups.read(&building(), 0);
         let gh = base_at("h2", &[("h1", Some(true))]);
         assert!(
-            read_head(&gh, &mut catch_ups, "main_agent")
+            read_head(&gh, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read"),
             "the head moved: a full read"
@@ -980,14 +1370,14 @@ mod tests {
         );
         // Still running: a quiet tick stays quiet.
         assert!(
-            !read_head(&gh, &mut catch_ups, "main_agent")
+            !read_head(&gh, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
         // h2 turns green: that tick reads the board, and both are due.
         let gh = base_at("h2", &[("h2", Some(true))]);
         assert!(
-            read_head(&gh, &mut catch_ups, "main_agent")
+            read_head(&gh, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
@@ -995,7 +1385,7 @@ mod tests {
         // The verdict in, no more checks read; due and unsettled: read again.
         let gh = base_at("h2", &[]);
         assert!(
-            read_head(&gh, &mut catch_ups, "main_agent")
+            read_head(&gh, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
@@ -1003,7 +1393,14 @@ mod tests {
         catch_ups.record(6, &CaughtUp::OnGitHub, 0);
         catch_ups.record(7, &CaughtUp::OnGitHub, 0);
         assert!(
-            !read_head(&gh, &mut catch_ups, "main_agent")
+            read_head(&gh, &mut catch_ups, "main_agent", 0)
+                .await
+                .expect("read"),
+            "settled: the next tick reads the board, its tasks start"
+        );
+        catch_ups.read(&building(), 0);
+        assert!(
+            !read_head(&gh, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
@@ -1014,28 +1411,28 @@ mod tests {
         let mut catch_ups = CatchUps::default();
         let red = base_at("h1", &[("h1", Some(false))]);
         assert!(
-            read_head(&red, &mut catch_ups, "main_agent")
+            read_head(&red, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
         assert_eq!(catch_ups.verdict, Some(false));
         catch_ups.read(&building(), 0);
         assert!(
-            !read_head(&red, &mut catch_ups, "main_agent")
+            !read_head(&red, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read"),
             "still red: nothing new"
         );
         let rerun = base_at("h1", &[("h1", None)]);
         assert!(
-            !read_head(&rerun, &mut catch_ups, "main_agent")
+            !read_head(&rerun, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
         assert_eq!(catch_ups.verdict, None, "its job runs again");
         let green = base_at("h1", &[("h1", Some(true))]);
         assert!(
-            read_head(&green, &mut catch_ups, "main_agent")
+            read_head(&green, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
@@ -1054,21 +1451,21 @@ mod tests {
             ..CatchUps::default()
         };
         assert!(
-            !read_head(&refusing, &mut catch_ups, "main_agent")
+            !read_head(&refusing, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
         // Behind: the checks are read, and their failure stops the tick.
         catch_ups.behind_seen = true;
         assert!(
-            read_head(&refusing, &mut catch_ups, "main_agent")
+            read_head(&refusing, &mut catch_ups, "main_agent", 0)
                 .await
                 .is_err()
         );
         // Judged green: read no more.
         catch_ups.verdict = Some(true);
         assert!(
-            !read_head(&refusing, &mut catch_ups, "main_agent")
+            !read_head(&refusing, &mut catch_ups, "main_agent", 0)
                 .await
                 .expect("read")
         );
@@ -1079,15 +1476,230 @@ mod tests {
         };
         let mut unread = CatchUps::default();
         assert!(
-            !read_head(&absent, &mut unread, "main_agent")
+            !read_head(&absent, &mut unread, "main_agent", 0)
                 .await
                 .expect("read")
         );
         assert!(
-            read_head(&FakeGitHub::default(), &mut unread, "main_agent")
+            read_head(&FakeGitHub::default(), &mut unread, "main_agent", 0)
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn a_lag_hold_counts_from_the_head_s_commit_not_from_the_reading() {
+        // A restart reads every head anew: an hour-old head with no CI run
+        // holds nothing, a fresh one holds until its verdict or its time.
+        let old = FakeGitHub {
+            commit_times: std::collections::HashMap::from([("h1".to_string(), 1000)]),
+            ..base_at("h1", &[])
+        };
+        let mut catch_ups = CatchUps::default();
+        assert!(
+            read_head(&old, &mut catch_ups, "main_agent", 1000 + 3600)
+                .await
+                .expect("read")
+        );
+        assert_eq!(catch_ups.seen_at, Some(1000));
+        let (_, held) = catch_ups.read(&building(), 1000 + 3600);
+        assert!(held.is_empty(), "past its hold: {held:?}");
+        // A date ahead of the clock, or none, counts from the reading.
+        let ahead = FakeGitHub {
+            commit_times: std::collections::HashMap::from([("h2".to_string(), 99_999)]),
+            ..base_at("h2", &[])
+        };
+        read_head(&ahead, &mut catch_ups, "main_agent", 5000)
+            .await
+            .expect("read");
+        assert_eq!(catch_ups.seen_at, Some(5000));
+        read_head(&base_at("h3", &[]), &mut catch_ups, "main_agent", 6000)
+            .await
+            .expect("read");
+        assert_eq!(catch_ups.seen_at, Some(6000));
+        // The same head read again keeps its date.
+        read_head(&old, &mut catch_ups, "main_agent", 7000)
+            .await
+            .expect("read");
+        read_head(&old, &mut catch_ups, "main_agent", 8000)
+            .await
+            .expect("read");
+        assert_eq!(catch_ups.seen_at, Some(1000));
+    }
+
+    #[tokio::test]
+    async fn an_expired_lag_hold_asks_for_one_full_read() {
+        let gh = FakeGitHub {
+            commit_times: std::collections::HashMap::from([("h1".to_string(), 0)]),
+            ..base_at("h1", &[])
+        };
+        let mut catch_ups = CatchUps::default();
+        read_head(&gh, &mut catch_ups, "main_agent", 10)
+            .await
+            .expect("read");
+        catch_ups.read(&building(), 10);
+        assert!(catch_ups.behind_seen);
+        assert!(
+            !read_head(&gh, &mut catch_ups, "main_agent", LAG_HOLD_SECONDS - 1)
+                .await
+                .expect("read"),
+            "still held, nothing new"
+        );
+        assert!(
+            read_head(&gh, &mut catch_ups, "main_agent", LAG_HOLD_SECONDS)
+                .await
+                .expect("read"),
+            "the hold ran out: a full read releases the tasks"
+        );
+        catch_ups.read(&building(), LAG_HOLD_SECONDS);
+        assert!(
+            catch_ups
+                .lag_expiry(&building(), LAG_HOLD_SECONDS)
+                .is_some()
+        );
+        assert!(
+            !read_head(&gh, &mut catch_ups, "main_agent", LAG_HOLD_SECONDS + 1)
+                .await
+                .expect("read"),
+            "said: no read every tick after"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_red_head_past_the_lag_hold_asks_for_no_expiry_read() {
+        let gh = FakeGitHub {
+            commit_times: std::collections::HashMap::from([("h1".to_string(), 0)]),
+            ..base_at("h1", &[("h1", Some(false))])
+        };
+        let mut catch_ups = CatchUps::default();
+        read_head(&gh, &mut catch_ups, "main_agent", 10)
+            .await
+            .expect("read");
+        catch_ups.read(&building(), 10);
+        assert_eq!(catch_ups.verdict, Some(false));
+        assert!(
+            !read_head(&gh, &mut catch_ups, "main_agent", LAG_HOLD_SECONDS)
+                .await
+                .expect("read"),
+            "red is a verdict: no hold runs out"
+        );
+        assert!(
+            catch_ups
+                .lag_expiry(&building(), LAG_HOLD_SECONDS)
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_retry_due_asks_for_a_full_read_once_the_head_is_green() {
+        let gh = base_at("h1", &[]);
+        let mut catch_ups = at("h1");
+        catch_ups.record(6, &CaughtUp::Residual(vec!["a.rs".to_string()]), 0);
+        catch_ups.held.insert(7, "h1".to_string());
+        catch_ups.read(&building(), 0);
+        assert!(
+            !read_head(&gh, &mut catch_ups, "main_agent", RETRY_SECONDS - 1)
+                .await
+                .expect("read")
+        );
+        assert!(
+            read_head(&gh, &mut catch_ups, "main_agent", RETRY_SECONDS)
+                .await
+                .expect("read"),
+            "its retry is due"
+        );
+        // A residual met at an older head is no retry: the move read it.
+        let mut moved = at("h1");
+        moved.residual.insert(
+            6,
+            Residual {
+                head: "h0".to_string(),
+                retry_at: 0,
+                reminded: false,
+            },
+        );
+        assert!(
+            !read_head(&gh, &mut moved, "main_agent", 100)
+                .await
+                .expect("read")
+        );
+        // A parked failure's recheck, or its park's end, is due too.
+        let mut parked = at("h1");
+        parked.record(6, &CaughtUp::Failed("x".to_string()), 0);
+        assert!(
+            !read_head(&gh, &mut parked, "main_agent", RETRY_SECONDS - 1)
+                .await
+                .expect("read")
+        );
+        assert!(
+            read_head(&gh, &mut parked, "main_agent", RETRY_SECONDS)
+                .await
+                .expect("read")
+        );
+        // Never before the head is green: nothing would be due.
+        parked.verdict = None;
+        parked.seen_at = Some(0);
+        assert!(
+            !read_head(&gh, &mut parked, "main_agent", RETRY_SECONDS)
+                .await
+                .expect("read")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_settled_catch_up_asks_for_the_next_full_read_once() {
+        let gh = base_at("h1", &[]);
+        let mut catch_ups = at("h1");
+        catch_ups.record(6, &CaughtUp::OnGitHub, 0);
+        catch_ups.record(7, &CaughtUp::Locally(Vec::new()), 0);
+        assert!(
+            read_head(&gh, &mut catch_ups, "main_agent", 0)
+                .await
+                .expect("read")
+        );
+        assert!(!catch_ups.reread, "taken");
+        assert!(
+            !read_head(&gh, &mut catch_ups, "main_agent", 0)
+                .await
+                .expect("read")
+        );
+        for unsettled in [
+            CaughtUp::Deferred,
+            CaughtUp::Residual(vec!["a".to_string()]),
+            CaughtUp::Failed("x".to_string()),
+        ] {
+            let mut catch_ups = at("h1");
+            catch_ups.record(6, &unsettled, 0);
+            assert!(!catch_ups.reread, "{unsettled:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_restart_holds_every_branch_until_its_first_catch_up() {
+        // Nothing persisted: a fresh watch knows of no branch at the head.
+        let gh = FakeGitHub {
+            commit_times: std::collections::HashMap::from([("h1".to_string(), 0)]),
+            ..base_at("h1", &[("h1", Some(true))])
+        };
+        let mut catch_ups = CatchUps::default();
+        assert!(
+            read_head(&gh, &mut catch_ups, "main_agent", 99_999)
+                .await
+                .expect("read")
+        );
+        let (due, held) = catch_ups.read(&building(), 99_999);
+        assert_eq!((due.len(), held), (2, vec![6, 7]), "green: due and held");
+        // GitHub's merge of a branch already holding it is a no-op: held.
+        for (number, _) in due {
+            catch_ups.record(number, &CaughtUp::OnGitHub, 99_999);
+        }
+        assert!(
+            read_head(&gh, &mut catch_ups, "main_agent", 99_999)
+                .await
+                .expect("read"),
+            "the next tick reads in full"
+        );
+        assert!(catch_ups.read(&building(), 99_999).1.is_empty(), "released");
     }
 
     /// Runs one catch-up of `#6 Media`, the local merge answering `local`:
@@ -1497,12 +2109,16 @@ mod tests {
         )
         .await;
         assert!(matches!(caught, CaughtUp::Failed(_)));
-        assert_eq!(catch_ups.parked.get(&6), Some(&(10 + PARK_SECONDS)));
+        assert_eq!(
+            catch_ups.parked.get(&6).map(|parked| parked.until),
+            Some(10 + PARK_SECONDS)
+        );
         assert_eq!(
             said,
             [
                 "warning: milestone/6-media cannot take main_agent: sh mock/build.sh failed: npx — \
-              tried again in an hour, its tasks wait"
+              GitHub's merge tried again every five minutes, the harness's checkout in an hour; \
+              its tasks wait"
             ]
         );
         assert!(gh.writes().is_empty(), "no task PR refreshed");
@@ -1533,7 +2149,7 @@ mod tests {
         );
         assert_eq!(
             catch_ups.residual.get(&6).map(|met| met.retry_at),
-            Some(10 + PARK_SECONDS)
+            Some(10 + RETRY_SECONDS)
         );
         // Its retry at the same head: GitHub only, quietly while the landing
         // PR has the repair, no local merge, nothing labelled again.
@@ -1548,8 +2164,8 @@ mod tests {
         assert!(catch_ups.outstanding.is_empty(), "settled until its retry");
         assert_eq!(
             catch_ups.residual.get(&6).map(|met| met.retry_at),
-            Some(10 + PARK_SECONDS),
-            "tried again an hour after this try"
+            Some(10 + RETRY_SECONDS),
+            "tried again five minutes after this try"
         );
         // The head moved: tried locally again.
         catch_ups.moved(Some("h2".to_string()));
@@ -1559,6 +2175,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_residual_resolved_by_hand_releases_its_tasks_without_the_head_moving() {
+        // milestone/24 (2026-10-24): caught up by an agent outside the
+        // watch, its tasks waited the hour of the residual mark for nothing.
         let refusing = FakeGitHub {
             refused_merges: vec!["milestone/6-media".to_string()],
             ..FakeGitHub::default()
@@ -1572,21 +2190,110 @@ mod tests {
             residual.clone(),
         )
         .await;
-        assert_eq!(catch_ups.holding(10), [6]);
-        // An hour later, still refused, no landing PR: said again.
-        let (caught, went_local, said) =
-            run(&refusing, &mut catch_ups, &Busy::default(), residual).await;
+        assert!(catch_ups.holding(&building(), 10).contains(&6));
+        // Five minutes later, still refused, no landing PR: warned once.
+        let (caught, went_local, said) = run(
+            &refusing,
+            &mut catch_ups,
+            &Busy::default(),
+            residual.clone(),
+        )
+        .await;
         assert_eq!(caught, CaughtUp::Deferred);
         assert!(!went_local);
         assert_eq!(said.len(), 1, "{said:?}");
         assert!(
             said[0].starts_with("warning: milestone/6-media still cannot take main_agent (")
-                && said[0].contains("merge main_agent into it by hand"),
+                && said[0].contains("merge main_agent into it by hand")
+                && said[0].ends_with("GitHub's merge tried again every five minutes"),
             "{said:?}"
         );
         assert!(refusing.writes().is_empty(), "no label, no harness:human");
+        // The next tries at this head are quiet.
+        let (caught, _, said) = run(&refusing, &mut catch_ups, &Busy::default(), residual).await;
+        assert_eq!(caught, CaughtUp::Deferred);
+        assert!(said.is_empty(), "once per head: {said:?}");
         // A hand merged the base: GitHub's merge holds, at the same head.
-        let (caught, _, _) = run(
+        let gh = FakeGitHub {
+            prs_labelled: std::collections::HashMap::from([(
+                labels::TO_REVIEW.to_string(),
+                vec![pr("31", "task/31", "milestone/6-media", &[])],
+            )]),
+            ..FakeGitHub::default()
+        };
+        let (caught, went_local, said) = run(
+            &gh,
+            &mut catch_ups,
+            &Busy::default(),
+            CaughtUp::Failed("never local".to_string()),
+        )
+        .await;
+        assert_eq!(caught, CaughtUp::OnGitHub);
+        assert!(!went_local);
+        assert_eq!(
+            said[0],
+            "milestone/6-media holds main_agent now (merged outside the watch) — its residual \
+             mark goes"
+        );
+        assert_eq!(
+            gh.writes(),
+            [
+                Wrote::MergedBranch("milestone/6-media".to_string(), "h1".to_string()),
+                Wrote::MergedBranch("task/31".to_string(), "milestone/6-media".to_string()),
+            ],
+            "its task PRs take it"
+        );
+        assert_eq!(
+            catch_ups.head.as_deref(),
+            Some("h1"),
+            "the head never moved"
+        );
+        assert!(
+            !catch_ups.holding(&building(), 10).contains(&6),
+            "its tasks are released"
+        );
+        assert!(catch_ups.residual.is_empty(), "nothing expected");
+        assert!(catch_ups.reread, "and start at the next tick");
+    }
+
+    #[tokio::test]
+    async fn a_parked_failure_is_rechecked_on_github_alone() {
+        let mut catch_ups = at("h1");
+        catch_ups.record(6, &CaughtUp::Failed("npx offline".to_string()), 0);
+        // GitHub refuses: still parked, nothing local, five more minutes.
+        let refusing = FakeGitHub {
+            refused_merges: vec!["milestone/6-media".to_string()],
+            ..FakeGitHub::default()
+        };
+        catch_ups.outstanding.insert(6);
+        let (caught, went_local, said) = run(
+            &refusing,
+            &mut catch_ups,
+            &Busy::default(),
+            CaughtUp::Failed("never local".to_string()),
+        )
+        .await;
+        assert_eq!((caught, went_local), (CaughtUp::Deferred, false));
+        assert!(said.is_empty(), "a debug line: {said:?}");
+        assert_eq!(catch_ups.local_left, LOCAL_PER_TICK, "nothing spent");
+        assert_eq!(
+            catch_ups.parked.get(&6).map(|parked| parked.recheck_at),
+            Some(10 + RETRY_SECONDS)
+        );
+        assert!(catch_ups.outstanding.is_empty());
+        // Taking the head stales the bundles: no GitHub merge at all.
+        let staling = base_changed(Some(&["mock/src/server.js"]));
+        let (caught, went_local, _) = run(
+            &staling,
+            &mut catch_ups,
+            &Busy::default(),
+            CaughtUp::Failed("never local".to_string()),
+        )
+        .await;
+        assert_eq!((caught, went_local), (CaughtUp::Deferred, false));
+        assert!(staling.writes().is_empty(), "{:?}", staling.writes());
+        // GitHub merges it: the park ends.
+        let (caught, _, said) = run(
             &FakeGitHub::default(),
             &mut catch_ups,
             &Busy::default(),
@@ -1595,12 +2302,30 @@ mod tests {
         .await;
         assert_eq!(caught, CaughtUp::OnGitHub);
         assert_eq!(
-            catch_ups.head.as_deref(),
-            Some("h1"),
-            "the head never moved"
+            said,
+            ["milestone/6-media holds main_agent on GitHub's merge — its park ends"]
         );
-        assert!(catch_ups.holding(10).is_empty(), "its tasks are released");
-        assert!(catch_ups.residual.is_empty(), "nothing expected");
+        assert!(catch_ups.parked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_lane_on_the_landing_pr_pushes_a_residual_retry_five_minutes_on() {
+        let gh = FakeGitHub {
+            prs: vec![(
+                "milestone/6-media".to_string(),
+                pr("90", "milestone/6-media", "main_agent", &[]),
+            )],
+            ..FakeGitHub::default()
+        };
+        let mut catch_ups = at("h1");
+        catch_ups.record(6, &CaughtUp::Residual(vec!["a.rs".to_string()]), 0);
+        let (caught, _, _) = run(&gh, &mut catch_ups, &busy(&[90]), CaughtUp::Deferred).await;
+        assert_eq!(caught, CaughtUp::Deferred);
+        assert_eq!(
+            catch_ups.residual.get(&6).map(|met| met.retry_at),
+            Some(10 + RETRY_SECONDS),
+            "no full read every tick while the repair runs"
+        );
     }
 
     #[tokio::test]

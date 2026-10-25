@@ -304,6 +304,78 @@ pub trait Repo {
         })
     }
 
+    /// `merge-base <a> <b>`: the best common ancestor of two commits, `None`
+    /// when they share none (or the adapter cannot tell).
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn merge_base(&self, a: &str, b: &str) -> Outcome<Option<String>> {
+        let _ = (a, b);
+        Ok(None)
+    }
+
+    /// `show <spec>`: the text of a blob — `<commit>:<path>`, or a stage of
+    /// a conflicted path during a merge (`:2:<path>` ours, `:3:<path>`
+    /// theirs) — byte for byte; `None` when there is no such blob.
+    ///
+    /// Absent by default: an adapter that cannot read a blob reads none.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn show(&self, spec: &str) -> Outcome<Option<String>> {
+        let _ = spec;
+        Ok(None)
+    }
+
+    /// `add -A -- <paths>`: stage every change under these paths only,
+    /// deletions included.
+    ///
+    /// Refused by default, like [`Self::merge`].
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn stage_paths(&self, paths: &[String]) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!("this git cannot stage {} path(s)", paths.len()),
+        })
+    }
+
+    /// `merge-file -p <ours> <base> <theirs>`: the three-way merge of three
+    /// files on the disk, written nowhere — standard output is the merged
+    /// text; the exit code is `0` when clean, the number of conflicts
+    /// (capped at 127) otherwise, anything else an error.
+    ///
+    /// Refused by default with an error code, never a count of conflicts.
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn merge_file(&self, ours: &Path, base: &Path, theirs: &Path) -> Outcome<Ran> {
+        let _ = (base, theirs);
+        Ok(Ran {
+            code: Some(255),
+            stdout: String::new(),
+            stderr: format!("this git cannot merge {} three ways", ours.display()),
+        })
+    }
+
+    /// `push origin HEAD:refs/heads/<branch>`: the commit checked out —
+    /// on a detached `HEAD`, so no local branch ever holds what is not
+    /// pushed yet — pushed as `branch`, never forced.
+    ///
+    /// Refused by default, like [`Self::merge`].
+    ///
+    /// # Errors
+    /// If `git` couldn't be launched.
+    async fn push_head(&self, branch: &str) -> Outcome<Ran> {
+        Ok(Ran {
+            code: Some(1),
+            stdout: String::new(),
+            stderr: format!("this git cannot push HEAD to {branch}"),
+        })
+    }
+
     /// `merge --abort`: put the tree back as it was before the merge began.
     ///
     /// Refused by default, like [`Self::create_orphan_branch`]: only a real

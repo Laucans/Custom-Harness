@@ -493,3 +493,86 @@ fn a_handler_file_a_merge_already_brought_beside_the_legacy_one_splits() {
     assert!(ok, "{said}");
     assert_eq!(tree(&merged.0), files, "the same split, the file kept");
 }
+
+/// `git merge-file -p ours base theirs`: its exit code and the merged text.
+fn merge_file(dir: &Path, ours: &str, base: &str, theirs: &str) -> (Option<i32>, String) {
+    fs::create_dir_all(dir).expect("mkdir");
+    for (name, text) in [("ours", ours), ("base", base), ("theirs", theirs)] {
+        fs::write(dir.join(name), text).expect("write");
+    }
+    let out = Command::new("git")
+        .arg("merge-file")
+        .arg("-p")
+        .args(["ours", "base", "theirs"].map(|name| dir.join(name)))
+        .output()
+        .expect("git runs");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    )
+}
+
+#[test]
+fn two_trees_split_apart_merge_three_ways_on_the_split_merge_base() {
+    // The property the harness's catch-up across the split relies on
+    // (milestone/28 against main_agent, 2026-10-24): each side split on its
+    // own, a handler file both changed merges cleanly on the split of the
+    // tree they parted from — where git alone sees an add/add.
+    if !node_recent() {
+        return;
+    }
+    let base = product("base", &[]);
+    let ours = product(
+        "ours",
+        &[(
+            "mock/src/commands.js",
+            &COMMANDS
+                .replace(".trim().toLowerCase()", ".trim().toLocaleLowerCase()")
+                .replace("['name-required']", "['name-missing']"),
+        )],
+    );
+    let theirs_commands = COMMANDS
+        .replace("/^https:\\/\\//", "/^https?:\\/\\//")
+        .replace("    return undefined;\n", "    return null;\n")
+        .replace(
+            "  }, // the trailing comment of live.move\n",
+            "  }, // the trailing comment of live.move\n\n  // live.add: a new row.\n  'live.add': async () => undefined,\n",
+        );
+    let theirs = product("theirs", &[("mock/src/commands.js", &theirs_commands)]);
+    for side in [&base, &ours, &theirs] {
+        let (ok, said) = split(&side.0);
+        assert!(ok, "{said}");
+    }
+    let (base, ours, theirs) = (tree(&base.0), tree(&ours.0), tree(&theirs.0));
+    assert!(theirs.contains_key("mock/handlers/live.add.js"));
+    assert!(!base.contains_key("mock/handlers/live.add.js"));
+    let scratch = Dir(std::env::temp_dir().join(format!(
+        "split-handlers-merge-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("a clock")
+            .as_nanos()
+    )));
+    for (path, both) in [
+        (
+            "mock/handlers/_lib/commands.js",
+            ["toLocaleLowerCase()", "/^https?:"],
+        ),
+        (
+            "mock/handlers/live.move.js",
+            ["['name-missing']", "return null;"],
+        ),
+    ] {
+        assert_ne!(ours[path], base[path], "{path}: ours changed it");
+        assert_ne!(theirs[path], base[path], "{path}: theirs changed it");
+        let (code, merged) = merge_file(&scratch.0, &ours[path], &base[path], &theirs[path]);
+        assert_eq!(code, Some(0), "{path}: {merged}");
+        for change in both {
+            assert!(merged.contains(change), "{path}: {change} — {merged}");
+        }
+        // On an empty base, as git's own merge sees it: both added it whole.
+        let (code, _) = merge_file(&scratch.0, &ours[path], "", &theirs[path]);
+        assert_ne!(code, Some(0), "{path}: an add/add without the split base");
+    }
+}

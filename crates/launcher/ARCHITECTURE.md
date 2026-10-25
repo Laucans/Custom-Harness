@@ -208,17 +208,25 @@ in the same `catch-up` checkout (`dispatch::catch_up::locally`, rebuilt,
 pushed) and it lands once green again; one that cannot be refreshed is
 labelled `harness:pr-fix`, and waits for that repair (`Attempt::Repairing`). A
 residual conflict labels the landing PR `harness:pr-fix`, or is said once;
-GitHub's merge alone is tried again hourly at the same head, said again
-while there is no landing PR. A failure is parked an hour, said once; a
+GitHub's merge alone is tried again every five minutes at the same head,
+warned once while there is no landing PR. A failure is parked an hour,
+said once, GitHub's merge alone tried every five minutes meanwhile; a
 push the remote refuses as behind (a session pushed meanwhile) is merged
-again next tick. The tasks of a branch behind the head, or one that could
-not take it, wait (`Snapshot::catch_up`, `catch_up_held`) — `start_task`
+again next tick. A branch still on the legacy handler files meeting a head
+that split them is split first in the same checkout, its add/adds merged
+three ways on the split merge base (`workflows::common::handler_split`).
+The tasks of a branch that lags the head — from the head's move to its
+catch-up, its checks running included, at most 20 min from the head's
+commit when no verdict ever comes — or one that could not take it, wait
+(`Snapshot::catch_up`, `catch_up_held`) — `start_task`
 and `run_dev_loop` no longer merge anything themselves; a catch-up waits
 while a repair works on its landing PR, and that repair while the catch-up
 is due. The board is read in full when the head moved, when its verdict
-came in, or while a catch-up due is unsettled (one left for the next tick
-by the local budget, one whose push raced) — not while a head is merely
-pending. A landing no longer catches the others up itself: it moved the
+came in, while a catch-up due is unsettled (one left for the next tick
+by the local budget, one whose push raced), the tick after one settled
+(its tasks start), when a lag hold runs out, or when a retry is due — not
+while a head is merely pending. `router::catching_up` hands `read_head`
+the clock's second. A landing no longer catches the others up itself: it moved the
 head, which the route follows.
 
 **A red integration branch holds the plant.** On every full read, before the

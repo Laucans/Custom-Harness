@@ -518,6 +518,77 @@ fn commit_checks_of(ran: &Ran, branch: &str, sha: &str) -> Outcome<Option<bool>>
     Ok(branch_checks_from(&rows))
 }
 
+/// The committer date of a commit's answer (`commit.committer.date`), in
+/// seconds since the Unix epoch; `None` when it has none readable.
+fn commit_time_of(value: &Value) -> Option<u64> {
+    value
+        .get("commit")?
+        .get("committer")?
+        .get("date")?
+        .as_str()
+        .and_then(epoch_of)
+}
+
+/// An ISO 8601 date and time as GitHub writes them —
+/// `2026-10-24T18:40:12Z`, a fraction of a second or a `±hh:mm` offset
+/// allowed — in seconds since the Unix epoch; `None` for anything else or
+/// a moment before 1970.
+fn epoch_of(date: &str) -> Option<u64> {
+    /// The number a run of `width` ASCII digits writes.
+    fn digits(text: &str, width: usize) -> Option<i64> {
+        (text.len() == width && text.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| text.parse().ok())
+            .flatten()
+    }
+    let (day, rest) = date.split_once('T')?;
+    let mut ymd = day.split('-');
+    let (year, month, mday) = (
+        digits(ymd.next()?, 4)?,
+        digits(ymd.next()?, 2)?,
+        digits(ymd.next()?, 2)?,
+    );
+    let (clock, offset) = if let Some(clock) = rest.strip_suffix('Z') {
+        (clock, 0)
+    } else {
+        let at = rest.len().checked_sub(6)?;
+        let (clock, zone) = (rest.get(..at)?, rest.get(at..)?);
+        let sign = match zone.get(..1)? {
+            "+" => 1,
+            "-" => -1,
+            _ => return None,
+        };
+        let (hours, minutes) = zone.get(1..)?.split_once(':')?;
+        let (hours, minutes) = (digits(hours, 2)?, digits(minutes, 2)?);
+        (clock, sign * (hours * 3600 + minutes * 60))
+    };
+    let clock = clock.split_once('.').map_or(clock, |(whole, _)| whole);
+    let mut hms = clock.split(':');
+    let (hour, minute, second) = (
+        digits(hms.next()?, 2)?,
+        digits(hms.next()?, 2)?,
+        digits(hms.next()?, 2)?,
+    );
+    if ymd.next().is_some()
+        || hms.next().is_some()
+        || !(1..=12).contains(&month)
+        || !(1..=31).contains(&mday)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
+        return None;
+    }
+    // Days since 1970-01-01 of a proleptic Gregorian date (H. Hinnant's
+    // `days_from_civil`); every term is bounded by the four-digit year.
+    let shifted = if month <= 2 { year - 1 } else { year };
+    let era = shifted.div_euclid(400);
+    let of_era = shifted - era * 400;
+    let of_year = (153 * ((month + 9) % 12) + 2) / 5 + mday - 1;
+    let of_cycle = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
+    let days = era * 146_097 + of_cycle - 719_468;
+    u64::try_from(days * 86_400 + hour * 3600 + minute * 60 + second - offset).ok()
+}
+
 /// How many files GitHub's compare lists at most: a list that long may
 /// be cut.
 const COMPARE_FILES_MAX: usize = 300;
@@ -1957,6 +2028,23 @@ impl GitHub for GhCli {
         commit_checks_of(&ran, branch, sha)
     }
 
+    async fn commit_time(&self, sha: &str) -> Outcome<Option<u64>> {
+        let what = format!("date of commit {sha}");
+        let repo = self.repo().await?;
+        let args = vec![
+            "api".to_string(),
+            format!("repos/{repo}/commits/{sha}"),
+            "-X".to_string(),
+            "GET".to_string(),
+        ];
+        let Some(ran) = self.read_optional(&what, &args).await? else {
+            return Ok(None);
+        };
+        let value: Value =
+            serde_json::from_str(ran.out()).map_err(|e| unreadable(&what, &e.to_string()))?;
+        Ok(commit_time_of(&value))
+    }
+
     async fn pr_failing_checks(&self, pr_ref: &str) -> Outcome<Vec<String>> {
         if let Some(number) = pr_number(pr_ref)
             && let Some(failing) = self.open_pr(number, |pr| failing_checks(&pr.checks)).await
@@ -3170,5 +3258,83 @@ mod tests {
         // Unlike `checks_are_green`, where an empty list refuses: there is
         // no broken run to send a session at.
         assert_eq!(failing_checks(&[]), [] as [std::string::String; 0]);
+    }
+
+    #[test]
+    fn a_commit_s_time_is_its_committer_date_in_epoch_seconds() {
+        let commit = |date: &str| serde_json::json!({"sha": "a55bd4d", "commit": {"committer": {"date": date}}});
+        // main_agent's CI on 10-24: pushed 18:40 Paris (16:40Z).
+        assert_eq!(
+            commit_time_of(&commit("2026-10-24T16:40:00Z")),
+            Some(1_792_860_000)
+        );
+        assert_eq!(epoch_of("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_of("2000-02-29T23:59:59Z"), Some(951_868_799));
+        assert_eq!(
+            epoch_of("2026-10-24T18:40:00.123+02:00"),
+            Some(1_792_860_000)
+        );
+        assert_eq!(epoch_of("2026-10-24T11:40:00-05:00"), Some(1_792_860_000));
+        for wrong in [
+            "",
+            "2026-10-24",
+            "2026-10-24T16:40:00",
+            "2026-13-24T16:40:00Z",
+            "2026-10-32T16:40:00Z",
+            "2026-10-24T24:00:00Z",
+            "2026-10-24T16:60:00Z",
+            "2026-10-24T16:40:61Z",
+            "2026-10-24T16:40Z",
+            "2026-10-24T16:40:00:00Z",
+            "2026-10-24-01T16:40:00Z",
+            "+026-10-24T16:40:00Z",
+            "2026-10-24T16:40:00*02:00",
+            "1969-12-31T23:59:59Z",
+            "2026-10-24T16:40:00+0200",
+        ] {
+            assert_eq!(epoch_of(wrong), None, "{wrong}");
+        }
+        assert_eq!(commit_time_of(&serde_json::json!({"commit": {}})), None);
+        assert_eq!(
+            commit_time_of(&serde_json::json!({"commit": {"committer": {"date": 7}}})),
+            None
+        );
+    }
+
+    /// The date `epoch` writes, as GitHub does (H. Hinnant's
+    /// `civil_from_days`).
+    fn written(epoch: u64) -> String {
+        let days = i64::try_from(epoch / 86_400).expect("small") + 719_468;
+        let era = days.div_euclid(146_097);
+        let of_era = days - era * 146_097;
+        let year_of_era = (of_era - of_era / 1460 + of_era / 36_524 - of_era / 146_096) / 365;
+        let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let shifted_month = (5 * of_year + 2) / 153;
+        let day = of_year - (153 * shifted_month + 2) / 5 + 1;
+        let month = if shifted_month < 10 {
+            shifted_month + 3
+        } else {
+            shifted_month - 9
+        };
+        let year = year_of_era + era * 400 + i64::from(month <= 2);
+        let clock = epoch % 86_400;
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            clock / 3600,
+            clock / 60 % 60,
+            clock % 60
+        )
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_written_date_reads_back_to_its_second(epoch in 0_u64..253_402_300_800) {
+            proptest::prop_assert_eq!(epoch_of(&written(epoch)), Some(epoch));
+        }
+
+        #[test]
+        fn no_text_makes_the_date_reader_panic(text in "\\PC{0,40}") {
+            let _ = epoch_of(&text);
+        }
     }
 }

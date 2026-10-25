@@ -272,9 +272,12 @@ pub struct Snapshot {
     /// tasks wait for the catch-up, and so does a repair of their landing
     /// PR.
     pub catch_up: Vec<(u64, String)>,
-    /// The milestones whose branch could not take the base — a conflict no
-    /// script solves, a failure parked ([`CatchUps::holding`]): their tasks
-    /// wait.
+    /// The milestones whose tasks wait on their branch
+    /// ([`CatchUps::holding`]): it could not take the base — a conflict no
+    /// script solves, a failure parked — or it lags the integration
+    /// branch's head, its catch-up not made yet. Not a stuck branch: one
+    /// that lags is held from every head's move to its catch-up, a few
+    /// ticks; what reads this as "stuck" must tell the two apart.
     pub catch_up_held: Vec<u64>,
     /// The PRs of [`Snapshot::task_prs`] that wait — on their open contest,
     /// or on an issue a decision named (`common::contest::waiting`): no
@@ -1144,11 +1147,25 @@ pub fn bound_rules_on_pr(snapshot: &mut Snapshot, pulse: &mut Pulse, log: &Logbo
 ///
 /// [`CatchUps::read`]: those due — behind the integration branch's head,
 /// once that very commit's checks are green — and the milestones whose
-/// branch could not take it. The verdict is the head's own
-/// (`catch_up::read_head`), never the branch's newest run, which a push
-/// just made still leaves to the head before.
-pub fn read_catch_ups(snapshot: &mut Snapshot, pulse: &mut Pulse, now: u64) {
+/// tasks wait: their branch could not take the head, or lags it. The
+/// verdict is the head's own (`catch_up::read_head`), never the branch's
+/// newest run, which a push just made still leaves to the head before. A
+/// head whose checks have not concluded
+/// [`catch_up::LAG_HOLD_SECONDS`](crate::common::catch_up::LAG_HOLD_SECONDS)
+/// after its commit releases the tasks of the branches lagging it: said
+/// once, as a warning.
+pub fn read_catch_ups(snapshot: &mut Snapshot, pulse: &mut Pulse, now: u64, log: &Logbook) {
     (snapshot.catch_up, snapshot.catch_up_held) = pulse.catch_ups.read(&snapshot.milestones, now);
+    if let Some((head, released)) = pulse.catch_ups.lag_expiry(&snapshot.milestones, now) {
+        let milestones: Vec<String> = released.iter().map(|number| format!("#{number}")).collect();
+        log.warn(&format!(
+            "watch: the integration branch's head {} has no verdict {} min after its commit — \
+             the tasks of milestone(s) {} start on their branch as it is",
+            head.get(..7).unwrap_or(&head),
+            crate::common::catch_up::LAG_HOLD_SECONDS / 60,
+            milestones.join(", ")
+        ));
+    }
 }
 
 /// Whether this tick may skip the full read of the board.
@@ -3447,6 +3464,7 @@ mod tests {
         ];
         let mut pulse = Pulse::default();
         assert!(pulse.catch_ups.moved(Some("h1".to_string())));
+        pulse.catch_ups.seen_at = Some(100);
         pulse.catch_ups.record(
             7,
             &crate::common::branching::CaughtUp::Failed("x".to_string()),
@@ -3459,9 +3477,14 @@ mod tests {
             base_checks: Some(true),
             ..empty()
         };
-        read_catch_ups(&mut running, &mut pulse, 101);
+        let (said, log) = told();
+        read_catch_ups(&mut running, &mut pulse, 101, &log);
         assert!(running.catch_up.is_empty(), "never before its own green");
-        assert_eq!(running.catch_up_held, [7]);
+        assert_eq!(
+            running.catch_up_held,
+            [6, 7],
+            "#6 lags the pending head, #7 is parked"
+        );
         assert!(pulse.catch_ups.behind_seen, "its checks are read next tick");
         pulse.catch_ups.local_left = 0;
         pulse.catch_ups.verdict = Some(true);
@@ -3469,7 +3492,7 @@ mod tests {
             milestones: milestones.clone(),
             ..empty()
         };
-        read_catch_ups(&mut green, &mut pulse, 101);
+        read_catch_ups(&mut green, &mut pulse, 101, &log);
         assert_eq!(green.catch_up, [(6, "milestone/6-media".to_string())]);
         assert_eq!(pulse.catch_ups.local_left, 1, "a new tick's local catch-up");
         // h1 green, then h2 read: green for an older sha, nothing due.
@@ -3479,7 +3502,82 @@ mod tests {
             base_checks: Some(true),
             ..empty()
         };
-        read_catch_ups(&mut moved, &mut pulse, 101);
+        read_catch_ups(&mut moved, &mut pulse, 101, &log);
         assert!(moved.catch_up.is_empty(), "{:?}", moved.catch_up);
+        assert!(said.0.borrow().0.is_empty(), "{:?}", said.0.borrow().0);
+    }
+
+    #[test]
+    fn the_219_case_a_task_of_a_branch_behind_a_pending_head_waits() {
+        // 2026-10-24, 22:06 Paris: #24 landed on main_agent; 22:07, its
+        // checks still running, #219 started on milestone/28, which did not
+        // hold #24 yet, and stopped on what #24 brought ("missing", $0.16).
+        let mut pulse = Pulse::default();
+        assert!(pulse.catch_ups.moved(Some("a3823e4".to_string())));
+        pulse.catch_ups.seen_at = Some(1000);
+        pulse
+            .catch_ups
+            .held
+            .insert(28, "7dc21d3-before".to_string());
+        let mut found = Snapshot {
+            milestones: vec![issue(28, &[labels::MILESTONE, labels::TRIGGERED])],
+            dev_loop_milestones: vec![28],
+            boards: vec![board(28, vec![task_needing(219, "micro-ui", "x.y")])],
+            base_checks: Some(true),
+            ..empty()
+        };
+        let (_, log) = told();
+        read_catch_ups(&mut found, &mut pulse, 1060, &log);
+        assert!(found.catch_up.is_empty(), "the head is not green yet");
+        assert_eq!(found.catch_up_held, [28]);
+        let waiting = routes(&found);
+        assert!(
+            !waiting.iter().any(|route| matches!(
+                route,
+                Route::DevTask { milestone: 28, .. } | Route::DevLoop { milestone: 28 }
+            )),
+            "{waiting:?}"
+        );
+        // Green and caught up: the task starts on a base that holds #24.
+        pulse.catch_ups.verdict = Some(true);
+        pulse
+            .catch_ups
+            .record(28, &crate::common::branching::CaughtUp::OnGitHub, 1500);
+        read_catch_ups(&mut found, &mut pulse, 1500, &log);
+        assert!(found.catch_up_held.is_empty(), "#28 holds the head");
+        assert!(routes(&found).contains(&Route::DevTask {
+            milestone: 28,
+            task: 219
+        }));
+    }
+
+    #[test]
+    fn an_expired_lag_hold_is_said_once_per_head() {
+        let mut pulse = Pulse::default();
+        assert!(pulse.catch_ups.moved(Some("a55bd4d0c0ffee".to_string())));
+        pulse.catch_ups.seen_at = Some(0);
+        let mut found = Snapshot {
+            milestones: vec![
+                issue(28, &[labels::MILESTONE, labels::TRIGGERED]),
+                issue(24, &[labels::MILESTONE, labels::TRIGGERED]),
+            ],
+            ..empty()
+        };
+        let (said, log) = told();
+        let over = crate::common::catch_up::LAG_HOLD_SECONDS;
+        read_catch_ups(&mut found, &mut pulse, over - 1, &log);
+        assert_eq!(found.catch_up_held, [24, 28]);
+        assert!(said.0.borrow().0.is_empty(), "held, nothing said");
+        read_catch_ups(&mut found, &mut pulse, over, &log);
+        assert!(found.catch_up_held.is_empty(), "let go");
+        read_catch_ups(&mut found, &mut pulse, over + 60, &log);
+        assert_eq!(
+            said.0.borrow().0,
+            [
+                "warning: watch: the integration branch's head a55bd4d has no verdict 20 min after \
+                 its commit — the tasks of milestone(s) #24, #28 start on their branch as it is"
+            ],
+            "once"
+        );
     }
 }

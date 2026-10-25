@@ -1116,6 +1116,28 @@ mod tests {
         assert_eq!(refused.stderr, "this git cannot remove gen.js");
     }
 
+    #[tokio::test]
+    async fn a_git_that_does_not_say_how_it_merges_three_ways_reads_nothing_and_refuses() {
+        // The port's defaults: no blob, no merge base, no staging, and a
+        // three-way merge that answers an error code, never a conflict count.
+        let git = FakeRepo::default();
+        assert_eq!(git.merge_base("HEAD", "h1").await.expect("asked"), None);
+        assert_eq!(git.show(":2:a.js").await.expect("asked"), None);
+        let staged = git.stage_paths(&["a".to_string()]).await.expect("ran");
+        assert_eq!(
+            (staged.code, staged.stderr.as_str()),
+            (Some(1), "this git cannot stage 1 path(s)")
+        );
+        let merged = git
+            .merge_file(Path::new("o"), Path::new("b"), Path::new("t"))
+            .await
+            .expect("ran");
+        assert_eq!(
+            (merged.code, merged.stderr.as_str()),
+            (Some(255), "this git cannot merge o three ways")
+        );
+    }
+
     fn repo(fake: FakeRepo) -> Rc<FakeRepo> {
         Rc::new(fake)
     }

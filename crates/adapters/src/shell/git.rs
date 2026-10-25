@@ -275,6 +275,37 @@ impl Repo for GitCli {
         self.git(&["rm", "--quiet", "--", path]).await
     }
 
+    async fn merge_base(&self, a: &str, b: &str) -> Outcome<Option<String>> {
+        let ran = self.git(&["merge-base", a, b]).await?;
+        Ok((ran.ok() && !ran.out().is_empty()).then(|| ran.out().to_string()))
+    }
+
+    async fn show(&self, spec: &str) -> Outcome<Option<String>> {
+        // As-is, never trimmed: the text is written back byte for byte.
+        let ran = self.git(&["show", spec]).await?;
+        Ok(ran.ok().then_some(ran.stdout))
+    }
+
+    async fn stage_paths(&self, paths: &[String]) -> Outcome<Ran> {
+        let mut args = vec!["add", "-A", "--"];
+        args.extend(paths.iter().map(String::as_str));
+        self.git(&args).await
+    }
+
+    async fn merge_file(&self, ours: &Path, base: &Path, theirs: &Path) -> Outcome<Ran> {
+        let (ours, base, theirs) = (
+            ours.display().to_string(),
+            base.display().to_string(),
+            theirs.display().to_string(),
+        );
+        self.git(&["merge-file", "-p", &ours, &base, &theirs]).await
+    }
+
+    async fn push_head(&self, branch: &str) -> Outcome<Ran> {
+        self.git(&["push", "origin", &format!("HEAD:refs/heads/{branch}")])
+            .await
+    }
+
     async fn abort_merge(&self) -> Outcome<Ran> {
         self.git(&["merge", "--abort"]).await
     }
@@ -600,6 +631,143 @@ mod tests {
         assert!(!repo.join("gen.js").exists());
         assert!(git.commit("merge main").await.expect("ran").ok());
         assert!(!git.merge_in_progress().await.expect("asked"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_split_handler_merges_three_ways_on_a_base_read_from_git() {
+        // The handler-split catch-up's verbs on a real repository: the merge
+        // base, a conflicted path's two sides by stage, a blob of a commit,
+        // a three-way merge of files on the disk, staging some paths only.
+        let root = std::env::temp_dir().join(format!("harness-git-3way-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        let repo = root.join("repo");
+        sh(&root, &["init", "-q", "-b", "main", "repo"]).await;
+        sh(&repo, &["config", "user.name", "t"]).await;
+        sh(&repo, &["config", "user.email", "t@t"]).await;
+        std::fs::write(repo.join("other"), "x").expect("write");
+        sh(&repo, &["add", "other"]).await;
+        sh(&repo, &["commit", "-q", "-m", "base"]).await;
+        let git = GitCli::new(&repo);
+        let base = git.merge_base("HEAD", "HEAD").await.expect("asked");
+        assert_eq!(base.as_deref().map(str::len), Some(40), "{base:?}");
+        sh(&repo, &["checkout", "-q", "-b", "feat"]).await;
+        std::fs::write(repo.join("h.js"), "a\nB\nc\nd\n").expect("write");
+        sh(&repo, &["add", "h.js"]).await;
+        sh(&repo, &["commit", "-q", "-m", "feat adds h"]).await;
+        sh(&repo, &["checkout", "-q", "main"]).await;
+        std::fs::write(repo.join("h.js"), "a\nb\nc\nD\n").expect("write");
+        sh(&repo, &["add", "h.js"]).await;
+        sh(&repo, &["commit", "-q", "-m", "main adds h"]).await;
+        assert_eq!(git.merge_base("HEAD", "feat").await.expect("asked"), base);
+        assert_eq!(
+            git.merge_base("HEAD", "no-such-ref").await.expect("asked"),
+            None
+        );
+        assert!(!git.merge("feat").await.expect("ran").ok());
+        assert_eq!(git.dirty_files().await.expect("read"), ["AA h.js"]);
+        let ours = git.show(":2:h.js").await.expect("read").expect("ours");
+        let theirs = git.show(":3:h.js").await.expect("read").expect("theirs");
+        assert_eq!(
+            (ours.as_str(), theirs.as_str()),
+            ("a\nb\nc\nD\n", "a\nB\nc\nd\n")
+        );
+        assert_eq!(
+            git.show(":1:h.js").await.expect("read"),
+            None,
+            "no base stage"
+        );
+        assert_eq!(
+            git.show("HEAD:other").await.expect("read").as_deref(),
+            Some("x")
+        );
+        // On the base both sides came from, each changed its own line.
+        let scratch = root.join("merge");
+        std::fs::create_dir_all(&scratch).expect("mkdir");
+        let (o, b, t) = (scratch.join("o"), scratch.join("b"), scratch.join("t"));
+        std::fs::write(&o, &ours).expect("write");
+        std::fs::write(&b, "a\nb\nc\nd\n").expect("write");
+        std::fs::write(&t, &theirs).expect("write");
+        let merged = git.merge_file(&o, &b, &t).await.expect("ran");
+        assert_eq!(merged.code, Some(0));
+        assert_eq!(merged.stdout, "a\nB\nc\nD\n");
+        assert_eq!(
+            std::fs::read_to_string(&o).expect("read"),
+            ours,
+            "-p writes nothing"
+        );
+        // On an empty base, both added everything: one conflict.
+        std::fs::write(&b, "").expect("write");
+        let conflicted = git.merge_file(&o, &b, &t).await.expect("ran");
+        assert_eq!(conflicted.code, Some(1));
+        assert!(conflicted.stdout.contains("<<<<<<<"));
+        let failed = git
+            .merge_file(&scratch.join("absent"), &b, &t)
+            .await
+            .expect("ran");
+        assert!(
+            !matches!(failed.code, Some(0..=127)),
+            "an error is no count of conflicts: {failed:?}"
+        );
+        // Resolved, staged by path alone: the other change stays unstaged.
+        std::fs::write(repo.join("h.js"), &merged.stdout).expect("write");
+        std::fs::write(repo.join("other"), "changed").expect("write");
+        assert!(
+            git.stage_paths(&["h.js".to_string()])
+                .await
+                .expect("ran")
+                .ok()
+        );
+        assert!(git.commit("merge feat").await.expect("ran").ok());
+        assert_eq!(git.dirty_files().await.expect("read"), [" M other"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_pushed_as_a_branch_leaves_no_local_branch_ahead() {
+        // The catch-up's shape: work on a detached `HEAD`, push it as the
+        // branch — a kill before the push leaves a commit no branch holds.
+        let root = std::env::temp_dir().join(format!("harness-git-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("mkdir");
+        sh(&root, &["init", "-q", "--bare", "-b", "main", "origin.git"]).await;
+        sh(&root, &["clone", "-q", "origin.git", "repo"]).await;
+        let repo = root.join("repo");
+        sh(&repo, &["config", "user.name", "t"]).await;
+        sh(&repo, &["config", "user.email", "t@t"]).await;
+        sh(&repo, &["checkout", "-q", "-b", "milestone/1"]).await;
+        std::fs::write(repo.join("a"), "1").expect("write");
+        sh(&repo, &["add", "a"]).await;
+        sh(&repo, &["commit", "-q", "-m", "one"]).await;
+        sh(&repo, &["push", "-q", "-u", "origin", "milestone/1"]).await;
+        let git = GitCli::new(&repo);
+        assert!(
+            git.checkout("origin/milestone/1", true)
+                .await
+                .expect("ran")
+                .ok()
+        );
+        assert_eq!(git.current_branch().await.expect("read"), "", "detached");
+        std::fs::write(repo.join("a"), "2").expect("write");
+        sh(&repo, &["commit", "-q", "-am", "two"]).await;
+        assert!(
+            git.branches_at_risk("origin/milestone/1")
+                .await
+                .expect("read")
+                .is_empty(),
+            "the unpushed commit is on no branch"
+        );
+        assert!(git.push_head("milestone/1").await.expect("ran").ok());
+        let head = git.head_sha().await.expect("read");
+        sh(&repo, &["fetch", "-q", "origin"]).await;
+        assert_eq!(
+            git.git(&["rev-parse", "--short", "origin/milestone/1"])
+                .await
+                .expect("ran")
+                .out(),
+            head
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
