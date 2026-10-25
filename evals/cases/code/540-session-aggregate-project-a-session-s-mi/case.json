@@ -1,0 +1,26 @@
+{
+  "skill": "code",
+  "skills": [
+    "tech-analyst",
+    "code",
+    "create-test"
+  ],
+  "repo": "https://github.com/Laucans/ForgeDesMondes.git",
+  "model": "sonnet",
+  "effort": "high",
+  "source": "forgedesmondes/agent-loop/20261025-084021-540",
+  "task": 540,
+  "commit": "58584691f14d1c87acd61d52ea1c23c440542510",
+  "branch": "milestone/27-live-microphone-and-suggestions",
+  "expect_stop": false,
+  "truth": {
+    "files": [
+      "crates/session/aggregates/Session/Cargo.toml",
+      "crates/session/aggregates/Session/src/lib.rs",
+      "crates/session/aggregates/Session/src/microphone.rs",
+      "crates/session/aggregates/Session/src/sessions.rs",
+      "crates/session/aggregates/Session/tests/microphone.rs",
+      "crates/session/aggregates/Session/tests/sessions.rs"
+    ]
+  }
+}

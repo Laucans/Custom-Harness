@@ -1,0 +1,29 @@
+{
+  "skill": "code",
+  "skills": [
+    "tech-analyst",
+    "code",
+    "create-test"
+  ],
+  "repo": "https://github.com/Laucans/ForgeDesMondes.git",
+  "model": "sonnet",
+  "effort": "high",
+  "source": "forgedesmondes/agent-loop/20261025-132305-568",
+  "task": 568,
+  "commit": "90bdb048a95fb7aeafe02adb88314e95e223f875",
+  "branch": "milestone/28-closing-a-session-journal-summary-and-preparation-screen",
+  "expect_stop": false,
+  "truth": {
+    "files": [
+      "apps/session/scene-board/micro-ui.json",
+      "apps/session/scene-board/src/ids.ts",
+      "apps/session/scene-board/src/index.ts",
+      "apps/session/scene-board/src/model.ts",
+      "apps/session/scene-board/src/render.ts",
+      "apps/session/scene-board/test/board.test.ts",
+      "apps/session/scene-board/test/model.test.ts",
+      "mock/components/SceneBoard.js",
+      "mock/pages.json"
+    ]
+  }
+}

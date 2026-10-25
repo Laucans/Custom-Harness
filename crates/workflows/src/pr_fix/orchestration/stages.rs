@@ -47,6 +47,17 @@ Diagnose from the real output, never from the check's name alone:
   gh run view <the failing run's id> --log-failed
   gh pr diff {num}
 
+Work the diagnosis one hypothesis at a time:
+- When a gate or a test is red, reproduce it locally first — `bash
+  scripts/gates-local.sh --only <gate>`, or the test alone — and keep its
+  output. A conflict or a review alone has nothing red to reproduce.
+- Earlier repair rounds of this PR left their reasoning in its commits
+  (`git log origin/{base}..HEAD`). Read what they proved and ruled out, and
+  never retry a lead already ruled out.
+- Name one hypothesis and prove it with a command that shows the cause.
+  Then fix it, and show the same command going from red to green. A fix
+  whose cause you have not shown is a guess.
+
 Then fix the cause in this working tree, run the project's own gates
 locally until they pass — `bash scripts/gates-local.sh` when the repository
 has it (every gate of gates.yml on a full copy of your work, minutes long:
@@ -54,7 +65,9 @@ a Bash `timeout` of 600000 ms; `--failed` for what was left red; a
 `base-red` gate is red on the base too, not this PR's)
 —, and push to `{head}`:
   git add <the files you changed, by name>
-  git commit -m "fix(<scope>): <what the failure was>"
+  git commit -m "fix(<scope>): <what the failure was>" \
+    -m "Cause: <what you proved, and the command that showed it>" \
+    -m "Ruled out: <each lead you tested and dropped, or none>"
   git push
 
 Hard rules, and they are the point of this run:
@@ -225,6 +238,26 @@ mod tests {
             assert!(
                 FIX_PROMPT.contains(forbidden),
                 "{forbidden:?} missing from FIX_PROMPT"
+            );
+        }
+    }
+
+    #[test]
+    fn the_prompt_asks_for_a_proven_cause_that_the_next_round_can_read() {
+        // A repair round does not know what the previous one tried: the
+        // commit body carries the proven cause and the leads ruled out, and
+        // the next round is told to read them before guessing again.
+        for method in [
+            "reproduce it locally first",
+            "git log origin/{base}..HEAD",
+            "never retry a lead already ruled out",
+            "going from red to green",
+            "-m \"Cause: ",
+            "-m \"Ruled out: ",
+        ] {
+            assert!(
+                FIX_PROMPT.contains(method),
+                "{method:?} missing from FIX_PROMPT"
             );
         }
     }

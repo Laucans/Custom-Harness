@@ -1,0 +1,581 @@
+/tech-analyst
+
+--- EXECUTION CONTEXT (injected by harness-launcher (dev_loop)) ---
+You are running head-less in an unattended loop (`claude -p`). Nobody will
+read this output before the run ends and nobody can answer a question.
+These rules override the skill's interactive stopping points:
+
+1. Where the skill waits for a go-ahead or a confirmation (/code steps 2
+   and 3), write your findings into your reply and carry on. Reporting
+   stays mandatory; waiting does not.
+2. Where the skill says to ask because a choice is genuinely ambiguous, do
+   not guess. Stop, change nothing further, and end your reply with the one
+   line `AGENT_LOOP_STOP: <one-line reason>`. The loop halts and a human
+   picks it up. Stopping is a correct outcome, not a failure.
+3. The integration branch for this run is `milestone/28-closing-a-session-journal-summary-and-preparation-screen`. Wherever a skill says
+   `main` as the PR base or the branch-off point, read `milestone/28-closing-a-session-journal-summary-and-preparation-screen`: branch
+   off it, and `gh pr create --base milestone/28-closing-a-session-journal-summary-and-preparation-screen`. The rest of CLAUDE.md's
+   Repository etiquette stands unchanged — branch -> PR, merged the way this
+   stage's own instructions say, and never a direct push.
+4. Stage by name, never `git add -A`. The tree may carry unrelated
+   in-flight work that is not yours to commit.
+5. Do not start another pipeline stage as its own process, and do not
+   /clear. The loop runs one process per stage. Where this prompt names a
+   second skill to continue into, that continuation is part of this same
+   stage — not a new one, and not something to hand off.
+6. End your reply with `AGENT_LOOP_OK: <one-line summary>` if the stage
+   completed, or `AGENT_LOOP_STOP: <reason>` if it did not.
+--- END EXECUTION CONTEXT ---
+The task is issue #568 ("Micro-UI SceneBoard: send the scene order as a list of ids, write as an approver, and edit a scene's notes"); its body, below under SCOPE, is the
+SPEC. Plan it as /tech-analyst: the pre-flight gate, the ordered checklist
+against the real code, the stop line, the risks. Then, in this same session,
+without waiting for a go-ahead and without /clear, carry out
+.claude/skills/code/SKILL.md against your own plan — build, run every
+Verification bullet with real output, /code-review, run `bash
+scripts/gates-local.sh` and fix what fails (every gate of gates.yml on a
+full copy of your work merged with your base, jobs in parallel, plus the
+closure check the loop runs after you; minutes long, so give the Bash call a
+`timeout` of 600000 ms; `--failed` reruns what was left red;
+a `base-red` gate is red on your base with the same errors, not yours to
+fix) — or, in a repository without that script, the gates of
+`.github/workflows/gates.yml` by hand —, then the mutants the CI will judge, in
+the foreground: `git diff origin/<your base> > .git/change.diff && cargo
+mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
+one before the PR (a mutant the CI finds costs a whole repair round), then branch -> PR, and
+STOP THERE: open the pull request against the milestone branch with
+`gh pr create --label harness:to-review`, say its number in your reply and END
+YOUR TURN. The harness watches its CI from here and merges it once it is
+reviewed and every check is green: never wait on it — never poll `gh pr
+checks`, never a background watcher, never Monitor, never a sleep loop or a
+scheduled wake-up (a session silent for twenty minutes is killed) — and do
+NOT run `gh pr merge`: a session merges no pull request (the command is
+denied to it), and a red check is the repair route's. A Micro-UI or a screen composition ships with its
+mock-up: open the page under mock/pages/ and the micro-frontend under
+mock/components/ first (they are the screen as the human wants it; a
+`mockup/*` branch may carry a newer one). Build FROM their code, never
+beside it: carry the micro-frontend's markup, classes and structure into
+apps/, wire it to the real Capabilities and DataCapabilities, and change
+only what the real data demands — never rewrite a screen the mock-up
+already draws. For a screen, a Micro-UI another milestone builds is not
+missing: lay its id out in apps/screens/<screen>.json, where the mock-up's
+fragment stands in for it until it is built (compositions-resolve passes
+it on a pull request into milestone/*), and never stop on it. Keep them
+true to what you build,
+list them in mock/pages.json (contract N), name the parts of what a Micro-UI
+renders (contract D: data-writes="<DataCapability>" on every actuator,
+data-reads="<Capability>" on every part that shows a read, one at least per
+entry of its actions and needs), and after any change under apps/ or
+mock/src/ run mock/build.sh and commit the bundles — the gates refuse a
+screen no page mocks, a Micro-UI with no micro-frontend, a listing out of
+sync with the manifest, a micro-frontend that names no part for one of its
+actions or needs, and a stale bundle. A unit's mock handlers live in its own
+file, mock/handlers/<id>.js (its Capability or DataCapability id): `export
+const reads = { '<id>': async (server, variables) => … }` or `export const
+commands = { '<id>': async (server, { payload, targetId, version, basedOn })
+=> … }`, a helper several files share in mock/handlers/_lib/; the mock server
+imports it at run time, so it needs no rebuild. Never edit another unit's
+handler file, and never add a handler to mock/src/reads.js or
+mock/src/commands.js (gate mock-handlers). A new DataCapability or
+Capability starts from its skeleton when the harness wrote one: fill every
+`SCAFFOLD:` hole (rule 22), write new tests on platform-test-kit (rule 21),
+and run `node scripts/unit-conventions-gate.mjs data-capabilities|capabilities
+origin/<your base>` before the PR. A frontend task reads the
+product's design system first: mock/design/tokens.css (one CSS variable per
+token — every colour, font, spacing, radius and shadow of a screen comes
+from them, never a literal) and the kit, mock/kit/<Name>.html listed in
+mock/kit/kit.json, its look gathered in mock/kit/kit.css (contract O). Both
+reach your branch from the integration branch — the harness carries them
+there from `design-system` on every publish — and they are read-only here:
+the shell loads tokens.css and kit.css once, a screen or a Micro-UI writes
+the kit's markup and classes (mock/kit/<Name>.html is the structure to
+follow) with its own data, and a gate refuses a pull request that changes
+mock/design/ or mock/kit/. When a kit component cannot serve as it is,
+recode it for real in your code and write the corrected fragment back on
+`design-system` (a worktree of that branch, commit, push) with one line
+under `recoded` in kit.json saying what changed, so the mock-up matches
+what shipped. The PR body MUST carry the line `Closes #568` on its
+own: the loop reads that line off the merged PR to confirm the task shipped,
+and without it the round stops rather than replay a task nothing marks as
+delivered. The loop closes the issue once that PR is merged on the
+milestone's branch; the milestone itself lands under `harness:waiting-merge`. Do
+not close the issue yourself.
+If the SPEC has a `## Rules` section, the tests of those rules, under
+tests/rules/ (contract P), are written already and are what this task
+turns green: start the product with `bash scripts/rules-runtime.sh serve`
+(export the KEY=value lines it prints), clear a past run's outcomes with
+`rm -f target/rules-status.jsonl`, run `cargo test --manifest-path
+tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
+test` in tests/rules/journey, then `node scripts/rules-gate.mjs status`
+(never commit the rules-status.json it writes), then
+`bash scripts/rules-runtime.sh stop`. A rule stays pending while a unit its
+test needs is not built. A screen does not wait for those units: freeze it
+against the mock-up now — rules-hold proves them on every run once their
+units are built. Never change rules.json, tests/rules/ or
+scripts/rules-runtime.sh — a gate refuses it. A rule's test you cannot
+meet is contested: write CONTEST.md at the root (the rule, the test, why
+it cannot hold) and say so in your reply. A passing test can be mounted
+wrong, and only status shows it: a rule it says mis-mounted is its test's
+mounting, never your code — copy its line into CONTEST.md as it is, and
+change nothing for it; the red tests listed under it are yours to fix. The
+server is crates/server, the frontend's host apps/shell, as the layout of
+CLAUDE.md says: the runtime starts them from there.
+Everything outside the product — a provider's API, payment, mail, storage,
+an LLM — goes through a port of ports.json (contract Q), named in the
+manifest's `ports`: its crate crates/ports/<port>/ (the trait, a fake, the
+contract tests), a real adapter under crates/ports/<port>/<provider>/. Tests
+and the rules' runtime run on the fake (`PORTS=fake`). A port that keeps
+state is written only by a DataCapability, and read from our mirror. Never
+call a provider outside a port. A port ports.json has not is a person's to
+approve: stop with `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`
+instead of adding it. A `## Decision` of kind `port` with no verdict is
+approved — its approval task closed: add the port to ports.json and build
+it, its fake and contract tests first; with a verdict, follow it.
+A contract another milestone produces (plan/graph.json, gate
+`contracts-untouched`) is not yours to edit: stop with `AGENT_LOOP_STOP:
+contract <id> — <what you need>`; the contract manager evolves it for every
+consumer and this task runs again against the new version. A `## Decision`
+of kind `contract` means it did: read the manifest anew.
+No human is reachable while you work: every answer you had to assume goes
+in the PR body under `## Assumptions (autonomous run)`. Anything a human
+must do first becomes its own `harness:human` issue, a sub-issue of
+milestone #28, declared as a dependency of #568. A task the plan lacks is
+not a human's: when this task cannot be finished without another unit's
+work that no task of milestone #28 builds (a projection, a
+DataCapability, a migration outside your unit), never build it here nor
+open an issue for it. Find EVERY such missing unit first — read the whole
+SPEC against the code before you stop, not the first gap only — then stop
+once: `AGENT_LOOP_STOP: tasks [` followed, on that same line, by one JSON
+object per missing unit and `]` (`AGENT_LOOP_STOP: task ` and one object
+when there is one), each the slice as /split writes it: title, branch
+(`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
+goal, acceptance (given/when/then criteria). The harness opens them under
+the milestone and parks this task until they land. If an assumption would make
+the task useless or harmful when wrong — a paid service, a schema decision
+later tasks depend on, a credential only the human holds — that is
+ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
+then decides it and writes the answer under `## Decision`. Honour
+`## Decision` and `## Owner Decisions` when the body has them: they
+override the sections above.
+Then, in this same session and without /clear, write the tests as
+.claude/skills/create-test/SKILL.md says — triage what you changed, write
+only the hermetic tests the change warrants, prove each red then green — and
+ship them **in the same PR**, never a second one. The PR body carries your
+plan (checklist, risks) under `## Plan` — the issue body is the SPEC, you
+never rewrite it — and, when the SPEC has a `## Rules` section, the line
+`Rules: R3, R5` naming them, which a gate checks.
+/code's steps 1-3 are what you just did as the tech analyst; adopt your own
+findings instead of re-deriving them. Nothing outside this session can read
+your plan, so a gate finding or a risk you do not act on now is lost — put it
+in your reply.
+Run the Rust tests with `bash scripts/test-scope.sh origin/<the branch your
+PR targets>` whenever the repository has that script, never a bare
+`cargo test --workspace`: a change that stays inside Capability crates
+(`crates/<system>/capabilities/<name>/`) then runs their tests alone, and
+anything else the whole workspace — the CI runs the same script on the PR.
+Arguments after `--` go to `cargo test`, to run one test while you work.
+Run every check — the tests, clippy, fmt, machete, the dead-code script, the
+gates — through `bash scripts/quiet.sh <the command>` whenever the repository
+has that script, e.g. `bash scripts/quiet.sh bash scripts/test-scope.sh
+origin/<branch>`: a pass is one line, a failure prints every line of its
+errors and the path of its full log.
+
+--- ARCHITECTURE RULES (injected by harness-launcher (dev_loop)) ---
+The rules of the one unit this task builds, as the gates check them: its
+place in the layout, its manifest, what it may know and what it must not,
+and the gate that judges it. This card stands for docs/ARCHITECTURE.md —
+open that document only where the card sends you there.
+
+UNIT: Micro-UI — a screen fragment (TypeScript) that declares what it reads
+and what it can trigger. It never reads the Data directly.
+
+Where it lives: apps/<system>/<micro-ui>/, with micro-ui.json beside the
+code (contract D, contracts/d-micro-ui-manifest.schema.json).
+
+Its manifest (micro-ui.json): `microUi` (its id), `system`, `description`,
+`needs` (Capability ids of any system, by reference — never by importing
+their code; a Capability others use that must behave differently is
+duplicated into a new id, never changed), `actions` (DataCapability ids it may trigger), `props`.
+
+What it renders names its parts: every actuator (button, form, toggle that
+writes) carries data-writes="<DataCapability>"; every part that shows what
+a Capability answers carries data-reads="<Capability>" — one at least per
+entry of `actions` and of `needs`. The real code names the unit through its
+identifiers, never a literal outside them.
+
+It is mocked before it is built, and stays mocked (contract N,
+mock/pages.json): a micro-frontend entry under `components` with the same
+needs/actions/props, a hand-written fragment mock/components/<MicroUi>.html
+before it is built, then its real code mounted on the mock server
+(mock/src/<MicroUi>.js, bundled by mock/build.sh into
+mock/components/<MicroUi>.js, committed with its builtFrom digest). Open the
+mock page under mock/pages/ first: it is the screen as the human wants it (a
+`mockup/*` branch may carry a newer one). The mock server's handlers,
+mock/handlers/<id>.js, are their Capability's and DataCapability's tasks':
+never edit one here — an answer it lacks is a fixture, mock/fixtures/<id>.json.
+
+It styles itself through the design system only: mock/design/tokens.css
+(one CSS variable per token, never a literal colour, font, spacing, radius
+or shadow) and the kit's classes (mock/kit/<Name>.html, contract O). Both
+are read-only on your branch: a kit component that cannot serve is recoded
+on `design-system`, never here.
+
+Gates that judge it: manifests-conform-to-contracts (D), system-frontier
+(every `needs` is a Capability that exists or the plan declares), write-actions (every
+action is an existing DataCapability whose callableBy admits it),
+pages-mocked (listed, fragment present, parts named, listing in sync,
+bundle rebuilt), design-system-single-writer.
+No network call from a Micro-UI: externals-behind-ports. The rules
+(contract P): rule-tests-untouched (rules.json and tests/rules/ are the
+rules' task's, a development conforms or writes CONTEST.md) and rules-hold (a journey rule's test passes once every unit
+it needs is built).
+--- END ARCHITECTURE RULES ---
+
+--- REPOSITORY CONFIGURATION (injected by harness-launcher (dev_loop)) ---
+This checkout's own configuration, verbatim: how the project is built, tested
+and linted. Read the scripts and runner settings from here instead of opening
+these files again. Configuration only, never the source; if a command taken
+from here fails, the file on disk wins — re-read it and carry on.
+
+<file path="apps/shell/package.json">
+{
+  "name": "shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The frontend's host: serves the composer, replays a frozen screen at /screens/<screen>, proxies the shell's wire protocol to SERVER_URL.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "serve": "node dist/tsc/server/main.js",
+    "test": "npm run build && node --test \"dist/tsc/**/*.test.js\""
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.39.5",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.71.2"
+  }
+}
+</file>
+
+<file path="Cargo.toml">
+# The product's one Rust workspace (docs/ARCHITECTURE.md, layout). A unit —
+# an aggregate, a Capability or a DataCapability — is a member by its folder
+# alone, through the three globs: adding one edits no shared file (rule 2,
+# gate `workspace-members-by-glob`). Only the plumbing is named.
+[workspace]
+resolver = "3"
+members = [
+    "crates/*/aggregates/*",
+    "crates/*/capabilities/*",
+    "crates/*/data-capabilities/*",
+    "crates/ai/provider",
+    "crates/data",
+    "crates/dataguard/registry",
+    "crates/dataguard/server",
+    "crates/ports/*",
+    "crates/ports/character-sheets/d-d-beyond-public-character-json-service",
+    "crates/ports/llm/anthropic-claude-api-default-claude-sonnet-5-5-for-generation-claude-haiku-4-5-20251001-for-summaries-switchable-to-the-dm-s-home-opencode-server-endpoint-or-to-the-opencode-claude-code-binaries",
+    "crates/ports/speech-to-text/phonon-local-to-be-evaluated-as-the-decision-requests",
+    "crates/server",
+    "crates/platform/conformance",
+]
+# The rules' business tests are a workspace of their own (contract P).
+exclude = ["tests/rules/business"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+
+[workspace.dependencies]
+harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v5", features = ["postgres", "uuid"] }
+</file>
+
+<file path="crates/data/Cargo.toml">
+[package]
+name = "data"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The Data layer: the adapter of the `database` port (ports.json) — the read-write and read-only connections, the migrations' applier, the read-only query runner that answers JSON."
+publish = false
+
+[dependencies]
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }
+# The migrations' tests (`tests/*_migration.rs`): what the DataGuard judges of
+# a row the tables take — the engine, and the two aggregates whose judges the
+# tables leave to it.
+harness-dataguard = { workspace = true }
+aggregate-battlemap-instance = { path = "../table/aggregates/BattlemapInstance" }
+aggregate-diffusion = { path = "../live/aggregates/Diffusion" }
+# The Concepts' fixtures the Entity migration's SQL is held to (AliasMatch@1,
+# AbilityModifier@1).
+platform-conformance = { path = "../platform/conformance" }
+</file>
+
+<file path="crates/server/Cargo.toml">
+[package]
+name = "server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The product's one server binary: the shell's wire protocol through the DataGuard engine (crates/dataguard/server), GET /health, the migrations through the Data layer, the mock-up's fixtures, PORTS=fake."
+publish = false
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+data = { path = "../data" }
+dataguard-server = { path = "../dataguard/server" }
+# Every unit of the product, gathered: what `server inventory` lists.
+dataguard-registry = { path = "../dataguard/registry" }
+# The one Capability the registry cannot answer (hostless: it reads the llm
+# port's journal, not rows), served by this server's own route.
+list-provider-requests = { path = "../ai/capabilities/list-provider-requests" }
+ports-character-sheets = { path = "../ports/character-sheets" }
+ports-llm = { path = "../ports/llm" }
+ports-speech-to-text = { path = "../ports/speech-to-text" }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+uuid = { version = "1", default-features = false, features = ["v5"] }
+
+[dev-dependencies]
+tower = { version = "0.5", default-features = false, features = ["util"] }
+</file>
+
+<file path="apps/shell/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "dist/tsc"
+  },
+  "include": ["src"]
+}
+</file>
+
+<file path="rust-toolchain.toml">
+# The toolchain every build of this repository uses, local and CI alike.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
+</file>
+
+<file path=".github/workflows/ci.yml">
+# The project's own checks — installed by `harness init-repo`, beside
+# `gates.yml`; the repository owns it from here.
+#
+# The stack is the architecture's (docs/ARCHITECTURE.md, "Technology
+# choices"): Rust for everything but the Micro-UIs, TypeScript for those,
+# PostgreSQL as the one store. Each job checks its ecosystem as soon as it
+# exists and passes trivially before — a fresh repository is green from its
+# first pull request, and a task that adds `Cargo.toml` or `package.json` is
+# checked by the same run that brings it.
+#
+# A component that needs a CI of its own (a WebAssembly build, an
+# integration environment) adds its job here, in a task of its own.
+#
+# The two branch patterns are the harness's: `main_agent` is where finished
+# milestones land, `milestone/**` is what a task's pull request targets.
+#
+# The Rust tests run through `scripts/test-scope.sh`: a change that stays
+# inside Capability crates runs their tests alone, anything else the whole
+# workspace. A push to `main_agent` — a milestone landing — always runs the
+# whole workspace.
+name: ci
+
+on:
+  push:
+    branches: [main_agent, 'milestone/**']
+  pull_request:
+    branches: [main_agent, 'milestone/**']
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The mutants rotation files what no test caught as an issue.
+      issues: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_TERM_COLOR: always
+      # One role in CI; a project that tests its read-only role creates it
+      # in a step of its own.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
+      DATABASE_URL_READONLY: postgres://postgres:postgres@localhost:5432/app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The history the test scope measures the change against.
+          fetch-depth: 0
+      - name: Toolchain (rust-toolchain.toml)
+        if: hashFiles('Cargo.toml') != ''
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        if: hashFiles('Cargo.toml') != ''
+      - name: Format
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all -- --check
+      - name: Lint
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        if: hashFiles('Cargo.toml') != ''
+        env:
+          # A pull request against its target, a push against what it
+          # replaced; empty on main_agent, which the script reads as "all".
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || (github.ref_name != 'main_agent' && github.event.before || '') }}
+        run: |
+          if [ -f scripts/test-scope.sh ]; then
+            bash scripts/test-scope.sh "$BASE"
+          else
+            cargo test --workspace --all-features
+          fi
+      - uses: taiki-e/install-action@v2
+        if: hashFiles('Cargo.toml') != ''
+        with:
+          # cargo-mutants for the rotation; the in-diff mutants have a job
+          # of their own.
+          tool: cargo-machete,cargo-mutants
+      # The dead code the compiler lets through: a dependency no crate uses,
+      # a `pub` item no crate of the workspace calls (scripts/dead-code.sh).
+      - name: Dead code
+        if: hashFiles('Cargo.toml') != ''
+        run: |
+          cargo machete
+          if [ -f scripts/dead-code.sh ]; then bash scripts/dead-code.sh; fi
+      # The code no change touches is judged too, a bucket of files per run
+      # (scripts/mutants-rotation.sh: the run number picks the bucket, so
+      # runs in parallel judge disjoint files). Never red: what it misses
+      # be
+[... truncated: this file ran over its share of the digest ...]
+</file>
+
+<file path="apps/shell/eslint.config.mjs">
+// The lint of the shell's TypeScript: the recommended rules, type-aware —
+// a floating promise or an unsafe `any` is an error, not a style choice.
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  { ignores: ['dist/', 'node_modules/', 'build.mjs', 'eslint.config.mjs'] },
+  js.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    // node:test's `describe` and `test` return promises the runner collects itself, and a fake
+    // `fetch` is async without awaiting.
+    files: ['**/*.test.ts'],
+    rules: { '@typescript-eslint/no-floating-promises': 'off', '@typescript-eslint/require-await': 'off' },
+  },
+  { languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } } },
+);
+</file>
+[... truncated: the configuration digest ran over its budget ...]
+--- END REPOSITORY CONFIGURATION ---
+
+--- SCOPE (injected by harness-launcher (dev_loop)) ---
+ISSUE #568 below is the whole brief, and the whole of your work. It is a
+GitHub issue: what you produce goes back into the issue, never into a file
+under docs/.
+
+It sits in milestone #28, whose goal and architecture are given so
+you know what the batch delivers. Of its sibling tasks, only the ones this
+task builds on or delivers to are listed; a neighbour's internals are not
+part of this stage, and the roadmap is not reproduced — the plan below was
+written from both. If you do need one, read it rather than guess:
+`gh issue view <number>`. Do not implement, plan or rewrite any of them.
+
+MILESTONE #28 — Closing a session: journal, summary and preparation screen
+## Architecture
+
+systems: session
+concepts: SessionLifecycle@1
+aggregates: Session, SoundPlayback
+side: harness:write-side
+
+NEIGHBOURS THIS TASK BUILDS ON OR DELIVERS TO
+- #219 — Freeze the preparation-seance screen and prove R11, R13 and R15 end to end [open] — ids: preparation-seance, PreviousSummary, OralBrief, SceneBoard, VersionHistory, ToCreateList, Battlemap
+    branch: feat/screen-preparation-seance […]
+- #537 — Server fixtures: load the Session aggregate's scenes (with their linked places, characters, events and media), journal lines and summary metadata into the real store [done] — ids: server.fixtures.session-scenes-journal, session.listScenes, session.getSessionJournal, session.getPreviousSessionSummary
+    branch: feat/server-session-scene-journal-fixtures […]
+- #538 — Server fixtures: load the BattlemapInstance rows of the scene battlemaps into the real store [done] — ids: server.fixtures.battlemap-instance, table.getBattlemapInstance, session.listScenes, media.getBattlemap
+    branch: feat/server-battlemap-instance-fixtures […]
+- #548 — Micro-UI SceneBoard: read the session from its props and ask session.getSession by id [done] — ids: SceneBoard, session.getSession, session.listScenes, campaign.listCharacters, media.listMedia, table.getBattlemapInstance
+    branch: feat/micro-ui-scene-board-session […]
+- #563 — Micro-UI SceneBoard: take the campaign from its props and show the names of a scene's places and events [done] — ids: SceneBoard, session.getSession, session.listScenes, campaign.listCharacters, campaign.listPlaces, campaign.listEvents, media.listMedia, table.getBattlemapInstance
+    branch: feat/micro-ui-scene-board-campaign-names […]
+- #567 — DataCapability session.updateSceneNotes: the DM writes a scene's notes [open] — ids: session.updateSceneNotes, session.addScene, session.listScenes
+    branch: feat/dc-update-scene-notes […]
+- #568 — Micro-UI SceneBoard: send the scene order as a list of ids, write as an approver, and edit a scene's notes [open] — ids: SceneBoard, session.reorderScenes, session.addScene, session.updateSceneNotes, session.getSession, session.listScenes <- CURRENT
+
+CURRENT ISSUE #568 — Micro-UI SceneBoard: send the scene order as a list of ids, write as an approver, and edit a scene's notes
+## Scope
+
+branch: feat/micro-ui-scene-board-writes-on-real-store
+
+On the real store SceneBoard's writes fail (R11, probed on the live server): session.reorderScenes@1 is sent order:[{scene,rank}] but declares order: uuid[] (every scene once, in play order) and answers 422 'order : la liste des identifiants des scènes de la séance', so the order never changes; session.addScene@1 is sent caller.roles [] and parks in awaiting_review (review r_3), so the scene never appears (Battlemap sends roles ['role:approver'] and applies). Fix both in apps/session/scene-board (model.ts commandBody/ranks, index.ts) and its mock handlers/fixtures so the mock-up answers the same shape. Make the notes textarea editable (it is readonly in render.ts and in mock/components/SceneBoard.js) and write it with session.updateSceneNotes (add it to needs/actions in micro-ui.json and data-writes on the textarea). Tests: tests/rules/journey/R11-oral-brief-cut-into-scenes.spec.ts lines 36-44 must hold on the real runtime (Monter reorders, Ajouter une scène adds a fourth heading, Notes accepts a fill).
+
+Opened by the harness for #219, whose session stopped on it: #219 waits on this task.
+
+## Architecture
+
+unit: micro-ui
+id: SceneBoard
+system: session
+aggregate: Session
+produces: SceneBoard
+needs: session.reorderScenes, session.addScene, session.updateSceneNotes, session.getSession, session.listScenes
+side: harness:read-side
+
+## Business Goal
+
+The DM reorders, adds and annotates scenes on the preparation screen and the real store applies each change.
+
+## Acceptance Criteria
+
+- given three scenes, when the DM clicks Monter on the second, then session.reorderScenes receives order as an array of scene ids and the list shows the second scene first
+- given a session, when the DM clicks Ajouter une scène, then session.addScene is applied (not parked in review) and a further scene heading appears
+- given a scene, when the DM types in Notes, then the text is written through session.updateSceneNotes and kept
+--- END SCOPE ---

@@ -1,0 +1,26 @@
+{
+  "skill": "code",
+  "skills": [
+    "tech-analyst",
+    "code",
+    "create-test"
+  ],
+  "repo": "https://github.com/Laucans/ForgeDesMondes.git",
+  "model": "sonnet",
+  "effort": "high",
+  "source": "forgedesmondes/agent-loop/20261025-155552-574",
+  "task": 574,
+  "commit": "1f1bd32846de29f3aa4c189d8210978e5c8ebeb6",
+  "branch": "milestone/30-campaign-home-and-archive-import",
+  "expect_stop": false,
+  "truth": {
+    "files": [
+      "crates/campaign/data-capabilities/export-campaign/Cargo.toml",
+      "crates/campaign/data-capabilities/export-campaign/src/lib.rs",
+      "crates/campaign/data-capabilities/export-campaign/tests/full_archive.rs",
+      "crates/campaign/data-capabilities/export-campaign/tests/plugin.rs",
+      "crates/campaign/data-capabilities/export-campaign/tests/prepare.rs",
+      "crates/server/tests/export_campaign.rs"
+    ]
+  }
+}

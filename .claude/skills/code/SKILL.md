@@ -115,6 +115,20 @@ earlier one landed.
   fact about this task, not a bug to close.
 - **Write the failing test first** when fixing a bug, where practical
   (`CLAUDE.md`, Workflow).
+- **Write the least code the SPEC needs.** Before a new function, type or
+  file, ask in order: does an acceptance criterion need it? Does
+  `harness-dataguard`, `platform-test-kit`, the standard library or the
+  platform (Postgres, the browser) already do it? Only then write it. A
+  `SCAFFOLD:` hole and a test that kills a mutant always count as needed.
+- **Lean on the platform, never on a neighbour's code.** Reuse means
+  dataguard, `platform-test-kit`, `mock/handlers/_lib/` and the standard
+  library. What the closure mounts — the Concepts you implement, the
+  aggregate you target, the manifests of the ids you need — is yours to read
+  and use. Another Capability's, DataCapability's or Micro-UI's code is not:
+  shared meaning is a Concept, and a shared piece that must change is
+  duplicated, not shared.
+- **Least code never drops a check.** A validation or an error path stays,
+  even where no test covers it.
 - **A unit's mock handlers are its own file.** In a product, what the mock
   server answers for your Capability or judges for your DataCapability goes
   in `mock/handlers/<id>.js` (`export const reads` / `export const

@@ -203,6 +203,49 @@ pub fn catalog(
     entries
 }
 
+/// The aesthetic direction a design system is drawn with, so the tokens read
+/// as a choice made for this product rather than a generated default.
+///
+/// Adapted for the design system's easel from Anthropic's `frontend-design`
+/// skill (anthropics/skills, Apache-2.0), not lent as a skill: the harness
+/// lends every skill to every session, and a skill loads on its description,
+/// so a Micro-UI session would pick it up. Here it reaches the design system
+/// and its kit only. Its webfont advice is left out: the kit forbids `<link>`
+/// and `@import`.
+const DESIGN_DIRECTION: &str = "Direction, so the result is this product's and not a \
+     template:\n\
+     - Start from the product's subject, its audience and its main job, read from the \
+     brief and the material: distinctive choices come from that world, its materials and \
+     its vocabulary.\n\
+     - Where the material leaves a choice free, do not spend it on a generated default: a \
+     warm cream background with a terracotta accent, near-black with one acid accent, one \
+     radius and one soft grey shadow on everything, gradient washes as decoration. The \
+     material's own words and images always win, even when they ask for one of these.\n\
+     - Spend boldness in one place, the primary colour or the display type within the \
+     web-safe stacks, and keep the rest quiet and disciplined. One type family, or two \
+     clearly distinct ones.\n\
+     - Give hierarchy to shape: radii, borders and shadows differ by role, not one value \
+     for all.\n\n";
+
+/// How a kit component is crafted on top of the rules a static check reads:
+/// restraint, real words, motion that answers an action, and the floor of
+/// quality every component keeps. Same origin as [`DESIGN_DIRECTION`].
+const COMPONENT_CRAFT: &str = "Craft, beyond the checked rules. Where a base fragment does otherwise \
+     (a carousel that turns on its own, an all-caps label), the craft wins: drop the \
+     autoplay, set the label in sentence case. A toast may still dismiss itself.\n\
+     - Restraint: let one detail be memorable and cut any decoration the component does \
+     not need. Structure (borders, numbering, dividers, labels) carries information, \
+     never ornament: number items only when they are a sequence.\n\
+     - Words are design content: sentence case, plain verbs, named for the user and not \
+     for the system. A button says what happens (\"Save changes\", not \"Submit\"); an \
+     error says what went wrong and how to fix it, without apology; an empty state \
+     invites an action. No all-caps labels, no label above every heading, no arrow \
+     appended to a button's text.\n\
+     - Motion only answers a person's action (opening, expanding, confirming) and shows \
+     what changed; nothing moves on its own, and `prefers-reduced-motion` turns it off.\n\
+     - Quality floor, without announcing it: it holds down to a phone's width, every \
+     control shows a visible keyboard focus, and text keeps its contrast.\n\n";
+
 /// The prompt that draws a design system from a moodboard and a logo: the
 /// brief, the files to read, the tokens to answer and their format.
 #[must_use]
@@ -217,6 +260,7 @@ pub fn generate_prompt(brief: &str, moodboard: &[String], logo: &str) -> String 
          or system fonts (name a webfont only if the moodboard clearly shows one, with \
          system fallbacks after it).\n\n",
     );
+    text.push_str(DESIGN_DIRECTION);
     if !brief.trim().is_empty() {
         let _ = writeln!(text, "The human's brief:\n{}\n", brief.trim());
     }
@@ -328,6 +372,7 @@ pub fn component_prompt(
         );
     }
     text.push_str(&examples_brief(examples, "design/"));
+    text.push_str(COMPONENT_CRAFT);
     let _ = writeln!(
         text,
         "The design system's variables (mock/design/tokens.css):\n```css\n{}\n```",
@@ -453,10 +498,13 @@ pub fn rewrite_prompt(name: &str, fragment: &str, tokens_css: &str, asked: &[Ask
          for data from a server, or for behaviour beyond the visual, is not a kit matter: \
          leave the fragment unchanged for it and say so in one line at the very end, after the \
          fragment, as `<!-- skipped <id>: <why> -->`.\n\n\
+         What a request changes follows this craft, unless the request asks otherwise. \
+         {craft}\
          The design system's variables:\n```css\n{css}\n```\n\n\
          The requests:\n{requests}\n\n<fragment>\n{fragment}\n</fragment>",
         max = kit::MAX_FRAGMENT,
         css = tokens_css.trim(),
+        craft = COMPONENT_CRAFT,
     )
 }
 
@@ -632,6 +680,29 @@ mod tests {
         assert!(
             tokens_from_answer("{\"color\":{}}").is_err(),
             "too few tokens"
+        );
+    }
+
+    #[test]
+    fn the_aesthetic_direction_reaches_the_design_system_and_its_kit() {
+        let tokens = generate_prompt("a tavern ledger for game masters", &[], "");
+        assert!(tokens.contains(DESIGN_DIRECTION));
+        let at = tokens.find(DESIGN_DIRECTION).unwrap_or(usize::MAX);
+        assert!(
+            at < tokens.find("a tavern ledger").unwrap_or(0),
+            "the direction frames the brief"
+        );
+        let component = component_prompt(&Component::default(), None, "", &[]);
+        assert!(component.contains(COMPONENT_CRAFT));
+        let rewrite = rewrite_prompt("Button", "<button></button>", "", &[]);
+        assert!(
+            rewrite.contains(COMPONENT_CRAFT),
+            "a rewrite keeps the craft"
+        );
+        assert!(!rewrite.contains(DESIGN_DIRECTION));
+        assert!(
+            !component.contains(DESIGN_DIRECTION),
+            "a component keeps the tokens"
         );
     }
 

@@ -1,0 +1,17 @@
+{
+  "skill": "split",
+  "skills": [
+    "split"
+  ],
+  "repo": "https://github.com/Laucans/ForgeDesMondes.git",
+  "model": "opus",
+  "effort": "high",
+  "source": "forgedesmondes/split/20261025-144901-30",
+  "milestone": 30,
+  "commit": "dbc55ed8d61d93fb78322a75d9981f7ff467ee6f",
+  "branch": "main_agent",
+  "expect_stop": false,
+  "truth": {
+    "slices": 5
+  }
+}

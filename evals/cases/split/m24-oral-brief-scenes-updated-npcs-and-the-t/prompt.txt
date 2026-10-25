@@ -1,0 +1,213 @@
+Milestone #24 — "Oral brief: scenes, updated NPCs and the to-create list":
+Add `ai.analyzeBrief`. It turns a dictated brief into ordered scenes linked to existing entities, updates existing NPCs with a version and its diff, and puts every unknown NPC, place or event on the to-create list, creating nothing itself. Add `ai.createFromBrief`, which creates from the excerpt or from a refined description. Add the Capabilities `session.getLastBrief` and `campaign.listEntitiesToCreate`, and the OralBrief and ToCreateList Micro-UIs. Freeze the `campagne` screen.
+
+## Architecture
+
+systems: ai, session, campaign
+concepts: AliasMatch@1, EntityVersion@1
+aggregates: Session, Entity
+side: harness:write-side
+
+## Rules
+
+R12, R102, R103
+
+Decide the task slices that deliver this milestone — each one executable by
+one fresh session and becoming exactly one SPEC, following
+`.claude/skills/split/SKILL.md`'s own task-splitting rules. Give each
+slice a short brief — what it covers, and what it must not take from the
+next slice — and a branch name of the form `<type>/<slug>` (`feat`, `fix`,
+`docs`, `refactor`, `test`, `chore`, `AIchore`). Mark a slice
+`needs_human: true` only for account creation, an interactive login, a
+payment decision, or anything else only a human in a browser can do —
+everything else is `needs_human: false`.
+
+The repository follows the agent-native architecture (`docs/ARCHITECTURE.md`
+in the repository map): every slice is exactly one unit of it. Name the
+`unit` — `concept`, `aggregate`, `data-capability`, `infrastructure`,
+`capability`, `persisted-query`, `micro-ui`, `composition` or `tooling` —
+the `system` it belongs to (the bounded context, e.g. `credit` — for a
+Capability or a DataCapability, its id's namespace: `campaign.saveEntity` is
+`campaign`; a DataCapability's `owner` is `dataguard`, never its system, and
+its folder is its system's, `crates/campaign/data-capabilities/save-entity/`
+— `crates/dataguard/data-capabilities/` is nobody's folder), the
+`concept` it implements when there is one (`Risk@3`), and for the data
+layer the `aggregate` it writes or shapes (as its manifest's
+`target.aggregate` names it) — a `data-capability` also its `effect`
+(`insert`, `update`, `delete`, `upsert`) and the existing fields it
+`touches` (empty for a pure insert). An `aggregate` slice is one
+aggregate's structure whole — its `aggregate.json`, its invariants, the
+migration that shapes its tables; `infrastructure` is the store's own
+plumbing (DataQueue, DataGuard, Resolver); Rust that touches no store —
+contract types, helpers, CI — is `tooling`.
+
+**What a slice produces and needs is what orders the plan.** Every slice
+lists in `produces` the ids its manifests will carry — an aggregate (`PJ`),
+a DataCapability (`campagne.ajouterPj`), a Capability
+(`campagne.listerPjs`), a Concept (`Risk@3`), a Micro-UI (`Pjs`), a screen
+— and in `needs` the ids it builds on: the aggregate(s) a command writes or
+a Capability reads, the Capabilities a Micro-UI reads and the
+DataCapabilities it triggers, the Micro-UIs a screen composes, the Concept
+a Capability implements. The loop chains a slice on the slice of this plan
+that produces each id it needs, and on nothing else: an id no slice
+produces is already in the repository. So cut for the graph, not for
+layers — one slice per aggregate, one per DataCapability, one per
+Capability action, one per Micro-UI, the screen last — and two slices that
+share no id run in parallel. **One Micro-UI is one slice**, whatever
+components it realises — never two slices on the same Micro-UI, and every
+Micro-UI or screen slice names in `produces` the Micro-UI (or screen) it
+builds, as the mock-up names it. The mock-up already built it
+(`mock/components/<MicroUi>.html`, `mock/src/`): its slice mostly takes it
+into `apps/<system>/<name>/` and connects it to the Capabilities and
+DataCapabilities it names. Never bundle "the data layer" into one slice:
+two aggregates are two slices. A slice that produces nothing orders
+nothing: a `tooling` scaffold a system needs first `produces` the system's
+id (`monde`) and the aggregates `need` it — or it is not a slice, and its
+work goes into the first aggregate's. `depends_on` (0-based indexes in
+this array) is only for a wait `needs` cannot express, and should be rare.
+
+**A new system starts with its wiring.** When this milestone is the first
+to build Capabilities or DataCapabilities of a system the repository does
+not serve yet, cut first one `tooling` slice, branch `chore/wiring-<system>`:
+the system's read crate (a read-only connection, no write API), the
+server's routes that serve its Capabilities and submit its
+DataCapabilities, its `queries/` and fixtures folders — the plumbing every
+unit of the system needs and no unit owns, with no Capability,
+DataCapability or rule of its own. It `produces` the system's id
+(`<system>`) and every other slice of that system `needs` it. Left to the
+first unit, this work stopped it mid-task. A wiring that changes the
+DataGuard engine or its invariants is `infrastructure` instead.
+
+**The rules' tests are already written.** The milestone's `## Rules`
+section names the rules (`R<id>`, their criteria in `rules.json`) whose
+tests under `tests/rules/` turn green once it lands. Name in each slice's
+`rules` those its work completes — a rule whose test needs several slices
+goes to the last of them — so that every rule of the milestone falls in
+one slice. A slice never writes or changes a rule's test. A skeleton
+milestone cuts `crates/server` (the one binary serving the wire protocol,
+`GET /health`, the fixtures loaded from `FIXTURES_DIR`) as an
+`infrastructure` slice and `apps/shell` (the frontend's host, `npm run
+build` and `npm run serve`) as a `tooling` slice, at exactly those paths:
+`scripts/rules-runtime.sh` starts them from there.
+
+The sessions that build these slices hold a fair amount (profile `mid`): an aggregate with its invariants and migration is one slice, a Micro-UI with its micro-frontend and its code is one slice, a Capability with its persisted query is one slice — cut one of them in two only when its brief would not fit one session.
+
+No task exists yet under this milestone.
+
+What the repository already holds of the architecture — name these exactly when a slice builds on them, and invent no id that is not here:
+- systems with Rust code: ai, campaign, data, dataguard, live, media, platform, ports, server, session, soundbox, table
+- Concepts: AbilityModifier@1, AliasMatch@1, EffectiveVolume@1, EntityVersion@1, HealthBand@1, HexGrid@1, Initiative@1, ProviderApiType@1, SessionLifecycle@1, SoundTag@1
+- queries/registry.json: present
+
+The write side (an `aggregate` or a `data-capability` slice builds on these; a DataCapability is a folder named after itself under the system its id names — crates/<system>/data-capabilities/<name>/, never crates/dataguard/ — a dependency of its server, and reaches no other slice):
+- aggregates: AiSettings [fields: activeProviderId, aiProviderId, aiSettingsId, apiKey, binary, detectedApiType, generationModel, label, lastTestAt, lastTestLatencyMs, lastTestMessage, lastTestOk, mode, summaryModel, updatedAt, url; invariants: mode-fields, api-type-recognized, test-does-not-save, single-settings-row, text-only-payload], Campaign [fields: art, campaignId, coverMediaId, createdAt, entityCounts, glyph, id, importedAt, kind, lastExportedAt, lastPlayedOn, name, nextSessionOn, originCampaignId, pitch, sessionCount, soundMasterVolume; invariants: oneshot-single-session, import-creates-copy, export-stamps-date, master-volume-range], Entity [fields: actions, alias, armorClass, background, behavior, characterEntityId, charisma, constitution, description, detectionVocabularyViewCampaignId, detectionVocabularyViewEntityId, dexterity, dexterityModifier, diff, dndbeyondId, dndbeyondSyncedAt, entityAliasEntityId, entityAliasId, entityCampaignId, entityCreatedAt, entityId, entityVersionCreatedAt, entityVersionEntityId, entityVersionId, hpMax, initialPrompt, intelligence, name, normalizedTerm, notes, playerId, portraitMediaId, restoredFromVersionId, snapshot, soundId, source, spells, strength, term, tokenColor, tokenCrop, tokenMediaId, type, updatedAt, versionNumber, wisdom; invariants: character-is-pj-or-pnj, alias-unique-in-campaign, every-change-versioned, restore-exact, dndbeyond-resync-scope, proposal-fills-sheet-fields, explicit-save-only, default-token, dex-modifier-derived], NoteImport [fields: analyzedAt, campaignId, checked, createdAt, createdEntityId, excerpt, existingEntityId, importedNoteId, name, noteId, noteProposalId, rawText, type; invariants: no-creation-before-validation], Player [fields: campaignId, createdAt, id, name, notes; invariants: player-not-character], Diffusion [fields: baseInstanceId, baseKind, baseMediaId, sessionId, updatedAt, viewPanX, viewPanY, viewZoom, windowMediaId, windowWidth, windowX, windowY; invariants: base-coherent, window-proportional, window-fields-together, single-diffusion-source], Suggestion [fields: detectedAt, entityId, id, matchedText, sessionId, soundId; invariants: suggestion-target, pile-and-history-derived, live-only-local-audio], Media [fields: campaignId, color, feetPerHex, filePath, heightPx, hexSizePx, id, kind, mediaId, offsetX, offsetY, opacity, orientation, placeId, title, uploadedAt, widthPx; invariants: grid-only-for-battlemap, hex-is-five-feet, grid-values-range, media-place-is-lieu], Session [fields: addedAt, analyzedAt, briefId, closedAt, createdAt, createdEntityId, durationSeconds, entityId, entityToCreateCampaignId, entityToCreateId, entityToCreateSceneId, entityToCreateSessionId, entityToCreateStatus, excerpt, microphoneOn, name, notes, oralBriefId, oralBriefSessionId, plannedOn, recordedAt, refinementText, sceneEntityPosition, sceneEntitySceneId, sceneId, sceneMediaMediaId, sceneMediaSceneId, scenePosition, sceneSessionId, sceneTitle, sessionCampaignId, sessionId, sessionJournalLineId, sessionJournalLineSceneId, sessionJournalLineSessionId, sessionMediaViewMediaId, sessionMediaViewSessionId, sessionPosition, sessionPresentCharacterCharacterId, sessionPresentCharacterSessionId, sessionRosterViewCharacterId, sessionRosterViewSessionId, sessionStatus, sessionTitle, spokenAt, startedAt, summary, summaryEditedAt, summaryModel, text, transcript, type, via, viaPlaceId; invariants: present-only-pj, oneshot-single-session, scene-order-contiguous, scene-links-same-campaign, session-media-by-place, brief-no-auto-creation, to-create-leaves-once-created, status-lifecycle, close-session, text-only-no-audio, previous-summary-visible], Sound [fields: campaignId, createdAt, filePath, id, name, tags, volume; invariants: sound-volume-range, tags-normalized], SoundPlayback [fields: id, origin, sessionId, soundId, startedAt, stoppedAt; invariants: simultaneous-playback, stop-all, dm-side-only], BattlemapInstance [fields: battlemapInstanceId, battlemapMediaId, characterId, combatId, combatInstanceId, conditions, createdAt, currentEntryId, dead, dexScore, endedAt, entryId, healthBand, hpCurrent, hpMax, initiative, initiativeEntryCombatId, initiativeEntryId, initiativeEntryTokenId, initiativeOrderViewCombatId, labelInitial, name, number, orderIndex, q, r, rank, resetAt, roll, round, sceneId, sessionId, shownToPlayers, skipped, startedAt, tiebreak, tokenId, tokenInstanceId, visible; invariants: instance-isolated, one-instance-per-scene, token-roster, multi-drop-numbering, pj-hp-not-tracked, hp-change-one-token, dead-derived, players-see-band-only, npc-initiative-bounds, initiative-tiebreak, hidden-keeps-rank, next-turn, one-active-combat, state-persisted-reset, single-position-source]
+- DataCapabilities: ai.extractFromNotes (insert on NoteImport), ai.saveSettings (upsert on AiSettings), ai.testConnection (update on AiSettings), campaign.createCampaign (insert on Campaign), campaign.createEntitiesFromNote (update on NoteImport), campaign.exportCampaign (update on Campaign), campaign.restoreEntityVersion (update on Entity), campaign.saveEntity (upsert on Entity), live.closeWindow (update on Diffusion), live.moveWindow (update on Diffusion), live.resizeWindow (update on Diffusion), live.showCover (upsert on Diffusion), live.showOnPlayerView (upsert on Diffusion), live.showWindowOnPlayerView (upsert on Diffusion), media.saveGridSettings (upsert on Media), media.setMediaPlace (update on Media), media.uploadMedia (insert on Media), session.addPlaceToSession (insert on Session), session.addPresentCharacter (insert on Session), session.addScene (insert on Session), session.createSession (insert on Session), session.removePresentCharacter (delete on Session), session.reorderScenes (update on Session), soundbox.addSound (insert on Sound), soundbox.playSound (insert on SoundPlayback), soundbox.removeSound (delete on Sound), soundbox.setMasterVolume (upsert on Campaign), soundbox.setSoundVolume (update on Sound), soundbox.stopAll (update on SoundPlayback), soundbox.updateSound (update on Sound), table.addParticipant (insert on BattlemapInstance), table.changeHitPoints (update on BattlemapInstance), table.createBattlemapInstance (insert on BattlemapInstance), table.endCombat (update on BattlemapInstance), table.moveToken (update on BattlemapInstance), table.nextTurn (update on BattlemapInstance), table.placeTokens (insert on BattlemapInstance), table.removeParticipant (delete on BattlemapInstance), table.removeToken (delete on BattlemapInstance), table.renameToken (update on BattlemapInstance), table.reorderInitiative (update on BattlemapInstance), table.resetBattlemap (delete on BattlemapInstance), table.setTokenCondition (update on BattlemapInstance), table.setTokenVisibility (update on BattlemapInstance), table.startCombat (insert on BattlemapInstance)
+
+The read side (a `capability` or `persisted-query` slice builds on these, reads through persisted queries only, and reaches no other slice — plumbing of its own system alone):
+- Capabilities: ai.getSettings (system ai, implements ProviderApiType@1), ai.listProviderRequests (system ai), campaign.getCampaign (system campaign), campaign.getEntity (system campaign, implements AbilityModifier@1), campaign.listCampaigns (system campaign), campaign.listCharacters (system campaign), campaign.listEntityVersions (system campaign, implements EntityVersion@1), campaign.listEvents (system campaign), campaign.listImportedNotes (system campaign), campaign.listPlaces (system campaign), campaign.listPlayers (system campaign), live.getDiffusion (system live), media.getBattlemap (system media, implements HexGrid@1), media.listMedia (system media), session.getSession (system session, implements SessionLifecycle@1), session.listScenes (system session), session.listSessions (system session, implements SessionLifecycle@1), soundbox.listSounds (system soundbox, implements EffectiveVolume@1), table.getBattlemapInstance (system table, implements HealthBand@1)
+
+The UI (a `micro-ui` or `composition` slice builds on these: it writes the kit's classes with its own data, names its parts `data-writes`/`data-reads`, and ships its micro-frontend — generated or mocked — before its code):
+- design system: validated (mock/design/tokens.css, one CSS variable per token)
+- kit components generated: Button, Input (Text input), Select (Drop list), Checkbox, Radio (Radio group), Toggle (Toggle switch), Menu (Navigation menu), Tabs, Card, Table (Data table), Badge, Breadcrumb, HexMap (Carte hexagonale), Token, MicButton (Bouton micro), DiffView (Diff de version), Slider (Curseur), Dialog (Fenêtre de dialogue), TextArea (Zone de texte), FileDrop (Zone de dépôt de fichier), StatBlock (Bloc de stats)
+- micro-frontends in the mock-up: CampaignList (hand-written or generated), AiSettings (built from its Micro-UI's code), CampaignOverview (built from its Micro-UI's code), SessionList (built from its Micro-UI's code), CampaignElements (hand-written or generated), NoteImport (built from its Micro-UI's code), ToCreateList (hand-written or generated), EntityEditor (hand-written or generated), VersionHistory (built from its Micro-UI's code), PreviousSummary (hand-written or generated), OralBrief (hand-written or generated), SceneBoard (built from its Micro-UI's code), Battlemap (built from its Micro-UI's code), MediaLibrary (built from its Micro-UI's code), GridSettings (built from its Micro-UI's code), SoundLibrary (built from its Micro-UI's code), LiveSessionBar (hand-written or generated), ElementsPanel (hand-written or generated), TableSheet (hand-written or generated), LiveSoundbox (built from its Micro-UI's code), SuggestionPill (hand-written or generated), PlayerStage (built from its Micro-UI's code)
+- Micro-UIs with code: AiSettings (system ai), NoteImport (system ai), CampaignOverview (system campaign), VersionHistory (system campaign), PlayerStage (system live), GridSettings (system media), MediaLibrary (system media), SceneBoard (system session), SessionList (system session), LiveSoundbox (system soundbox), SoundLibrary (system soundbox), Battlemap (system table)
+- pages mocked: pages/campagnes.html, pages/parametres-ia.html, pages/campagne.html, pages/fiche-entite.html, pages/preparation-seance.html, pages/medias.html, pages/soundbox.html, pages/dm-view.html, pages/player-view.html
+- frozen screens: medias, parametres-ia, player-view, soundbox
+
+What tasks of each unit have cost so far, under this harness — a slice is one session, and a unit whose third quartile runs high is one to cut finer:
+- capability: median 2.37 $, third quartile 3.30 $ over 24 task(s)
+- micro-ui: median 5.04 $, third quartile 6.36 $ over 20 task(s)
+- concept: median 1.09 $, third quartile 1.44 $ over 12 task(s)
+- data-capability: median 10.30 $, third quartile 13.90 $ over 49 task(s)
+- composition: median 1.35 $, third quartile 2.61 $ over 6 task(s)
+- aggregate: median 5.16 $, third quartile 8.52 $ over 14 task(s)
+- infrastructure: median 5.20 $, third quartile 7.04 $ over 5 task(s)
+- tooling: median 1.26 $, third quartile 2.36 $ over 17 task(s)
+
+**The design dossier** — the milestone's part of what the factory's
+creation decided:
+<dossier>
+Micro-frontends (mock/components/, contract D once built):
+- CampaignList (campaign): needs campaign.listCampaigns; actions campaign.createCampaign, campaign.exportCampaign, campaign.importCampaign; fixtures fixtures/CampaignList.json; fragment mock/components/CampaignList.html
+- AiSettings (ai): needs ai.getSettings; actions ai.saveSettings, ai.testConnection; fixtures fixtures/AiSettings.json; fragment mock/components/AiSettings.html
+- CampaignOverview (campaign): needs campaign.getCampaign; actions campaign.exportCampaign; fixtures fixtures/CampaignOverview.json; fragment mock/components/CampaignOverview.html
+- SessionList (session): needs session.listSessions, campaign.listCharacters; actions session.createSession; fixtures fixtures/SessionList.json, fixtures/entities.json; fragment mock/components/SessionList.html
+- CampaignElements (campaign): needs campaign.listPlayers, campaign.listCharacters, campaign.listPlaces, campaign.listEvents, media.listMedia, soundbox.listSounds; actions -; fixtures fixtures/entities.json, fixtures/media.json, fixtures/sounds.json; fragment mock/components/CampaignElements.html
+- NoteImport (ai): needs campaign.listImportedNotes; actions ai.extractFromNotes, campaign.createEntitiesFromNote; fixtures fixtures/NoteImport.json; fragment mock/components/NoteImport.html
+- ToCreateList (ai): needs campaign.listEntitiesToCreate; actions ai.createFromBrief; fixtures fixtures/ToCreateList.json; fragment mock/components/ToCreateList.html
+- EntityEditor (campaign): needs campaign.getEntity, campaign.listPlayers, media.listMedia; actions campaign.saveEntity, ai.proposeCharacter, dndbeyond.importCharacter, dndbeyond.resyncCharacter; fixtures fixtures/entities.json, fixtures/EntityEditor.json, fixtures/media.json; fragment mock/components/EntityEditor.html
+- VersionHistory (campaign): needs campaign.listEntityVersions; actions campaign.restoreEntityVersion; fixtures fixtures/VersionHistory.json, fixtures/entities.json; fragment mock/components/VersionHistory.html
+- PreviousSummary (session): needs session.getPreviousSessionSummary, session.getSessionJournal; actions -; fixtures fixtures/PreviousSummary.json; fragment mock/components/PreviousSummary.html
+- OralBrief (ai): needs session.getLastBrief; actions ai.analyzeBrief; fixtures fixtures/OralBrief.json; fragment mock/components/OralBrief.html
+- SceneBoard (session): needs session.getSession, session.listScenes, campaign.listCharacters, media.listMedia, table.getBattlemapInstance; actions session.addPresentCharacter, session.removePresentCharacter, session.addScene, session.reorderScenes, table.createBattlemapInstance; fixtures fixtures/SceneBoard.json, fixtures/entities.json, fixtures/media.json, fixtures/ToCreateList.json, fixtures/Battlemap.json; fragment mock/components/SceneBoard.html
+- LiveSessionBar (session): needs session.getLiveSession, live.getDiffusion; actions live.showCover, live.closeWindow, session.closeSession; fixtures fixtures/LiveSessionBar.json, fixtures/media.json, fixtures/Battlemap.json; fragment mock/components/LiveSessionBar.html
+Writes (contract F: effect, touches):
+- ai.analyzeBrief: insert, touches oral_brief.id, oral_brief.session_id, oral_brief.transcript, oral_brief.duration_seconds, oral_brief.recorded_at, oral_brief.analyzed_at, scene.id, scene.session_id, scene.position, scene.title, scene.notes, scene_entity.scene_id, scene_entity.entity_id, scene_entity.position, scene_media.scene_id, scene_media.media_id, entity_to_create.id, entity_to_create.campaign_id, entity_to_create.session_id, entity_to_create.brief_id, entity_to_create.scene_id, entity_to_create.type, entity_to_create.name, entity_to_create.excerpt, entity_to_create.status, entity_to_create.created_at, entity.description, entity.notes, entity.updated_at, character.background, character.behavior, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.created_at
+- ai.createFromBrief: insert, touches entity_to_create.refinement_text, entity_to_create.status, entity_to_create.created_entity_id, entity.id, entity.campaign_id, entity.type, entity.name, entity.description, entity.created_at, entity.updated_at, character.entity_id, character.initial_prompt, character.background, character.behavior, character.strength, character.dexterity, character.constitution, character.intelligence, character.wisdom, character.charisma, character.armor_class, character.hp_max, character.actions, character.token_color, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.created_at, scene_entity.scene_id, scene_entity.entity_id, scene_entity.position
+- ai.extractFromNotes: insert, touches imported_note.id, imported_note.campaign_id, imported_note.raw_text, imported_note.created_at, imported_note.analyzed_at, note_proposal.id, note_proposal.note_id, note_proposal.type, note_proposal.name, note_proposal.excerpt, note_proposal.existing_entity_id, note_proposal.checked
+- ai.proposeCharacter: update, touches character.initial_prompt, character.background, character.behavior, character.strength, character.dexterity, character.constitution, character.intelligence, character.wisdom, character.charisma, character.armor_class, character.hp_max, character.actions, entity.updated_at, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.created_at
+- ai.saveSettings: upsert, touches ai_provider.id, ai_provider.mode, ai_provider.label, ai_provider.url, ai_provider.detected_api_type, ai_provider.api_key, ai_provider.binary, ai_provider.generation_model, ai_provider.summary_model, ai_settings.active_provider_id, ai_settings.updated_at
+- ai.testConnection: update, touches ai_provider.last_test_ok, ai_provider.last_test_at, ai_provider.last_test_message, ai_provider.last_test_latency_ms
+- campaign.createCampaign: insert, touches campaign.id, campaign.name, campaign.kind, campaign.pitch, campaign.art, campaign.glyph, campaign.created_at, campaign.sound_master_volume, session.id, session.campaign_id, session.position, session.title, session.status, session.microphone_on
+- campaign.createEntitiesFromNote: insert, touches note_proposal.checked, note_proposal.created_entity_id, entity.id, entity.campaign_id, entity.type, entity.name, entity.description, entity.created_at, entity.updated_at, character.entity_id, character.token_color, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.created_at
+- campaign.exportCampaign: insert, touches campaign.last_exported_at
+- campaign.importCampaign: insert, touches campaign.id, campaign.name, campaign.kind, campaign.pitch, campaign.art, campaign.glyph, campaign.cover_media_id, campaign.created_at, campaign.last_exported_at, campaign.imported_at, campaign.origin_campaign_id, campaign.sound_master_volume, player.id, player.campaign_id, player.name, player.notes, player.created_at, entity.id, entity.campaign_id, entity.type, entity.name, entity.description, entity.notes, entity.created_at, entity.updated_at, character.entity_id, character.player_id, character.initial_prompt, character.background, character.behavior, character.strength, character.dexterity, character.constitution, character.intelligence, character.wisdom, character.charisma, character.armor_class, character.hp_max, character.spells, character.actions, character.portrait_media_id, character.token_media_id, character.token_crop, character.token_color, character.dndbeyond_id, character.dndbeyond_synced_at, entity_alias.id, entity_alias.entity_id, entity_alias.alias, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.created_at, media.id, media.campaign_id, media.kind, media.title, media.file_path, media.width_px, media.height_px, media.place_id, media.uploaded_at, battlemap_grid.media_id, battlemap_grid.hex_size_px, battlemap_grid.offset_x, battlemap_grid.offset_y, battlemap_grid.orientation, battlemap_grid.color, battlemap_grid.opacity, sound.id, sound.campaign_id, sound.name, sound.file_path, sound.tags, sound.volume, sound.created_at, session.id, session.campaign_id, session.position, session.title, session.planned_on, session.status, session.started_at, session.closed_at, session.microphone_on, session.summary, session.summary_model, session.summary_edited_at, session_present_character.session_id, session_present_character.character_id, session_present_character.added_at, scene.id, scene.session_id, scene.position, scene.title, scene.notes, scene_entity.scene_id, scene_entity.entity_id, scene_entity.position, scene_media.scene_id, scene_media.media_id, session_journal_line.id, session_journal_line.session_id, session_journal_line.scene_id, session_journal_line.spoken_at, session_journal_line.text
+- campaign.restoreEntityVersion: update, touches entity.name, entity.description, entity.notes, entity.updated_at, character.player_id, character.initial_prompt, character.background, character.behavior, character.strength, character.dexterity, character.constitution, character.intelligence, character.wisdom, character.charisma, character.armor_class, character.hp_max, character.spells, character.actions, character.portrait_media_id, character.token_media_id, character.token_crop, character.token_color, character.dndbeyond_id, character.dndbeyond_synced_at, entity_alias.id, entity_alias.entity_id, entity_alias.alias, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.restored_from_version_id, entity_version.created_at
+- campaign.saveEntity: upsert, touches entity.id, entity.campaign_id, entity.type, entity.name, entity.description, entity.notes, entity.created_at, entity.updated_at, character.entity_id, character.player_id, character.initial_prompt, character.background, character.behavior, character.strength, character.dexterity, character.constitution, character.intelligence, character.wisdom, character.charisma, character.armor_class, character.hp_max, character.spells, character.actions, character.portrait_media_id, character.token_media_id, character.token_crop, character.token_color, entity_alias.id, entity_alias.entity_id, entity_alias.alias, entity_version.id, entity_version.entity_id, entity_version.version_number, entity_version.source, entity_version.snapshot, entity_version.diff, entity_version.created_at, player.id, player.campaign_id, player.name, player.notes, player.created_at
+- session.addPlaceToSession: effect not judged, touches scene_entity.scene_id, scene_entity.entity_id, scene_entity.position
+- session.addPresentCharacter: insert, touches session_present_character.session_id, session_present_character.character_id, session_present_character.added_at
+- session.addScene: insert, touches scene.id, scene.session_id, scene.position, scene.title, scene.notes
+- session.closeSession: update, touches session.status, session.closed_at, session.microphone_on, session.summary, session.summary_model, sound_playback.stopped_at
+- session.createSession: insert, touches session.id, session.campaign_id, session.position, session.title, session.planned_on, session.status, session.microphone_on, session_present_character.session_id, session_present_character.character_id, session_present_character.added_at
+- session.removePresentCharacter: delete, touches session_present_character.session_id, session_present_character.character_id
+- session.reorderScenes: update, touches scene.position
+Aggregates (drafted under mock/data/aggregates/, contract I):
+(the dossier goes on: read the files named above)
+
+</dossier>
+Ids in `produces` and `needs`, a write's `effect` and `touches`, are copied
+from it, never invented. A micro-frontend slice names its fragment and its
+fixtures (`mock/fixtures/<Capability>.json`, one per Capability it needs).
+**The Data layer's schema is one slice, first.** When the milestone lays
+aggregates, its first slice is an `infrastructure` one that writes every
+migration of the milestone from `mock/data/model.json` — one file per
+aggregate, `crates/data/migrations/NNNN_<aggregate_snake>.sql`, NNNN counting
+on from the migrations the inventory shows, in foreign-key order (a table
+after every table it references) — and copies those tables into
+`data/model.json`; `mock/data/model.json` is the design and stays as it is,
+the architecture gate refuses a build that touches it. Then one slice per
+aggregate, each `depends_on` the schema slice and on no other aggregate:
+it installs its draft `mock/data/aggregates/<Aggregate>.aggregate.json` as
+`crates/<system>/aggregates/<Aggregate>/aggregate.json` — its system's
+folder, never `crates/dataguard/` (gate `aggregate-placed`) — with its
+invariants and their tests, on tables already there, and writes no migration. The
+aggregates then build side by side (ForgeDesMondes' first Data layer
+chained them on one another's migration and five lanes held three). A slice whose unit uses a port the milestone has not built yet
+builds it first, or a slice before it does: `crates/ports/<port>/` with its
+trait, its fake and contract tests, then its adapter as ports.json names it.
+Its manifest names the port under `ports`.
+
+**Each slice is the whole SPEC its session builds from** — no one refines
+it after you. `goal`: three to six sentences on what the user gets.
+`acceptance`: the checks that say it is done, each one a given/when/then a
+person can answer yes or no to; every rule the slice completes restated
+with its criterion and cited `(R<id>)`. `business_rules`: the invariants
+and rule criteria it must hold, from the dossier. `technical`: the paths,
+manifests and contracts it opens, as the inventory and the layout name
+them — a sketch; the session plans.
+
+Every unit ships its manifest, validated in CI against `contracts/`; a slice
+that opens one must say so in its brief, with the required fields:
+`capability.json` (capability, system, version, description, reads),
+`data-capability.json` (dataCapability, owner, version, effect, target,
+touches, payload, mode, invariants, permissions, callableBy, idempotencyKey),
+`aggregate.json` (aggregate, fields, invariants, relations, holds),
+`micro-ui.json` (microUi, system, description, needs, props),
+`concept.json` (concept, version, kind, definition, output, conformance).
+
+Answer with a JSON array and nothing else, one object per slice, in the
+order tasks must be taken:
+```json
+[{"title": "a short, specific title", "brief": "what this slice covers and does not cover", "branch": "feat/a-slug", "needs_human": false, "unit": "capability", "system": "credit", "concept": "Risk@3", "effect": null, "touches": [], "aggregate": null, "produces": ["credit.calculateRisk"], "needs": ["Account", "Risk@3"], "depends_on": [], "rules": ["R3"], "goal": "what the user gets", "acceptance": ["given …, when …, then … (R3)"], "business_rules": ["…"], "technical": "crates/credit/capabilities/calculate-risk/ with its capability.json …"}]
+```
+An empty array `[]` means this milestone needs no further task.

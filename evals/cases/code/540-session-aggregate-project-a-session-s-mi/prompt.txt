@@ -1,0 +1,935 @@
+/tech-analyst
+
+--- EXECUTION CONTEXT (injected by harness-launcher (dev_loop)) ---
+You are running head-less in an unattended loop (`claude -p`). Nobody will
+read this output before the run ends and nobody can answer a question.
+These rules override the skill's interactive stopping points:
+
+1. Where the skill waits for a go-ahead or a confirmation (/code steps 2
+   and 3), write your findings into your reply and carry on. Reporting
+   stays mandatory; waiting does not.
+2. Where the skill says to ask because a choice is genuinely ambiguous, do
+   not guess. Stop, change nothing further, and end your reply with the one
+   line `AGENT_LOOP_STOP: <one-line reason>`. The loop halts and a human
+   picks it up. Stopping is a correct outcome, not a failure.
+3. The integration branch for this run is `milestone/27-live-microphone-and-suggestions`. Wherever a skill says
+   `main` as the PR base or the branch-off point, read `milestone/27-live-microphone-and-suggestions`: branch
+   off it, and `gh pr create --base milestone/27-live-microphone-and-suggestions`. The rest of CLAUDE.md's
+   Repository etiquette stands unchanged — branch -> PR, merged the way this
+   stage's own instructions say, and never a direct push.
+4. Stage by name, never `git add -A`. The tree may carry unrelated
+   in-flight work that is not yours to commit.
+5. Do not start another pipeline stage as its own process, and do not
+   /clear. The loop runs one process per stage. Where this prompt names a
+   second skill to continue into, that continuation is part of this same
+   stage — not a new one, and not something to hand off.
+6. End your reply with `AGENT_LOOP_OK: <one-line summary>` if the stage
+   completed, or `AGENT_LOOP_STOP: <reason>` if it did not.
+--- END EXECUTION CONTEXT ---
+The task is issue #540 ("Session aggregate: project a session's microphone, status and start into the session table"); its body, below under SCOPE, is the
+SPEC. It is on the **write side** of the architecture (harness:write-side): it
+mutates existing data or the rules that guard it, and it merges only once
+its review is clean and every check green.
+Plan it as /tech-analyst: the pre-flight gate, the ordered checklist against
+the real code, the stop line, the risks. Then, in this same session, without
+waiting for a go-ahead and without /clear, carry out
+.claude/skills/code/SKILL.md against your own plan — build, run every
+Verification bullet with real output, /code-review, run `bash
+scripts/gates-local.sh` and fix what fails (every gate of gates.yml on a
+full copy of your work merged with your base, jobs in parallel, plus the
+closure check the loop runs after you; minutes long, so give the Bash call a
+`timeout` of 600000 ms; `--failed` reruns what was left red;
+a `base-red` gate is red on your base with the same errors, not yours to
+fix) — or, in a repository without that script, the gates of
+`.github/workflows/gates.yml` by hand —, then the mutants the CI will judge, in
+the foreground: `git diff origin/<your base> > .git/change.diff && cargo
+mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
+one before the PR (a mutant the CI finds costs a whole repair round); a Micro-UI or a screen ships with its
+mock-up under mock/, listed in mock/pages.json (contract N), its parts
+named (data-writes / data-reads, contract D), bundles
+rebuilt with mock/build.sh, styled through the design system's variables
+(mock/design/tokens.css) and the kit's classes (mock/kit/kit.css, contract
+O) — both carried onto the integration branch from `design-system`,
+read-only on yours — a kit component that cannot serve as it is recoded on
+`design-system` with a `recoded` line; then
+branch -> PR, and
+STOP THERE: open the pull request against the milestone branch with
+`gh pr create --label harness:to-review` (the agent review runs on it), say its
+number in your reply and END YOUR TURN. The harness watches its CI from
+here: never wait on it — never poll `gh pr checks`, never a background
+watcher, never Monitor, never a sleep loop or a scheduled wake-up (a session
+silent for twenty minutes is killed) — and do NOT run `gh pr merge`: a
+write-side PR is merged by `milestone_merge` once the review has run and
+every check is green, and its red checks are the repair route's. The PR
+body MUST carry the line `Closes #540` on its own: the loop reads that
+line off the PR to know the task is delivered once it is merged. The issue
+will carry `harness:review-pending` until then — that is expected, not a
+failure. Do not close the issue yourself.
+If the SPEC has a `## Rules` section, the tests of those rules, under
+tests/rules/ (contract P), are written already and are what this task
+turns green: start the product with `bash scripts/rules-runtime.sh serve`
+(export the KEY=value lines it prints), clear a past run's outcomes with
+`rm -f target/rules-status.jsonl`, run `cargo test --manifest-path
+tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
+test` in tests/rules/journey, then `node scripts/rules-gate.mjs status`
+(never commit the rules-status.json it writes), then
+`bash scripts/rules-runtime.sh stop`. A rule stays pending while a unit its
+test needs is not built. Never change rules.json, tests/rules/ or
+scripts/rules-runtime.sh — a gate refuses it. A rule's test you cannot
+meet is contested: write CONTEST.md at the root (the rule, the test, why
+it cannot hold) and say so in your reply. A passing test can be mounted
+wrong, and only status shows it: a rule it says mis-mounted is its test's
+mounting, never your code — copy its line into CONTEST.md as it is, and
+change nothing for it; the red tests listed under it are yours to fix. The
+server is crates/server, the frontend's host apps/shell, as the layout of
+CLAUDE.md says: the runtime starts them from there.
+Everything outside the product — a provider's API, payment, mail, storage,
+an LLM — goes through a port of ports.json (contract Q), named in the
+manifest's `ports`: its crate crates/ports/<port>/ (the trait, a fake, the
+contract tests), a real adapter under crates/ports/<port>/<provider>/. Tests
+and the rules' runtime run on the fake (`PORTS=fake`). A port that keeps
+state is written only by a DataCapability, and read from our mirror. Never
+call a provider outside a port. A port ports.json has not is a person's to
+approve: stop with `AGENT_LOOP_STOP: port <id> — <provider>, <cost>, <why>`
+instead of adding it. A `## Decision` of kind `port` with no verdict is
+approved — its approval task closed: add the port to ports.json and build
+it, its fake and contract tests first; with a verdict, follow it.
+A contract another milestone produces (plan/graph.json, gate
+`contracts-untouched`) is not yours to edit: stop with `AGENT_LOOP_STOP:
+contract <id> — <what you need>`; the contract manager evolves it for every
+consumer and this task runs again against the new version. A `## Decision`
+of kind `contract` means it did: read the manifest anew.
+No human is reachable while you work: every answer you had to assume goes
+in the PR body under `## Assumptions (autonomous run)`. Anything a human
+must do first becomes its own `harness:human` issue, a sub-issue of
+milestone #27, declared as a dependency of #540. A task the plan lacks is
+not a human's: when this task cannot be finished without another unit's
+work that no task of milestone #27 builds (a projection, a
+DataCapability, a migration outside your unit), never build it here nor
+open an issue for it. Find EVERY such missing unit first — read the whole
+SPEC against the code before you stop, not the first gap only — then stop
+once: `AGENT_LOOP_STOP: tasks [` followed, on that same line, by one JSON
+object per missing unit and `]` (`AGENT_LOOP_STOP: task ` and one object
+when there is one), each the slice as /split writes it: title, branch
+(`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
+goal, acceptance (given/when/then criteria). The harness opens them under
+the milestone and parks this task until they land. If an assumption would make
+the task useless or harmful when wrong — a paid service, a schema decision
+later tasks depend on, a credential only the human holds — that is
+ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
+then decides it and writes the answer under `## Decision`. Honour
+`## Decision` and `## Owner Decisions` when the body has them: they
+override the sections above.
+Then, in this same session and without /clear, write the tests as
+.claude/skills/create-test/SKILL.md says — triage what you changed, write
+only the hermetic tests the change warrants, prove each red then green — and
+ship them **in the same PR**, never a second one. The PR body carries your
+plan (checklist, risks) under `## Plan` — the issue body is the SPEC, you
+never rewrite it — and, when the SPEC has a `## Rules` section, the line
+`Rules: R3, R5` naming them, which a gate checks.
+/code's steps 1-3 are what you just did as the tech analyst; adopt your own
+findings instead of re-deriving them. Nothing outside this session can read
+your plan, so a gate finding or a risk you do not act on now is lost — put it
+in your reply.
+Run the Rust tests with `bash scripts/test-scope.sh origin/<the branch your
+PR targets>` whenever the repository has that script, never a bare
+`cargo test --workspace`: a change that stays inside Capability crates
+(`crates/<system>/capabilities/<name>/`) then runs their tests alone, and
+anything else the whole workspace — the CI runs the same script on the PR.
+Arguments after `--` go to `cargo test`, to run one test while you work.
+Run every check — the tests, clippy, fmt, machete, the dead-code script, the
+gates — through `bash scripts/quiet.sh <the command>` whenever the repository
+has that script, e.g. `bash scripts/quiet.sh bash scripts/test-scope.sh
+origin/<branch>`: a pass is one line, a failure prints every line of its
+errors and the path of its full log.
+
+--- ARCHITECTURE RULES (injected by harness-launcher (dev_loop)) ---
+The rules of the one unit this task builds, as the gates check them: its
+place in the layout, its manifest, what it may know and what it must not,
+and the gate that judges it. This card stands for docs/ARCHITECTURE.md —
+open that document only where the card sends you there.
+
+UNIT: Aggregate — one aggregate's structure and code: its aggregate.json,
+its invariants as code with their tests, its projection, and the migration
+that shapes its tables. Write side: its PR is reviewed before it merges.
+
+Where it lives: crates/<system>/aggregates/<Aggregate>/, a folder named
+after it and one Cargo crate: package `aggregate-<snake>`, library
+`aggregate_<snake>` (AiSettings: `aggregate-ai-settings`,
+`aggregate_ai_settings`). It holds aggregate.json (contract I,
+contracts/i-aggregate.schema.json), its code in src/, its tests in the
+crate's tests/. Its system is the one the DataCapabilities that target it
+share, never crates/dataguard/. Adding one edits no shared file: write the
+folder, then run `bash scripts/register.sh` (it rewrites
+crates/dataguard/registry/Cargo.toml, never edited by hand); commit it and
+Cargo.lock with the unit. The migration goes under the DataGuard's
+migrations, and data/model.json is updated in the same PR (contract M).
+
+Its code: `pub fn plugin() -> Plugin` returning
+`Plugin::new().judge("<Aggregate>", YourJudge)`, plus `.project(…)` (a
+`Project`, what follows a write in memory) or `.project_pg(…)` (a
+`ProjectPg`, its PostgreSQL tables written inside the transaction that
+applies the write; the engine's `postgres` feature). `Judge::violated`
+answers the ids of the invariants the row after the command breaks;
+`ProjectionError::Refused` rejects the command and rolls all of it back;
+`ProjectPg::hydrate` answers a row the tables hold but the engine never
+wrote (fixtures loaded by SQL), so judges and `Prepare`s see it.
+The engine comes from the workspace: `harness-dataguard = { workspace =
+true }` (its line carries the `postgres` feature), never a source of its
+own. Its PostgreSQL types are the engine's re-export, `use
+harness_dataguard::tokio_postgres::{Client, Transaction};`: never a
+tokio-postgres dependency of its own, which externals-behind-ports refuses.
+
+Its document: `aggregate`, `fields` (each `kind` derived | authoritative,
+`criticality` critical | normal | low with the review role for a critical
+one, `merge` set | last-writer), `invariants` (each an `id`, a `rule`, an
+`onViolation` reject | human_review), `relations` (each `from`, `onDelete`
+restrict | cascade | nullify | archive, `semantic` when the link is outside
+a foreign key), `holds` (maxTtl, renewable).
+
+Rules: every invariant has a test naming its id, in the crate's tests/;
+every relation declares onDelete; deletion is a soft delete with a
+tombstone unless a human approves otherwise; prefer a derived value to a
+stored authoritative one that other rows could recompute. Two tasks on one
+aggregate run one after the other: the loop holds it while you build.
+
+What it must not do: compute a business value (that is a Concept), be read
+by a Micro-UI (that is a Capability's job), or depend on another unit.
+
+Gates that judge it: manifests-conform-to-contracts (I, M),
+aggregate-placed (its system's folder, named after it), units-registered
+(named in the registry, its library `aggregate_<snake>`), invariants-tested,
+ownership (the DataCapabilities that mutate it name fields it declares, none
+derived), capability-isolation, externals-behind-ports (no database client
+of its own). Its tests' database: `ScratchDb::create` (platform-scratch-db,
+gate scratch-databases-shared), never one created by hand. schema-impact is
+declared and switched on with the engine. After the merge the harness dumps the real schema and
+compares it with data/model.json: a divergence opens a diagnosis.
+--- END ARCHITECTURE RULES ---
+
+--- REPOSITORY CONFIGURATION (injected by harness-launcher (dev_loop)) ---
+This checkout's own configuration, verbatim: how the project is built, tested
+and linted. Read the scripts and runner settings from here instead of opening
+these files again. Configuration only, never the source; if a command taken
+from here fails, the file on disk wins — re-read it and carry on.
+
+<file path="apps/shell/package.json">
+{
+  "name": "shell",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The frontend's host: serves the composer, replays a frozen screen at /screens/<screen>, proxies the shell's wire protocol to SERVER_URL.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node build.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src",
+    "serve": "node dist/tsc/server/main.js",
+    "test": "npm run build && node --test \"dist/tsc/**/*.test.js\""
+  },
+  "dependencies": {
+    "ajv": "^8.17.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.39.5",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.71.2"
+  }
+}
+</file>
+
+<file path="Cargo.toml">
+# The product's one Rust workspace (docs/ARCHITECTURE.md, layout). A unit —
+# an aggregate, a Capability or a DataCapability — is a member by its folder
+# alone, through the three globs: adding one edits no shared file (rule 2,
+# gate `workspace-members-by-glob`). Only the plumbing is named.
+[workspace]
+resolver = "3"
+members = [
+    "crates/*/aggregates/*",
+    "crates/*/capabilities/*",
+    "crates/*/data-capabilities/*",
+    "crates/ai/provider",
+    "crates/data",
+    "crates/dataguard/registry",
+    "crates/dataguard/server",
+    "crates/ports/*",
+    "crates/ports/character-sheets/d-d-beyond-public-character-json-service",
+    "crates/ports/llm/anthropic-claude-api-default-claude-sonnet-5-5-for-generation-claude-haiku-4-5-20251001-for-summaries-switchable-to-the-dm-s-home-opencode-server-endpoint-or-to-the-opencode-claude-code-binaries",
+    "crates/ports/speech-to-text/phonon-local-to-be-evaluated-as-the-decision-requests",
+    "crates/server",
+    "crates/platform/conformance",
+]
+# The rules' business tests are a workspace of their own (contract P).
+exclude = ["tests/rules/business"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+
+[workspace.dependencies]
+harness-dataguard = { git = "https://github.com/laucans/custom-harness", tag = "dataguard-v5", features = ["postgres", "uuid"] }
+</file>
+
+<file path="crates/data/Cargo.toml">
+[package]
+name = "data"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The Data layer: the adapter of the `database` port (ports.json) — the read-write and read-only connections, the migrations' applier, the read-only query runner that answers JSON."
+publish = false
+
+[dependencies]
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+
+[dev-dependencies]
+tokio = { version = "1", default-features = false, features = ["macros", "rt"] }
+# The migrations' tests (`tests/*_migration.rs`): what the DataGuard judges of
+# a row the tables take — the engine, and the two aggregates whose judges the
+# tables leave to it.
+harness-dataguard = { workspace = true }
+aggregate-battlemap-instance = { path = "../table/aggregates/BattlemapInstance" }
+aggregate-diffusion = { path = "../live/aggregates/Diffusion" }
+# The Concepts' fixtures the Entity migration's SQL is held to (AliasMatch@1,
+# AbilityModifier@1).
+platform-conformance = { path = "../platform/conformance" }
+</file>
+
+<file path="crates/server/Cargo.toml">
+[package]
+name = "server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "The product's one server binary: the shell's wire protocol through the DataGuard engine (crates/dataguard/server), GET /health, the migrations through the Data layer, the mock-up's fixtures, PORTS=fake."
+publish = false
+
+[[bin]]
+name = "server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+data = { path = "../data" }
+dataguard-server = { path = "../dataguard/server" }
+# Every unit of the product, gathered: what `server inventory` lists.
+dataguard-registry = { path = "../dataguard/registry" }
+# The one Capability the registry cannot answer (hostless: it reads the llm
+# port's journal, not rows), served by this server's own route.
+list-provider-requests = { path = "../ai/capabilities/list-provider-requests" }
+ports-character-sheets = { path = "../ports/character-sheets" }
+ports-llm = { path = "../ports/llm" }
+ports-speech-to-text = { path = "../ports/speech-to-text" }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+uuid = { version = "1", default-features = false, features = ["v5"] }
+
+[dev-dependencies]
+tower = { version = "0.5", default-features = false, features = ["util"] }
+</file>
+
+<file path="apps/shell/tsconfig.json">
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "outDir": "dist/tsc"
+  },
+  "include": ["src"]
+}
+</file>
+
+<file path="rust-toolchain.toml">
+# The toolchain every build of this repository uses, local and CI alike.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
+</file>
+
+<file path=".github/workflows/ci.yml">
+# The project's own checks — installed by `harness init-repo`, beside
+# `gates.yml`; the repository owns it from here.
+#
+# The stack is the architecture's (docs/ARCHITECTURE.md, "Technology
+# choices"): Rust for everything but the Micro-UIs, TypeScript for those,
+# PostgreSQL as the one store. Each job checks its ecosystem as soon as it
+# exists and passes trivially before — a fresh repository is green from its
+# first pull request, and a task that adds `Cargo.toml` or `package.json` is
+# checked by the same run that brings it.
+#
+# A component that needs a CI of its own (a WebAssembly build, an
+# integration environment) adds its job here, in a task of its own.
+#
+# The two branch patterns are the harness's: `main_agent` is where finished
+# milestones land, `milestone/**` is what a task's pull request targets.
+#
+# The Rust tests run through `scripts/test-scope.sh`: a change that stays
+# inside Capability crates runs their tests alone, anything else the whole
+# workspace. A push to `main_agent` — a milestone landing — always runs the
+# whole workspace.
+name: ci
+
+on:
+  push:
+    branches: [main_agent, 'milestone/**']
+  pull_request:
+    branches: [main_agent, 'milestone/**']
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The mutants rotation files what no test caught as an issue.
+      issues: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CARGO_TERM_COLOR: always
+      # One role in CI; a project that tests its read-only role creates it
+      # in a step of its own.
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/app
+      DATABASE_URL_READONLY: postgres://postgres:postgres@localhost:5432/app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The history the test scope measures the change against.
+          fetch-depth: 0
+      - name: Toolchain (rust-toolchain.toml)
+        if: hashFiles('Cargo.toml') != ''
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        if: hashFiles('Cargo.toml') != ''
+      - name: Format
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo fmt --all -- --check
+      - name: Lint
+        if: hashFiles('Cargo.toml') != ''
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        if: hashFiles('Cargo.toml') != ''
+        env:
+          # A pull request against its target, a push against what it
+          # replaced; empty on main_agent, which the script reads as "all".
+          BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || (github.ref_name != 'main_agent' && github.event.before || '') }}
+        run: |
+          if [ -f scripts/test-scope.sh ]; then
+            bash scripts/test-scope.sh "$BASE"
+          else
+            cargo test --workspace --all-features
+          fi
+      - uses: taiki-e/install-action@v2
+        if: hashFiles('Cargo.toml') != ''
+        with:
+          # cargo-mutants for the rotation; the in-diff mutants have a job
+          # of their own.
+          tool: cargo-machete,cargo-mutants
+      # The dead code the compiler lets through: a dependency no crate uses,
+      # a `pub` item no crate of the workspace calls (scripts/dead-code.sh).
+      - name: Dead code
+        if: hashFiles('Cargo.toml') != ''
+        run: |
+          cargo machete
+          if [ -f scripts/dead-code.sh ]; then bash scripts/dead-code.sh; fi
+      # The code no change touches is judged too, a bucket of files per run
+      # (scripts/mutants-rotation.sh: the run number picks the bucket, so
+      # runs in parallel judge disjoint files). Never red: what it misses
+      # be
+[... truncated: this file ran over its share of the digest ...]
+</file>
+
+<file path="apps/shell/eslint.config.mjs">
+// The lint of the shell's TypeScript: the recommended rules, type-aware —
+// a floating promise or an unsafe `any` is an error, not a style choice.
+import js from '@eslint/js';
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
+  { ignores: ['dist/', 'node_modules/', 'build.mjs', 'eslint.config.mjs'] },
+  js.configs.recommended,
+  ...tseslint.configs.recommendedTypeChecked,
+  {
+    // node:test's `describe` and `test` return promises the runner collects itself, and a fake
+    // `fetch` is async without awaiting.
+    files: ['**/*.test.ts'],
+    rules: { '@typescript-eslint/no-floating-promises': 'off', '@typescript-eslint/require-await': 'off' },
+  },
+  { languageOptions: { parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } } },
+);
+</file>
+[... truncated: the configuration digest ran over its budget ...]
+--- END REPOSITORY CONFIGURATION ---
+
+--- PUBLIC SIGNATURES (injected by harness-launcher (dev_loop)) ---
+The public shape of the files this task names, and of a dependency it builds
+on (at the version this checkout builds) — what you can call, with what
+arguments; bodies left out on purpose. Read it instead of opening these files,
+or the dependency's source, to learn their API. Only public items, only what
+the task names: a neighbour not listed here is a file you still open. Outside
+TypeScript it is derived by pattern, not by a compiler — where it disagrees
+with the code, the code wins.
+
+<signatures path="crates/session/aggregates/Session/src/sessions.rs">
+pub const SESSION_ID: &str = "…"
+pub const SESSION_CAMPAIGN_ID: &str = "…"
+pub const SESSION_TITLE: &str = "…"
+pub const PLANNED_ON: &str = "…"
+pub const SESSION_STATUS: &str = "…"
+pub const MICROPHONE_ON: &str = "…"
+pub const PRESENT: &str = "…"
+pub const ONESHOT_SINGLE_SESSION: &str = "…"
+pub const PRESENT_ONLY_PJ: &str = "…"
+pub const ONESHOT: &str = "…"
+pub struct Sessions
+</signatures>
+
+<signatures crate="harness-dataguard" source="dataguard-v5 @ 56cb6be" path="src/lib.rs">
+pub mod aggregate
+pub mod api
+pub mod command
+pub mod engine
+pub mod guard
+pub mod manifest
+pub mod memory
+pub mod messages
+pub mod plugins
+pub mod queue
+pub mod reads
+pub mod reconcile
+pub mod registry
+pub mod resolver
+pub mod store
+pub mod postgres
+pub use tokio_postgres
+pub enum Error {
+    UnknownDataCapability(String),
+    NotFound(String),
+    Forbidden(String),
+    NotNow(String),
+    Store(String),
+    Misconfigured(String),
+    Refused(plugins::Refusal),
+    UnregisteredQuery(String),
+}
+/// What an engine call answers.
+pub type Result<T> = std::result::Result<T, Error>
+</signatures>
+
+<signatures crate="harness-dataguard" source="dataguard-v5 @ 56cb6be" path="src/plugins.rs">
+pub struct Shared {
+    /* 1 private field(s) */
+}
+impl Shared {
+    pub fn insert<T: Send + Sync + 'static>(&mut self, value: Arc<T>)
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<Arc<T>>
+}
+/// The rows of every partition as the commands still pending leave them:
+pub trait Partitions: Send + Sync {
+    /// The row of `partition` (`<Aggregate>/<id>`) as the confirmed state
+    async fn row(&self, partition: &str) -> crate::Result<BTreeMap<String, Value>>;
+}
+pub struct Context<'a> {
+    pub manifest: &'a DataCapability,
+    pub caller: &'a Caller,
+    pub base: &'a BTreeMap<String, Value>,
+    pub now: u64,
+    pub now_millis: u64,
+    pub ids: &'a dyn Ids,
+    pub shared: &'a Shared,
+    pub partitions: &'a dyn Partitions,
+    pub rows: Option<&'a dyn Rows>,
+}
+impl Context<'_> {
+    pub async fn row(&self, partition: &str) -> Result<BTreeMap<String, Value>, Refusal>
+}
+pub struct Prepared {
+    pub payload: BTreeMap<String, Value>,
+    pub target_id: Option<String>,
+    pub warnings: Vec<String>,
+    pub then: Vec<Submission>,
+    pub attachment: Option<Value>,
+}
+pub enum RefusalKind {
+    NotFound,
+    Unprocessable,
+}
+pub struct Refusal {
+    pub kind: RefusalKind,
+    pub message: String,
+}
+impl Refusal {
+    pub fn not_found(message: impl Into<String>) -> Self
+    pub fn unprocessable(message: impl Into<String>) -> Self
+}
+/// A `DataCapability`'s code: the submission turned into what it writes.
+pub trait Prepare: Send + Sync {
+    /// The payload and the row the submission writes, or why it may not.
+    async fn prepare(&self, context: &Context<'_>, payload: &BTreeMap<String, Value>, target_id: Option<&str>) -> Result<Prepared, Refusal>;
+}
+/// An aggregate's invariants written as code, beside its declared rules.
+pub trait Judge: Send + Sync {
+    /// The ids of the aggregate's invariants that `state` — the row after
+    fn violated(&self, state: &BTreeMap<String, Value>, entry: &Entry) -> Vec<String>;
+}
+/// What follows an applied write of an aggregate: a read table, a cache.
+pub trait Project: Send + Sync {
+    /// Sees one write the store applied.
+    fn observe(&self, write: &Write);
+}
+pub enum ProjectionError {
+    Refused(String),
+    Failed(String),
+}
+/// What follows an applied write of an aggregate, in the product's
+pub trait ProjectPg: Send + Sync {
+    /// Writes what follows `write`, after the engine's own row and before
+    async fn project(&self, write: &Write, tx: &tokio_postgres::Transaction<'_>) -> Result<(), ProjectionError>;
+    /// Makes ready what the projection needs, once, when the store starts.
+    async fn warm(&self, _client: &tokio_postgres::Client) -> Result<(), ProjectionError> { … }
+    /// The row of `partition` as the product's tables hold it, for a row
+    async fn hydrate(&self, _partition: &str, _client: &tokio_postgres::Client) -> Result<Option<BTreeMap<String, Value>>, ProjectionError> { … }
+}
+pub struct Answer {
+    pub capability: String,
+    pub sql: String,
+    pub variables: Vec<String>,
+    pub answer: fn(&Value, &BTreeMap<String, Value>) -> Value,
+}
+pub struct Plugin {
+    /* 7 private field(s) */
+}
+impl Plugin {
+    pub fn new() -> Self
+    pub fn prepare(mut self, data_capability: &str, prepare: impl Prepare + 'static) -> Self
+    pub fn judge(mut self, aggregate: &str, judge: impl Judge + 'static) -> Self
+    pub fn project(mut self, aggregate: &str, project: impl Project + 'static) -> Self
+    pub fn project_pg(mut self, aggregate: &str, project: impl ProjectPg + 'static) -> Self
+    pub fn answer(mut self, answer: Answer) -> Self
+    pub fn share<T: Send + Sync + 'static>(mut self, value: Arc<T>) -> Self
+    pub fn needs<T: Send + Sync + 'static>(mut self) -> Self
+}
+pub struct Plugins(pub(crate) Plugin)
+impl Plugins {
+    pub fn needs(&self) -> Vec<&'static str>
+}
+</signatures>
+
+<signatures crate="harness-dataguard" source="dataguard-v5 @ 56cb6be" path="src/manifest.rs">
+pub enum Idempotency {
+    Required,
+    Optional,
+}
+pub struct Target {
+    pub aggregate: String,
+    pub id: Option<String>,
+}
+pub struct DataCapability {
+    pub data_capability: String,
+    pub owner: String,
+    pub version: u64,
+    pub effect: Effect,
+    pub target: Target,
+    pub touches: Vec<String>,
+    pub payload: BTreeMap<String, String>,
+    pub mode: Mode,
+    pub invariants: Vec<String>,
+    pub permissions: Vec<String>,
+    pub callable_by: Vec<String>,
+    pub idempotency_key: Idempotency,
+}
+impl DataCapability {
+    pub fn parse(json: &str) -> std::result::Result<Self, serde_json::Error>
+    pub fn versioned(&self) -> String
+    pub fn is_pure_addition(&self) -> bool
+    pub fn admits(&self, caller: &str) -> bool
+    pub fn missing_permissions(&self, granted: &[String]) -> Vec<String>
+}
+</signatures>
+
+<signatures crate="harness-dataguard" source="dataguard-v5 @ 56cb6be" path="src/aggregate.rs">
+pub enum Kind {
+    Derived,
+    Authoritative,
+}
+pub enum Criticality {
+    Low,
+    Normal,
+    Critical,
+}
+pub enum Merge {
+    Set,
+    LastWriter,
+}
+pub struct Field {
+    pub kind: Kind,
+    pub criticality: Criticality,
+    pub review: Option<String>,
+    pub merge: Option<Merge>,
+}
+pub enum OnViolation {
+    Reject,
+    HumanReview,
+}
+pub struct Invariant {
+    pub id: String,
+    pub rule: String,
+    pub on_violation: OnViolation,
+}
+pub enum OnDelete {
+    Restrict,
+    Cascade,
+    Nullify,
+    Archive,
+    Review,
+}
+pub struct Relation {
+    pub from: String,
+    pub on_delete: OnDelete,
+    pub semantic: bool,
+}
+pub struct Holds {
+    pub max_ttl: String,
+    pub renewable: bool,
+}
+pub struct Aggregate {
+    pub aggregate: String,
+    pub fields: BTreeMap<String, Field>,
+    pub invariants: Vec<Invariant>,
+    pub relations: Vec<Relation>,
+    pub holds: Option<Holds>,
+}
+/// A duration as the contracts spell it: `5m`, `24h`, `500ms`.
+pub fn duration_seconds(text: &str) -> Option<u64>
+impl Aggregate {
+    pub fn parse(json: &str) -> std::result::Result<Self, serde_json::Error>
+    pub fn critical_among(&self, fields: &[String]) -> Vec<(String, Option<String>)>
+    pub fn derived_among(&self, fields: &[String]) -> Vec<String>
+    pub fn never_stale(&self) -> Vec<String>
+    pub fn sets(&self) -> Vec<String>
+    pub fn invariant(&self, id: &str) -> Option<&Invariant>
+    pub fn max_hold_seconds(&self) -> u64
+}
+</signatures>
+
+<signatures crate="harness-dataguard" source="dataguard-v5 @ 56cb6be" path="src/command.rs">
+pub enum Effect {
+    Insert,
+    Update,
+    Delete,
+    Upsert,
+}
+pub enum Mode {
+    ConfirmOnStale,
+    Overwrite,
+    Relative,
+}
+pub enum State {
+    Queued,
+    AwaitingConfirmation,
+    Confirmed,
+    AwaitingReview,
+    Parked,
+    Applied,
+    Rejected,
+    Cancelled,
+    Expired,
+}
+impl State {
+    pub const fn is_final(self) -> bool
+}
+pub struct BasedOn {
+    pub version: u64,
+    pub values: BTreeMap<String, Value>,
+}
+pub struct PendingAhead {
+    pub command: String,
+    pub by: String,
+    pub value: Option<Value>,
+    pub state: State,
+}
+pub struct Projection {
+    pub confirmed: BTreeMap<String, Value>,
+    pub pending_ahead: Vec<PendingAhead>,
+}
+pub struct Parked {
+    pub ttl_seconds: u64,
+    pub since: u64,
+    pub warned: bool,
+}
+pub struct Entry {
+    pub command: String,
+    pub data_capability: String,
+    pub by: String,
+    pub partition: String,
+    pub position: u64,
+    pub based_on: BasedOn,
+    pub payload: BTreeMap<String, Value>,
+    pub effect: Effect,
+    pub touches: Vec<String>,
+    pub mode: Mode,
+    pub projection: Projection,
+    pub state: State,
+    pub confirmation: Option<String>,
+    pub at_head_since: Option<u64>,
+    pub parked: Option<Parked>,
+    pub requeued_from: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub attachment: Option<Value>,
+}
+impl Entry {
+    pub fn aggregate(&self) -> &str
+    pub fn target_id(&self) -> &str
+    pub fn fields(&self) -> Vec<String>
+}
+pub struct CommandResult {
+    pub command_id: String,
+    pub status: State,
+    pub data_version: Option<u64>,
+    pub violations: Vec<String>,
+    pub review_id: Option<String>,
+    pub attachment: Option<Value>,
+}
+impl CommandResult {
+    pub fn of(entry: &Entry, data_version: Option<u64>) -> Self
+}
+</signatures>
+
+<signatures crate="harness-dataguard" source="dataguard-v5 @ 56cb6be" path="src/api.rs">
+pub struct Submission {
+    pub data_capability: String,
+    pub payload: BTreeMap<String, Value>,
+    pub target_id: Option<String>,
+    pub based_on: Option<BasedOn>,
+    pub idempotency_key: Option<String>,
+    pub caller: Caller,
+}
+pub enum FollowUp {
+    Submitted(Box<Submitted>),
+    Refused { #[serde(rename = "…")] data_capability: String, error: String },
+}
+pub struct Submitted {
+    pub command_id: String,
+    pub partition: String,
+    pub replayed: bool,
+    pub warnings: Vec<String>,
+    pub result: CommandResult,
+    pub then: Vec<FollowUp>,
+}
+pub struct ReadRequest {
+    pub sha256: Option<String>,
+    pub variables: BTreeMap<String, Value>,
+}
+pub struct ReadResponse {
+    pub as_of: u64,
+    pub data: Value,
+}
+pub struct HoldRequest {
+    pub partition: String,
+    pub by: String,
+    pub ttl: Option<String>,
+}
+pub struct ReviewDecision {
+    pub by: String,
+    pub roles: Vec<String>,
+    pub approved: bool,
+}
+</signatures>
+[... 11 module(s) of harness-dataguard not carried, the block hit its budget: memory, engine, postgres, store, guard, reads, queue, registry, messages, reconcile, resolver ...]
+--- END PUBLIC SIGNATURES ---
+
+--- SCOPE (injected by harness-launcher (dev_loop)) ---
+ISSUE #540 below is the whole brief, and the whole of your work. It is a
+GitHub issue: what you produce goes back into the issue, never into a file
+under docs/.
+
+It sits in milestone #27, whose goal and architecture are given so
+you know what the batch delivers. Of its sibling tasks, only the ones this
+task builds on or delivers to are listed; a neighbour's internals are not
+part of this stage, and the roadmap is not reproduced — the plan below was
+written from both. If you do need one, read it rather than guess:
+`gh issue view <number>`. Do not implement, plan or rewrite any of them.
+
+MILESTONE #27 — Live microphone and suggestions
+## Architecture
+
+systems: live
+concepts: AliasMatch@1, DetectionVocabulary@1
+aggregates: Suggestion, Session, Sound
+side: harness:write-side
+
+NEIGHBOURS THIS TASK BUILDS ON OR DELIVERS TO
+- #523 — Capability live.listSuggestions: the pill's last 5 and their history [done] — ids: live.listSuggestions, Suggestion, Session, Entity, Sound
+    branch: feat/live-list-suggestions […]
+- #524 — DataCapability live.setMicrophone: the live microphone streams locally and produces suggestions [open] — ids: live.setMicrophone, Session, Suggestion, Sound, Entity, speech-to-text, AliasMatch@1, DetectionVocabulary@1
+    branch: feat/live-set-microphone […]
+- #525 — Micro-UI SuggestionPill: the bottom-right pill, its last 5, its history and the microphone toggle [done] — ids: SuggestionPill, live.listSuggestions, live.setMicrophone, soundbox.playSound
+    branch: feat/suggestion-pill […]
+- #540 — Session aggregate: project a session's microphone, status and start into the session table [open] — ids: Session.microphoneProjection, Session, live.listSuggestions <- CURRENT
+- #541 — Suggestion aggregate: project a suggestion into live_suggestion [open] — ids: Suggestion.projection, Suggestion, live.listSuggestions
+    branch: feat/suggestion-projection […]
+- #542 — DataCapability live.addSuggestion: record an element or a sound the microphone recognised during a live session [open] — ids: live.addSuggestion, Suggestion, Session, Sound, Entity
+    branch: feat/live-add-suggestion […]
+
+CURRENT ISSUE #540 — Session aggregate: project a session's microphone, status and start into the session table
+## Scope
+
+branch: feat/session-microphone-projection
+
+Applying a command on an existing Session partition that carries microphoneOn, sessionStatus or startedAt leaves the session table untouched: crates/session/aggregates/Session/src/sessions.rs returns early for a session the tables hold (a creation only is projected) and the Session plugin has no hydrate, so fixture sessions have no engine row. live.listSuggestions selects session.status = 'live' and DataCapabilities read the session table, so live.setMicrophone could never make a session live. Add a ProjectPg in the aggregate's own crate that UPDATEs session.status, started_at (stamped once) and microphone_on from the write of an existing session, keyed by the partition Session/<id>, ignoring any other Session row (scene, order, presence, to-create) and tombstones, with its own Postgres tests.
+
+Opened by the harness for #524, whose session stopped on it: #524 waits on this task.
+
+## Architecture
+
+unit: aggregate
+id: Session.microphoneProjection
+system: session
+aggregate: Session
+produces: Session.microphoneProjection
+needs: Session, live.listSuggestions
+side: harness:write-side
+
+## Business Goal
+
+A live.setMicrophone command applied on a session moves that session's status, started_at and microphone_on in the session table, so the capabilities reading the table see a live session with its microphone on.
+
+## Acceptance Criteria
+
+- given a session 'prep' in the tables and an applied write of Session/<id> with sessionStatus 'live', startedAt and microphoneOn true, when the projection runs, then the session row has status 'live', started_at set and microphone_on true
+- given a session already 'live' with started_at stamped, when a later write sets microphoneOn false, then microphone_on is false and started_at is unchanged
+- given a write of a scene, a scene order, a presence or a to-create entry on the Session aggregate, when the projection runs, then the session table is unchanged
+- given a Session tombstone or a session id the tables do not hold, when the projection runs, then nothing is written and the command is not rejected
+- given a write that would leave status 'closed' going back to 'live', when it is applied, then the status-lifecycle invariant rejects it and the table is unchanged
+--- END SCOPE ---

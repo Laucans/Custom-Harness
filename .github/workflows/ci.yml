@@ -32,6 +32,7 @@ jobs:
       - run: cargo build --workspace --all-targets
       - run: cargo test --workspace --all-features
       - run: cargo test --workspace --doc
+      - run: node --test scripts/skill-evals.test.mjs
 
   # The dead code the compiler lets through: a dependency no crate uses, a
   # `pub` item no crate of the workspace calls (scripts/dead-code.sh).
