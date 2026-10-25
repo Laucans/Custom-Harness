@@ -22,7 +22,8 @@
 //! milestone's into the integration branch, since they unblock work at no
 //! cost; then planning, the rules' tests and
 //! the decisions, which unblock others; then repairing before reviewing a
-//! PR in flight; then cutting and arbitrating; then building; then
+//! PR in flight; then re-studying a task whose stops kept finding missing
+//! units ([`Route::ReStudy`]); then cutting and arbitrating; then building; then
 //! preparing (business, then technical refinement); and last a file's test
 //! debt — plus a bonus for a milestone on the critical path
 //! ([`critical_path`]), so its PRs, decisions and tasks pass before the
@@ -67,6 +68,7 @@ use crate::common::catch_up::CatchUps;
 use crate::common::close_merged::Delivered;
 use crate::common::contest::{ContractLanded, PrWait, Settled};
 use crate::common::labels;
+use crate::common::restudy;
 use crate::common::rule_waits::{self, Unblocked, Waits};
 use crate::dev_loop::data::tasks;
 use crate::main_agent_merge::data::audit;
@@ -219,6 +221,13 @@ pub enum Route {
     TestDebt {
         /// The test-debt issue's number.
         issue: u64,
+    },
+    /// Walk every rule of this task at once and open every missing slice —
+    /// `restudy`: its sessions found missing tasks two stops in a row
+    /// (`common::restudy::due`).
+    ReStudy {
+        /// The task's number.
+        task: u64,
     },
     /// Build this task of this milestone on a lane — the dev loop's
     /// `--task` child. What a parallel watch starts; a sequential one runs
@@ -454,6 +463,7 @@ pub const fn base_weight(route: &Route) -> u32 {
         Route::ContractChange { .. } => 850,
         Route::PrFix { .. } => 800,
         Route::PrReview { .. } => 780,
+        Route::ReStudy { .. } => 720,
         Route::Split { .. } => 700,
         Route::Arbiter { .. } => 680,
         Route::DevLoop { .. } | Route::DevTask { .. } => 600,
@@ -779,10 +789,16 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
                 Some(*m),
             )
         }));
+        // A landing past its repairs asks a decision on its milestone: the
+        // decision comes first. Both are keyed on the milestone, and the
+        // free merge would win the key every tick, re-escalating and never
+        // letting `decide` run (ForgeDesMondes' #27/#562, 2026-10-25: 75 min
+        // of "Escalated { asked: false }").
         found.extend(
             snapshot
                 .ready_to_merge
                 .iter()
+                .filter(|m| !open(&snapshot.deciding).any(|asked| asked.number == **m))
                 .map(|m| (Route::MergeMainAgent { milestone: *m }, *m, Some(*m))),
         );
         found.extend(
@@ -884,6 +900,11 @@ fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
         .into_iter()
         .map(|milestone| (Route::Split { milestone }, milestone, Some(milestone)))
         .collect();
+    // A re-study writes no code: neither the rules' task nor a red base
+    // holds it. It builds and runs the product, so its database must answer.
+    if !snapshot.database_down {
+        found.extend(restudies(snapshot, running));
+    }
     found.extend(of_issues(snapshot, &snapshot.arbitrating, |issue| {
         Route::Arbiter { issue }
     }));
@@ -943,6 +964,34 @@ fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
         )
     }));
     found
+}
+
+/// The re-studies due: each building board's open agent tasks whose streak
+/// is due ([`restudy::due_on`]), not on a lane, not held by a decision or a
+/// person.
+fn restudies(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
+    snapshot
+        .boards
+        .iter()
+        .flat_map(|board| {
+            open(&board.tasks)
+                .filter(|task| {
+                    task.has(labels::AGENT)
+                        && !task.has(labels::NEEDS_DECISION)
+                        && !task.has(labels::HUMAN)
+                        && !running.contains(&task.number)
+                        && restudy::due_on(task)
+                })
+                .map(|task| {
+                    (
+                        Route::ReStudy { task: task.number },
+                        task.number,
+                        Some(board.milestone.number),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// What a tick starts of a [`schedule`], and what it leaves to wait.
@@ -5113,5 +5162,174 @@ mod tests {
             once.dedup();
             proptest::prop_assert_eq!(once.len(), found.len());
         }
+    }
+
+    #[test]
+    fn a_landing_past_its_repairs_is_decided_not_re_escalated() {
+        // ForgeDesMondes' #27, 2026-10-25: its landing PR #562 past its
+        // repairs, the milestone escalated (`harness:needs-decision`), and
+        // the free merge took the milestone's key every tick for 75 min.
+        let landing = Pr {
+            num: "562".to_string(),
+            head: "milestone/27-preparation".to_string(),
+            base: "main_agent".to_string(),
+            state: "OPEN".to_string(),
+            ..Pr::default()
+        };
+        let milestone = issue(27, &[labels::MILESTONE, labels::NEEDS_DECISION]);
+        let snapshot = Snapshot {
+            milestones: vec![milestone.clone()],
+            deciding: vec![milestone],
+            ready_to_merge: vec![27],
+            task_prs: vec![landing],
+            ..empty()
+        };
+        let picked = plan(schedule(&snapshot, &[], &|_| 0), &[], &[], 5, true);
+        let routes: Vec<Route> = picked
+            .free
+            .iter()
+            .chain(&picked.paid)
+            .map(|job| job.route.clone())
+            .collect();
+        assert_eq!(routes, [Route::Decide { issue: 27 }]);
+        assert_eq!(picked.paid[0].holds, [562], "the landing PR is held");
+        // Decided (the label off), the landing comes back.
+        let decided = Snapshot {
+            deciding: Vec::new(),
+            ..snapshot
+        };
+        assert_eq!(decide(&decided), Route::MergeMainAgent { milestone: 27 });
+        // A closed decision on the milestone holds nothing.
+        let mut closed = issue(27, &[labels::NEEDS_DECISION]);
+        closed.state = "closed".to_string();
+        let stale = Snapshot {
+            deciding: vec![closed],
+            ..decided
+        };
+        assert_eq!(decide(&stale), Route::MergeMainAgent { milestone: 27 });
+    }
+
+    /// #219 as its second discovery left it: due a re-study.
+    fn due_task(number: u64) -> Issue {
+        Issue {
+            body: "## Scope\n\nbranch: feat/prep\n\n## Decision\n\nkind: wait\nblocks: \
+                   AGENT_LOOP_STOP: tasks [...]\nround: 1\nmilestone: #28\ndiscovered: 2"
+                .to_string(),
+            ..issue(number, &[labels::AGENT, labels::READY])
+        }
+    }
+
+    fn restudy_snapshot(tasks: Vec<Issue>) -> Snapshot {
+        Snapshot {
+            milestones: vec![issue(28, &[labels::MILESTONE, labels::TRIGGERED])],
+            dev_loop_milestones: vec![28],
+            boards: vec![board(28, tasks)],
+            ..empty()
+        }
+    }
+
+    #[test]
+    fn a_due_task_is_restudied_before_its_milestone_s_tasks() {
+        let snapshot = restudy_snapshot(vec![
+            due_task(219),
+            issue(220, &[labels::AGENT, labels::READY]),
+        ]);
+        let jobs = schedule(&snapshot, &[], &|_| 0);
+        let routes: Vec<&Route> = jobs.iter().map(|job| &job.route).collect();
+        assert_eq!(
+            routes,
+            [
+                &Route::ReStudy { task: 219 },
+                &Route::DevTask {
+                    milestone: 28,
+                    task: 220
+                }
+            ]
+        );
+        let study = &jobs[0];
+        assert_eq!(
+            (study.cost, study.key, study.exclusive),
+            (Cost::Paid, 219, None)
+        );
+        assert!(study.holds.is_empty(), "{:?}", study.holds);
+        assert_eq!(study.weight, 720);
+        // Under a review, over a split.
+        assert!(
+            base_weight(&Route::ReStudy { task: 1 })
+                < base_weight(&Route::PrReview {
+                    pr: "1".to_string(),
+                    base: String::new()
+                })
+        );
+        assert!(
+            base_weight(&Route::ReStudy { task: 1 }) > base_weight(&Route::Split { milestone: 1 })
+        );
+        // Neither the rules' task, a red base nor a full backlog holds it;
+        // a database down does.
+        let held = Snapshot {
+            rules: vec![issue(5, &[labels::RULES])],
+            base_checks: Some(false),
+            review_backlog_full: true,
+            ..restudy_snapshot(vec![due_task(219)])
+        };
+        assert_eq!(decide(&held), Route::ReStudy { task: 219 });
+        let down = Snapshot {
+            database_down: true,
+            ..restudy_snapshot(vec![due_task(219)])
+        };
+        assert_eq!(decide(&down), Route::Nothing);
+    }
+
+    #[test]
+    fn a_restudy_waits_while_the_task_is_on_a_lane_or_a_decision_or_a_person_holds_it() {
+        let snapshot = restudy_snapshot(vec![due_task(219)]);
+        assert!(
+            !schedule(&snapshot, &[219], &|_| 0)
+                .iter()
+                .any(|job| matches!(job.route, Route::ReStudy { .. }))
+        );
+        for label in [labels::NEEDS_DECISION, labels::HUMAN] {
+            let mut held = due_task(219);
+            held.labels.push(label.to_string());
+            assert_eq!(
+                decide(&restudy_snapshot(vec![held])),
+                Route::Nothing,
+                "{label}"
+            );
+        }
+        let mut person = due_task(219);
+        person.labels = vec![labels::HUMAN.to_string()];
+        assert_eq!(decide(&restudy_snapshot(vec![person])), Route::Nothing);
+        let mut closed = due_task(219);
+        closed.state = "closed".to_string();
+        assert_eq!(decide(&restudy_snapshot(vec![closed])), Route::Nothing);
+        let mut stranger = due_task(219);
+        stranger.labels = vec![labels::READY.to_string()];
+        assert_eq!(decide(&restudy_snapshot(vec![stranger])), Route::Nothing);
+    }
+
+    #[test]
+    fn a_due_task_is_not_started_and_one_restudied_is() {
+        let snapshot = restudy_snapshot(vec![due_task(219)]);
+        assert!(
+            startable(&snapshot, &snapshot.boards[0], &[]).is_empty(),
+            "{:?}",
+            startable(&snapshot, &snapshot.boards[0], &[])
+        );
+        let mut studied = due_task(219);
+        studied.body.push_str("\nrestudied: 2\nrestudies: 1");
+        let snapshot = restudy_snapshot(vec![studied]);
+        assert_eq!(
+            startable(&snapshot, &snapshot.boards[0], &[])
+                .iter()
+                .map(|task| task.number)
+                .collect::<Vec<_>>(),
+            [219]
+        );
+        assert_eq!(
+            decide(&snapshot),
+            Route::DevLoop { milestone: 28 },
+            "no re-study twice on one discovery"
+        );
     }
 }

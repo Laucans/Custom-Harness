@@ -57,6 +57,9 @@ pub struct FakeRepos {
     merged_files: Rc<RefCell<Vec<Ran>>>,
     /// What `unpushed` answers: the local commits no remote has.
     unpushed: Rc<Vec<String>>,
+    /// What successive `head_sha` reads answer, in order; past the last,
+    /// `abc1234`.
+    heads: Rc<RefCell<Vec<String>>>,
 }
 
 impl FakeRepos {
@@ -188,6 +191,17 @@ impl FakeRepos {
         }
     }
 
+    /// The same `git`, whose successive `head_sha` reads answer these.
+    #[must_use]
+    pub fn with_heads(self, heads: &[&str]) -> Self {
+        Self {
+            heads: Rc::new(RefCell::new(
+                heads.iter().map(|h| (*h).to_string()).collect(),
+            )),
+            ..self
+        }
+    }
+
     /// The same `git`, holding these local commits no remote has.
     #[must_use]
     pub fn with_unpushed(self, commits: &[&str]) -> Self {
@@ -277,7 +291,12 @@ impl Repo for FakeRepo {
         Ok("main_agent".to_string())
     }
     async fn head_sha(&self) -> Outcome<String> {
-        Ok("abc1234".to_string())
+        let mut heads = self.repos.heads.borrow_mut();
+        Ok(if heads.is_empty() {
+            "abc1234".to_string()
+        } else {
+            heads.remove(0)
+        })
     }
     async fn dirty_files(&self) -> Outcome<Vec<String>> {
         let conflicts = self.repos.current_conflicts();

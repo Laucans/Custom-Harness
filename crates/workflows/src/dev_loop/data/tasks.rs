@@ -30,7 +30,7 @@
 
 use harness_core::domain::{Issue, Pr, Tags};
 
-use crate::common::{labels, sections};
+use crate::common::{labels, restudy, sections};
 use harness_architecture::graph::{Graph, Kind};
 use harness_architecture::vocabulary::{Declaration, Side, Unit};
 
@@ -522,7 +522,7 @@ pub fn mock_up_stands_in(task: &Issue) -> bool {
 
 /// The runnable tasks a parallel watch may start now, given those on a lane
 /// and what `may_start` admits of them, their blockers judged on `graph`
-/// ([`runnable_in`]).
+/// ([`runnable_in`]); never a task due a re-study ([`next_task`]).
 ///
 /// Two tasks that change the structure of the same aggregate run one after
 /// the other — the data layer is shared by construction, and two changes of
@@ -548,7 +548,7 @@ pub fn startable_tasks<'a>(
         .collect();
     let mut startable = Vec::new();
     for task in runnable {
-        if running.contains(&task.number) || !may_start(task) {
+        if running.contains(&task.number) || restudy::due_on(task) || !may_start(task) {
             continue;
         }
         match held_aggregate(task) {
@@ -563,12 +563,16 @@ pub fn startable_tasks<'a>(
     startable
 }
 
-/// Rule 2: the smallest runnable open task.
+/// Rule 2: the smallest runnable open task, not due a re-study.
+///
+/// A task due a re-study waits for it: its next session would stop on the
+/// next missing unit (`common::restudy`). Filtered here, the picker every
+/// mode shares, as in [`startable_tasks`].
 #[must_use]
 pub fn next_task(issues: &[Issue]) -> Option<&Issue> {
     open_agent_tasks(issues)
         .into_iter()
-        .filter(|issue| runnable(issue))
+        .filter(|issue| runnable(issue) && !restudy::due_on(issue))
         .min_by_key(|issue| issue.number)
 }
 

@@ -161,16 +161,14 @@ impl Apply {
                  should have refused it"
             )));
         };
-        let found = missing_task::open_or_find(
+        missing_task::open_or_find(
             self.gh.as_ref(),
             number,
             milestone,
             &decided.tasks,
             &ctx.traces,
         )
-        .await?;
-        missing_task::block_on(self.gh.as_ref(), number, &found.on).await?;
-        Ok(found)
+        .await
     }
 
     /// What the decision does beyond being written; the action carried out.
@@ -213,7 +211,9 @@ impl Apply {
                         ),
                     )
                     .await?;
-                self.gh.close_issue(issue.number).await?;
+                // Not planned: a cut task never lands, and a milestone's
+                // landing waits on every task but those (`delivery`).
+                self.gh.close_issue_not_planned(issue.number).await?;
                 native_milestone::close_if_milestone(self.gh.as_ref(), issue, &ctx.traces).await;
                 Ok(Act::Cut)
             }
@@ -671,7 +671,9 @@ mod tests {
         });
         let mut context = ctx(r#"{"action":"cut","summary":"out of scope"}"#, None, &[]);
         apply(&gh).run(&mut context).await.expect("applied");
-        assert!(gh.writes().contains(&Wrote::Closed(15)));
+        // Not planned: a cut task never holds its milestone's landing.
+        assert!(gh.writes().contains(&Wrote::ClosedNotPlanned(15)));
+        assert!(!gh.writes().contains(&Wrote::Closed(15)));
         assert!(
             !gh.writes()
                 .iter()
@@ -697,7 +699,7 @@ mod tests {
         let writes = gh.writes();
         let closed = writes
             .iter()
-            .position(|w| *w == Wrote::Closed(15))
+            .position(|w| *w == Wrote::ClosedNotPlanned(15))
             .expect("closed");
         assert_eq!(
             writes.get(closed + 1),
@@ -712,6 +714,7 @@ mod tests {
         let mut context = ctx(r#"{"action":"answer","summary":"Stripe"}"#, None, &[]);
         apply(&gh).run(&mut context).await.expect("applied");
         assert!(!gh.writes().contains(&Wrote::Closed(15)));
+        assert!(!gh.writes().contains(&Wrote::ClosedNotPlanned(15)));
         assert!(
             gh.writes()
                 .contains(&Wrote::Label(15, labels::AI_DECIDED.to_string()))
@@ -1148,6 +1151,7 @@ mod tests {
         let found = missing_task::Found {
             on: vec![3, 4],
             built: vec![("A".to_string(), "#7 built `feat/a` already".to_string())],
+            ..missing_task::Found::default()
         };
         assert_eq!(
             carried(Act::Open, &found),

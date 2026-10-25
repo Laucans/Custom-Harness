@@ -84,6 +84,10 @@ line is `idle: disk under the floor (N GB < M GB) …`), `DiskAboveFloor`
 pruned before its next job: both sizes in GB with one decimal, and what
 went).
 
+A task's every missing unit, found at once, is `Restudied` (the tasks it
+now waits on, the rules whose tests to contest): `#219 re-studied: waits on
+#567, #568; 1 rule test to contest (R15)`, info.
+
 ## `ports/` — what the inside needs from the outside
 
 One module per external component, traits only (plus the few values those
@@ -92,7 +96,7 @@ traits exchange). **A port decides, an adapter calls.**
 ```
 agent         Session, SessionFactory (open, fork), SessionSpec, Reply, Base — a fork branches from a Base the round holds in `Context::base`
 shell/git     Repo, Repos — reads answer, setup verbs return `Ran`; the catch-up's verbs (merge, take_theirs, remove, merge_base, show, stage_paths, merge_file, push_head) refuse or read nothing by default
-shell/github  GitHub — a failed read is never an empty list; commit_time, a commit's date, what a wait on its checks counts from; files written (put_file) and deleted (delete_file) as one commit on GitHub, no checkout; ensure_native_milestone (the native milestone mirroring a milestone issue, found by its `<!-- harness-milestone: #<n> -->` marker, created or its state fixed) and set_issue_milestone (GitHub's Milestone field on an issue)
+shell/github  GitHub — a failed read is never an empty list; commit_time, a commit's date, what a wait on its checks counts from; files written (put_file) and deleted (delete_file) as one commit on GitHub, no checkout; ensure_native_milestone (the native milestone mirroring a milestone issue, found by its `<!-- harness-milestone: #<n> -->` marker, created or its state fixed) and set_issue_milestone (GitHub's Milestone field on an issue); close_issue_not_planned (closed with GitHub's `not_planned` reason: what a milestone's landing does not wait on — a cut task, an opened slice its session found not needed)
 shell/disk    Disk — exists so deletion is testable (remove_file refused by default: a disk that does not say how never pretends it removed); size_bytes and modified_secs, 0 and None by default, are what a lane's pruning measures — a disk that cannot measure prunes nothing
 shell/volume  Volume — the free bytes of the volume holding a path: the watch's disk floor
 shell/process Ran, last_line — what a shell port hands back

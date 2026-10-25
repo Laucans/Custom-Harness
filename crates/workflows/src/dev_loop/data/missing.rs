@@ -175,23 +175,31 @@ pub fn asked_all(reason: &str) -> Option<Vec<Asked>> {
     if said.is_empty() {
         return None;
     }
+    Some(listed(said, MAX_SLICES))
+}
+
+/// Every slice a list declares — `[<slice>, …]`, as a stop or a re-study
+/// writes it — each one whole, refused or unwritable, the same title (case
+/// and spacing aside) named once. More than `max` is one refusal.
+#[must_use]
+pub fn listed(said: &str, max: usize) -> Vec<Asked> {
     let slices: Vec<serde_json::Value> = match json_reply::parse_array(said) {
         Ok(slices) => slices,
         Err(error) => {
-            return Some(vec![refused(
+            return vec![refused(
                 said,
                 format!("the stop carries no list of slices that reads ({error})"),
-            )]);
+            )];
         }
     };
-    if slices.len() > MAX_SLICES {
-        return Some(vec![refused(
+    if slices.len() > max {
+        return vec![refused(
             said,
             format!(
-                "too many slices in one stop ({} — at most {MAX_SLICES})",
+                "too many slices in one stop ({} — at most {max})",
                 slices.len()
             ),
-        )]);
+        )];
     }
     let mut titles: Vec<String> = Vec::new();
     let mut found = Vec::new();
@@ -210,7 +218,7 @@ pub fn asked_all(reason: &str) -> Option<Vec<Asked>> {
         };
         found.push(asked);
     }
-    Some(found)
+    found
 }
 
 /// A slice read, judged whole, refused, or a person's.
@@ -349,20 +357,36 @@ pub fn is_the_same(issue: &Issue, item: &TaskItem) -> bool {
     let Some(id) = id(item).filter(|_| !started) else {
         return false;
     };
-    sections::parse(&issue.body)
-        .get(sections::ARCHITECTURE)
-        .is_some_and(|architecture| {
-            architecture.lines().any(|line| {
-                let line = line.trim();
-                line.strip_prefix("id:")
-                    .is_some_and(|named| named.trim().trim_matches('`') == id)
-                    || line.strip_prefix("produces:").is_some_and(|named| {
-                        named
-                            .split(',')
-                            .any(|named| named.trim().trim_matches('`') == id)
-                    })
-            })
-        })
+    produced(issue).iter().any(|named| named == id)
+}
+
+/// The ids an issue builds: the `id:` and `produces:` lines of its
+/// `## Architecture`, each once, in order — what a slice that `needs` one
+/// of them waits on.
+#[must_use]
+pub fn produced(issue: &Issue) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let sections = sections::parse(&issue.body);
+    let Some(architecture) = sections.get(sections::ARCHITECTURE) else {
+        return ids;
+    };
+    for line in architecture.lines() {
+        let line = line.trim();
+        let named: Vec<&str> = if let Some(id) = line.strip_prefix("id:") {
+            vec![id]
+        } else if let Some(list) = line.strip_prefix("produces:") {
+            list.split(',').collect()
+        } else {
+            continue;
+        };
+        for id in named {
+            let id = id.trim().trim_matches('`').trim();
+            if !id.is_empty() && id != "-" && !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    ids
 }
 
 /// What a stop declared, one key per slice, sorted, each once.
@@ -754,6 +778,31 @@ mod tests {
             &sibling("other", by_id, &[labels::AGENT], "open"),
             &nameless
         ));
+    }
+
+    #[test]
+    fn what_an_issue_produces_is_its_id_and_produces_lines_each_once() {
+        let issue = |body: &str| Issue {
+            body: body.to_string(),
+            ..Issue::default()
+        };
+        assert_eq!(
+            produced(&issue(
+                "## Architecture\n\nunit: data-capability\nid: `session.updateSceneNotes`\n\
+                 produces: session.updateSceneNotes, `Session` , -\n\n## Scope\n\nid: Other"
+            )),
+            ["session.updateSceneNotes", "Session"]
+        );
+        assert!(
+            produced(&issue("## Scope\n\nid: X")).is_empty(),
+            "{:?}",
+            produced(&issue("## Scope\n\nid: X"))
+        );
+        assert!(
+            produced(&issue("## Architecture\n\nid:  \nproduces: -")).is_empty(),
+            "{:?}",
+            produced(&issue("## Architecture\n\nid:  \nproduces: -"))
+        );
     }
 
     #[test]

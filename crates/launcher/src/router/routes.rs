@@ -182,7 +182,35 @@ pub(super) async fn dispatched(
         Route::Rules { issue } => rules_here(args, here, issue, log).await,
         Route::ContractChange { issue } => contract_here(args, here, issue, log).await,
         Route::TestDebt { issue } => test_debt_here(args, here, issue, log).await,
+        Route::ReStudy { task } => restudy_here(args, here, gh, task, log).await,
     }
+}
+
+/// One re-study in this process, on its own checkout of the task's
+/// milestone branch — read from the task's `## Decision` before the mount.
+async fn restudy_here(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    task: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    let branch = match harness_workflows::restudy::run::branch_of(gh, task).await {
+        Ok(branch) => branch,
+        Err(halt) => return report_failure("restudy", Err(halt), log),
+    };
+    report_failure(
+        "restudy",
+        crate::dispatch::restudy::run(
+            task,
+            here,
+            &on_branch(args, &branch),
+            &args.permission_mode,
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
 }
 
 /// One test-debt attempt in this process, on its own writable checkout.
@@ -401,6 +429,7 @@ pub(super) fn lane_route(kind: RouteKind, number: u64, base: &str) -> Route {
         RouteKind::Planner => Route::Planner { roadmap: number },
         RouteKind::Arbiter => Route::Arbiter { issue: number },
         RouteKind::TestDebt => Route::TestDebt { issue: number },
+        RouteKind::Restudy => Route::ReStudy { task: number },
     }
 }
 
@@ -447,6 +476,7 @@ pub(super) fn lane_work(route: &Route) -> Option<(RouteKind, u64, String)> {
         Route::Planner { roadmap } => plain(RouteKind::Planner, *roadmap),
         Route::Arbiter { issue } => plain(RouteKind::Arbiter, *issue),
         Route::TestDebt { issue } => plain(RouteKind::TestDebt, *issue),
+        Route::ReStudy { task } => plain(RouteKind::Restudy, *task),
         Route::CatchUp { .. }
         | Route::Resume { .. }
         | Route::CloseMerged { .. }
@@ -504,6 +534,15 @@ pub(super) fn lane_command(
 /// The checkout a route run on a lane was given, if any.
 fn route_workspace(args: &WatchArgs) -> Option<&str> {
     (!args.route_workspace.is_empty()).then_some(args.route_workspace.as_str())
+}
+
+/// The checkout a route that reads a milestone's branch mounts: the router's
+/// own, or its lane's, on `branch`.
+fn on_branch<'a>(args: &'a WatchArgs, branch: &'a str) -> crate::dispatch::shared::Checkout<'a> {
+    crate::dispatch::shared::Checkout {
+        branch,
+        ..shared_checkout(args)
+    }
 }
 
 /// The shared read-only checkout a refinement run in this process reads.
@@ -1207,6 +1246,11 @@ mod lane_route_tests {
         args.route_workspace = "router-lane-1".to_string();
         assert_eq!(route_workspace(&args), Some("router-lane-1"));
         assert_eq!(shared_checkout(&args).workspace, Some("router-lane-1"));
+        // A re-study mounts the lane's checkout on the milestone's branch.
+        let studied = on_branch(&args, "milestone/28-prep");
+        assert_eq!(studied.branch, "milestone/28-prep");
+        assert_eq!(studied.workspace, Some("router-lane-1"));
+        assert_eq!(studied.target_repo_url, args.target_repo_url);
     }
 
     #[test]
@@ -1218,6 +1262,7 @@ mod lane_route_tests {
             Route::Planner { roadmap: 4 },
             Route::Arbiter { issue: 9 },
             Route::TestDebt { issue: 8 },
+            Route::ReStudy { task: 219 },
         ] {
             let (kind, number, base) = lane_work(&route).expect("a lane's");
             assert!(base.is_empty(), "base should be empty");

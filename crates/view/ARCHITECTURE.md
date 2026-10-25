@@ -1277,7 +1277,7 @@ src/pulse.rs           the pulse: a counter beaten when the product's workspace 
 src/janitor.rs         the janitor at work: weigh, sweep, the two-hourly round, one job at a time
 src/desk.rs            a desk: one terminal kept alive between visits, scrollback, broadcast — the steward has one, the doctor another
 src/domain/            the inside — no disk, no subprocess, no clock (`switch.rs`: the command line and the environment a view starts again with in another factory; `creation.rs`: a factory's creation, its gates, the AI's prompts and the reading of its answers)
-  blueprint.rs         the rooms, the models, one line per workflow, station by station; the gates each stage really declares, two in a row shown as one arch
+  blueprint.rs         the rooms, the models, one line per workflow, station by station; the gates each stage really declares, two in a row shown as one arch (`restudy`: context, study — opus, its gate "study must answer" —, publish; the router's `ReStudy` route, logged under `restudy`)
   gates.rs             the gate verdicts out of the event store: which gate said what in which run, the checks of its last pass, the state an arch takes
   traces.rs            parsers: watch.log, run.log, prompts.md headers, the stream's first event, the ledger sums
   journal.rs           the watch loop out of watch.log: what it triggered and how each ended, empty and failed ticks

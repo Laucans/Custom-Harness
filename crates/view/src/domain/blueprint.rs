@@ -290,6 +290,7 @@ pub fn lines() -> Vec<Line> {
         pr_review_line(),
         pr_fix_line(),
         test_debt_line(),
+        restudy_line(),
         rules_line(),
         decide_line(),
         arbiter_line(),
@@ -785,6 +786,48 @@ fn test_debt_line() -> Line {
     )
 }
 
+fn restudy_line() -> Line {
+    line(
+        "restudy",
+        "Re-study",
+        "a task whose sessions found missing tasks two stops in a row",
+        "Walks every rule of the task at once — the screen, each Micro-UI against the \
+         manifests, the fixtures, the running server probed — and opens every missing slice in \
+         one go, chained by what each needs, the task parked on all of them.",
+        vec![
+            vec![free(
+                "context",
+                "read the case",
+                Kind::Printer,
+                "Reads the task's streak, its milestone and that milestone's tasks, and takes \
+                 the streak before paying: one re-study per discovery.",
+            )],
+            paid(
+                "study",
+                "walk every rule",
+                Kind::Inspector,
+                "opus",
+                "One read-only session on the milestone's branch walks every rule step by step, \
+                 never stopping at a failure, probes the server on its own ports, and lists every \
+                 missing slice and the rule tests to contest.",
+                None,
+                Some(gate(
+                    "study must answer",
+                    "The reply ends on RESTUDY: tasks [...] that reads, and the checkout is still \
+                     on the commit it was mounted on.",
+                )),
+            ),
+            vec![free(
+                "publish",
+                "open the slices",
+                Kind::Arm,
+                "Opens each slice under the milestone, chains them by needs and produces, parks \
+                 the task on every one, and writes what to contest under its ## Decision.",
+            )],
+        ],
+    )
+}
+
 fn rules_line() -> Line {
     line(
         "rules",
@@ -1024,6 +1067,7 @@ mod tests {
             "PrReview { pr: \"71\", base: \"main_agent\" }",
             "PrFix { pr: \"71\" }",
             "TestDebt { issue: 80 }",
+            "ReStudy { task: 219 }",
             "Arbiter { issue: 81 }",
             "MergeMainAgent { milestone: 16 }",
             "CatchUp { milestone: 6, branch: \"milestone/6-media\" }",

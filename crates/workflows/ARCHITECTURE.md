@@ -228,7 +228,8 @@ Current contents:
 | `contest` | what a PR waits on, and a settled rules contest followed through — read from the board alone, so a restart reads the same waits back. `waiting`: a PR waits while an open `harness:rules` issue is titled `Rules contested: PR #<n>` (nothing written), while its latest contest is closed and no resumed marker follows it through (`PrWait::Settling` — the window before its base catches up, where a repair would be paid against the old test), or while an issue a decided `wait` named in a `<!-- harness-waits-on: #N -->` marker on the PR still blocks; `<!-- harness-resumed: #N -->` clears it. The router drops a waiting PR from the repairs, the merges and its task's decision; its review runs. `settled`: one page of closed `harness:rules` issues, then, for a contest of an open PR of the harness's cycle not marked resumed on it yet, whose base holds the settled rules (`changed_files(base, integration)` names neither `rules.json` nor `tests/rules/` — after the catch-up) — or a contest about a milestone branch (`Rules contested: … on milestone/<n>`) whose open branch still carries `CONTEST.md` written for that contest (every rule id the file names is in the contest's title or body) and holds the rules, no contest of the branch open — neither one about it nor one of a PR whose head it is. `resume`: `CONTEST.md` deleted through the contents API (`GitHub::delete_file`, a commit on GitHub, no checkout) on the PR's branch when its own diff added it — never a copy it took from its base — or on the milestone branch; with no lift of its own, a task PR's base merged into its head (`merge_branch`, GitHub's update-branch) so its checks run on the settled rules — a landing PR's head moves with its catch-up instead, and a base that does not merge is said in the comment; then the resumed marker on the PR, which counts its repairs anew (`review::repairs`), and `Resumed`. Idempotent: no file left, or a marker there. A settled contest resets the repairs, and so does a landed contract change (below). **A contract wait** (H2): a repair that stopped on a contract another milestone produces leaves `<!-- harness-waits-on-contract: #K -->` (`CONTRACT_WAIT`, `contract_wait_marker`) — `waiting` answers `PrWait::Contract` until a resumed marker for `#K` follows it, whatever `#K`'s state, so the window between the change closing and the PR's base taking it is still a wait. `contract_landed`: for each PR waiting on a contract, `#K` closed **and** the PR's base holds the manifest (`changed_files(base, integration)` names no manifest under `crates/<system>/…/<kebab(name)>/` — a change handed back changed none) → `ContractLanded`; `resume_contract` posts the resumed marker (the repairs counted anew) with the change's last comment quoted, so the next repair reads it on the PR, and poses `harness:pr-fix`. `waits_decided` counts the contract markers too: they count in `MAX_WAITS`. `held(gh, pr, comments)`: whether a PR waits as far as its own comments and the open contests say — what keeps `main_agent_merge` from escalating a landing PR past its repairs while it waits (that PR carries no label the router lists). |
 | `close_merged` | a task whose PR was merged into its milestone outside the merge train — a human, an old session's own merge (#463, #464 held #465) — closes. `due(gh, board, merged, branch, running)`: the open `harness:agent` tasks of a board, no lane on them, with a merged PR proving them — its `Closes #N` line (`delivery::closes`), or a title naming `#N` (`delivery::title_names`, never `#2480` for #248) **confirmed by the PR's head being the task's declared branch** (one `pr` read): a title alone proves nothing; a task whose comments carry the merged note already is left (told once, never re-closed after a human reopens it). `close_delivered`: the PR's body given its `Closes #N` (`delivery::with_closes`) when it lacked it — so the landing's `every_task_merged` reads the same proof — then `close`, the tail the merge train shares (`review-pending` / `needs-decision` off, `delivery::merged_note`, close). Routed as the free `Route::CloseMerged`. |
 | `contract_ask` | a contract change asked by a session that stopped on it — the dev loop's code session or a PR's repair, one path. `ask(gh, requester, (id, need), integration, log)`: `Asked::TasksOwn(why)` for an aggregate or a contract of the requester's own milestone (the caller answers; nothing opened); `Asked::Existing(k)` when an open `harness:contract-change` issue already asks the same id — matched on `Request::parse(body).id`, whoever asked it, so a task PR and its landing PR never make the manager evolve one contract twice; else `Asked::Opened(k)` (label created on a board lacking it, `ContractChangeAsked`). A task requester gets `## Decision` (`kind: contract`) and a blocker on `#k`; a milestone requester (its landing PR's repair) neither — its blockers are its split's. **A landed producer's contract is not the requester's own**: `contracts-untouched` refuses a consumer editing a landed manifest (#482); the manager opens the producer task under the requester's milestone. |
-| `missing_task` | the tasks the plan lacks, opened — one opener for the loop's stop handler (`dev_loop::action::stop`) and `decide`'s `task` approval (V, #219: four approvals in words opened nothing). `open_or_find(gh, number, milestone, items, log)`: each slice opened with split's renderer under the milestone (`## Scope` with its `branch:` and a line back to the waiting task, `id:` under `unit:`), or found among the milestone's sub-issues (`missing::is_the_same`: same title, same `branch:`, or same id not started); the tasks to wait on, each once. `block_on(gh, number, on)`: a blocker on each, written once. Each task opened is put on the milestone's native milestone right after its link (`native_milestone::place_or_warn`). |
+| `missing_task` | the tasks the plan lacks, opened — one opener for the loop's stop handler (`dev_loop::action::stop`) and `decide`'s `task` approval (V, #219: four approvals in words opened nothing). `open_or_find(gh, number, milestone, items, log)`: each slice opened with split's renderer under the milestone (`## Scope` with its `branch:` and a line back to the waiting task, `id:` under `unit:`), or found among the milestone's sub-issues (`missing::is_the_same`: same title, same `branch:`, or same id not started); the tasks to wait on, each once, the waiting task blocked on each as soon as it is opened or found (a failure on the next slice leaves it parked on those before). `block_on(gh, number, on)`: a blocker on each, written once. Each task opened is put on the milestone's native milestone right after its link (`native_milestone::place_or_warn`). **Siblings are chained** (#568 needed `session.updateSceneNotes` from #567, both from one stop, and halted on `ArchitectureHolds` until chained by hand): `edges(slices, kin, waiting)` (pure) — a slice that `needs` an id another slice of the declaration `produces`, else a kin task (an open agent sibling opened earlier for the same waiting task, `opened_for`, what it builds read by `missing::produced`: its `id:` and `produces:` lines), is blocked on it; ids compare case, backticks and a `@version` aside; never the waiting task, never a slice on itself, one edge per pair, an edge that would close a cycle left out and warned; each written with `block_on` and a `TaskWaits` ("needs `x`, which #N builds"); `TaskItem.depends_on` is never read (its indexes point into split's array). `Found` says what was `opened` (the streak counts those only), found, refused (`built`: a sibling closed as not planned is named "closed as not needed … declare it under a new branch with the probe that shows it missing") and `chained`. Every opened task's brief ends on `STILL_NEEDED`: check on the live code, and on the rules runtime for a fixture or a server read, that it is still missing, else stop with `AGENT_LOOP_STOP: not-needed — <evidence>`. `refusal_note`: the slices not opened, for the next session. |
+| `restudy` | (pure) when a task's streak of discoveries is due a re-study — for the stop handler that counts, the router that routes and the re-study. `Streak` (`discovered`, `restudied`, `restudies`, kept on `## Decision` as `discovered:` / `restudied:` / `restudies:`, absent at 0): `after(previous, opened)` one more discovery when the stop opened a task, carried otherwise; `restudied()` the streak once a re-study ran; `onto(question)`. `due(question)`: `discovered >= AFTER` (2), `restudies < MAX` (2), `EVERY` (3) more discoveries since the last re-study, a `milestone:`, no owner's decision — a re-study at the 2nd discovery, plain openings at the 3rd and 4th, the last at the 5th. `due_on(issue)`, `question_of(issue)`. The streak is on GitHub, so a restart reads it back — but the re-study takes it **before** its paid session (`TakeStreak`): a restart, a SIGKILL, a failed gate or a GitHub error after that uses the re-study up, and the task resumes as a plain task (the next one at `EVERY` more discoveries, within `MAX`). |
 | `native_milestone` | GitHub's native Milestone field on every task a `harness:milestone` issue holds — for the humans and GitHub's own views; the sub-issue link stays the harness's truth. Same convention as the `ForgeDesMondes` backfill (`harness-dnd2-run/tools/native-milestones.py`): one native milestone per milestone issue, titled `#<n> <title>`, found again by `<!-- harness-milestone: #<n> -->` in its description, open while the issue is open and not landed (`native_open`: open and not `harness:waiting-merge`; `GitHub::ensure_native_milestone`). `ensure(gh, milestone)` its number; `assign(gh, native, milestone, task)`; `place(gh, milestone, task)` the issue read for its title and state, then both — what every opener calls right after `create_sub_issue_link`: `split` (ensured once per split, each task assigned), `missing_task` (the stop handler and `decide`'s approval), the stop handler's human tasks (a port to approve, a missing task it cannot write, a third stop), the contract manager's producer task, the view's `Product::open_task`. `close(gh, milestone)`: at the landing (`main_agent_merge`: the landing merges into the integration branch, where `Closes #<n>` does not fire, so the issue stays open under `harness:waiting-merge` until promotion while its native reads closed, and stays closed at every later opening; `MergeOutcome::Merged::native` carries the refusal, the router warns it); `close_if_milestone(gh, issue, log)`: a milestone issue cut by `decide` or landed by `milestone_merge::run` on a decision. A reopened milestone issue reopens its native at the next task opened under it (`ensure` mirrors `native_open`). **A refusal never fails the opening**: every function answers the warning to journal (`place_or_warn`, `close_if_milestone` journal it), never a `Halt`. |
 | `branch_sync` | (pure) whether a decision tells a session to sync a branch itself: `prescribed(text, integration, own)` — the first clause (line, sentence, `;` part) with a sync verb (merge, pull, rebase, cherry-pick, catch up, up to date) and the integration branch as a whole token (bare or `origin/…`), or a `push` to a `milestone/*` branch. The verbs are whole words in their imperative or present form (`merged`, `pull request`, `merge train`, a bare `is up to date` describe, they prescribe nothing). Never caught: the PR's **own base** merged into it (for a landing PR the integration branch is its base), a push whose target — the first `milestone/*` branch within a few words after `push` — is the PR's own head (its base pushed to is caught; its base named as a merge source before the push is no target), a verb negated **just before it** (`not`, `never`, `don't`… within three words) or whose subject is the harness (within two words). A negation or the harness elsewhere in the clause clears nothing (`merge origin/main_agent into milestone/24, no other change` is caught). `decide` refuses an `answer` or a `repair` that holds one (`decision::parse`). |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |
@@ -587,9 +588,16 @@ said under the decision and in its comment) and the task blocked on them
 "the fixtures task is approved" answers opened nothing; only an approval of
 a task, clause by clause (`task is approved`, `task approval`, `approve the
 … task`), never a denial nor an approval of something else beside a task —
-or `cut`; the scope,
+or `cut` — closed **as not planned** (`GitHub::close_issue_not_planned`): a
+cut task never lands, and `delivery::every_task_merged` does not wait on
+it; the scope,
 `decision::Scope`: a PR into the integration branch that is not the rules'
-task's — a landing PR — is never `merge`d nor `cut`, and an `answer` or a
+task's — a landing PR — is only `repair`ed or `wait`ed on (H2 Q2): never
+`merge`d nor `cut`, and no `answer` either — no session reads a milestone's
+`## Decision`; the router routes it at all because no `MergeMainAgent` is
+scheduled for a milestone carrying `harness:needs-decision` (X, #27/#562:
+both keyed on the milestone, the free merge took the key every tick and
+re-escalated, "Escalated { asked: false }" for 75 min), and an `answer` or a
 `repair` that tells a session to merge, pull, rebase or catch up the
 integration branch into a branch, or to push to a `milestone/*` branch, does
 not parse (`common::branch_sync`; the prompt says the harness catches
@@ -603,6 +611,66 @@ once the wait settles; past `REVIEW_DECISIONS` repair rounds, or
 `contest::MAX_WAITS` (2) waits decided on one PR, the task is a human's, and
 the comment counts the repairs and waits from the PR's own markers and
 quotes the last decision.
+
+**Two discoveries in a row are a streak** (#219: six stops in one day, each
+declaring the next missing units — a journey stops at its first failure,
+which hides the next one). The stop handler counts, on the task's
+`## Decision`, the stops that **opened** at least one task
+(`common::restudy::Streak::after`; one that only found its slices open
+learned nothing): the wait it writes carries `discovered:` and the task's
+`milestone:`, a refusal and a decision asked carry the streak as it was,
+any fresh question (a plain stop, a plain wait, a port, a contract) drops
+it. Once `restudy::due`, the journal says `#219: missing tasks found 2
+rounds in a row — a re-study is due (cap 1/2)`, the router routes a
+re-study and no code session starts on the task: the shared picker skips it
+(`tasks::next_task`, the sequential dev loop's `Board::next`, and
+`tasks::startable_tasks`, a lane's). The re-study is routed only from a
+board the tick read (`routing::restudies`); a milestone past the offered cap
+waits for its board to be read, its due task skipped meanwhile.
+**A task the opener opened may find it is not needed**
+(`AGENT_LOOP_STOP: not-needed — <evidence>`, on a task whose body carries
+the opener's line, `missing_task::opened_for`): closed as not planned, the
+evidence commented on it and on the task that waited on it — whose blocker
+no longer holds once closed — and journalled; on any other task, or with no
+evidence, the same stop asks a decision.
+
+**The one that re-studies a task:** `restudy` — an open agent task whose
+streak is due (`Route::ReStudy`, weight 720: under a review, over a split
+and the tasks; held by a database down only — it writes no code, so
+neither the rules' task, a red base nor a full backlog holds it; never
+while a lane, `harness:needs-decision` or `harness:human` holds the task).
+State `StudyState`; `remaining` 1; core's `Round<S>`; stages `context`
+(`ReadCase`: the streak, the milestone the question names, its branch, its
+other sub-issues, the checkout's commit; `TakeStreak`: the `restudied:`
+marker written **before** the session is paid for, the words under the
+question kept — one marker, one re-study, as `decide` takes its label),
+`study` (opus, read-only on its lane's own checkout of the milestone's
+branch, the rules runtime on its own ports — `config::ports_pair`, `20000 +
+(task % 5000) * 2` — since every code session serves on 8790/8791: walks
+every rule the SPEC names, the screen's composition, each Micro-UI's needs
+and actions against the manifests, the fixtures, the running server probed
+for every read and command, never stopping at the first failure, the open
+siblings listed so none is declared as new — an open one that needs a new
+slice is declared again by its exact branch with the new id in its `needs`:
+found (`missing::is_the_same`, by branch, even started), so chained on it; answers `RESTUDY: tasks [...]`
+— the slices as a stop declares them, `missing::listed`, at most
+`MAX_RESTUDY_SLICES` (12), chained by naming a sibling's `produces` in
+their `needs` — and `RESTUDY_CONTEST: [{rule, test, why}]`, a missing
+contest line read as none; each list runs from its marker to the other's
+line or the end, so either may span several lines; not `AGENT_LOOP_STOP`, which is a halt the
+breaker counts; one more turn when the reply does not read; gated by
+`StudyParses` and `TheCheckoutIsUntouched` — the checkout still on the
+commit it was mounted on, so nothing committed nor pushed, whatever the
+milestone's branch on GitHub did meanwhile), and `publish` (the task re-read,
+the whole slices opened or found through `missing_task::open_or_find` —
+chained, the task blocked on each as soon as it is opened or found, so a
+publish that fails halfway leaves it parked on what it opened —; its `## Decision` rewritten only
+there: `kind: wait` on every open blocker with the streak re-studied, and
+under it the note for the next code session — what was opened, found and
+chained, the rule tests to contest with `CONTEST.md`, the slices not opened
+and why; nothing missing and nothing to contest writes nothing beyond the
+marker; `Restudied` recorded, `notify` silent on it). Lock per task. The
+contests are a note, not a contest the harness files.
 
 **The one that evolves a contract:** `contract_manager` — any open issue
 carrying `harness:contract-change`, which `common::contract_ask` opens when

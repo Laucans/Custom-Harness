@@ -124,8 +124,9 @@ impl Scope<'_> {
         } else if self.pr.is_none() {
             "`answer`, `wait` or `cut`"
         } else if self.lands_on_integration() {
-            "`repair`, `wait` or `answer` — this PR lands a milestone on the integration \
-             branch: never `merge` it red, never `cut` the milestone"
+            "`repair` or `wait` — this PR lands a milestone on the integration branch: never \
+             `merge` it red, never `cut` the milestone, and no session reads an `answer` on a \
+             milestone"
         } else {
             "`answer`, `merge`, `repair`, `wait` or `cut`"
         }
@@ -193,6 +194,16 @@ pub fn parse(text: &str, scope: &Scope<'_>) -> Result<Decided, String> {
         return Err(format!(
             "`{}` of a PR that lands a milestone on `{}`: `repair` it, or `wait` on the issue \
              it needs — never merge it red, never cut the milestone",
+            action.name(),
+            scope.integration
+        ));
+    }
+    // No session reads a milestone's `## Decision`: an answer there would
+    // decide nothing, and the landing would be escalated again (H2 Q2).
+    if scope.lands_on_integration() && action == Action::Answer {
+        return Err(format!(
+            "`{}` on a PR that lands a milestone on `{}`: no session reads it — `repair` the \
+             PR, saying what to change, or `wait` on the issue it needs",
             action.name(),
             scope.integration
         ));
@@ -532,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn a_landing_decision_may_only_repair_wait_or_answer() {
+    fn a_landing_decision_may_only_repair_or_wait() {
         let landing = Pr {
             num: "423".to_string(),
             head: "milestone/22-fiche".to_string(),
@@ -563,6 +574,18 @@ mod tests {
                 .action,
             Action::Repair
         );
+        assert_eq!(
+            parse(r#"{"action":"wait","summary":"needs #30","on":30}"#, &on)
+                .expect("a wait")
+                .action,
+            Action::Wait { on: 30 }
+        );
+        // ForgeDesMondes' #27/#562: an answer on a milestone decides nothing.
+        let refused = parse(r#"{"action":"answer","summary":"go on"}"#, &on).expect_err("answer");
+        assert!(refused.contains("no session reads it"), "{refused}");
+        assert!(parse(r#"{"action":"task","summary":"open"}"#, &on).is_err());
+        assert!(on.actions().starts_with("`repair` or `wait`"));
+        assert!(!on.actions().contains("`answer` —"));
         // The rules' task's PR into the integration branch may be merged.
         let rules = Scope { rules: true, ..on };
         assert!(!rules.lands_on_integration());

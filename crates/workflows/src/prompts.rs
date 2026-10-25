@@ -24,6 +24,7 @@ use crate::planner::orchestration::stages as planner;
 use crate::pr_fix::orchestration::stages as pr_fix;
 use crate::pr_review::orchestration::stages as pr_review;
 use crate::refinement::orchestration::prompts as refinement;
+use crate::restudy::orchestration::stages as restudy;
 use crate::rules::orchestration::stages as rules;
 use crate::split::orchestration::stages as split;
 use crate::test_debt::orchestration::stages as test_debt;
@@ -78,6 +79,8 @@ pub const DECIDE: &str = "decide/decide";
 pub const ARBITRATE: &str = "arbiter/arbitrate";
 /// The contract manager's one session: the new version of a contract.
 pub const CONTRACT_EVOLVE: &str = "contract-manager/evolve";
+/// The re-study's walk of every rule of a task, at once.
+pub const RESTUDY: &str = "restudy/study";
 
 /// One editable prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,6 +247,12 @@ const CATALOG: &[Prompt] = &[
         title: "Contract manager: the new version of a contract a consumer needs",
         stations: &[("contract-manager", "evolve")],
         default: contract_manager::EVOLVE_PROMPT,
+    },
+    Prompt {
+        key: RESTUDY,
+        title: "Re-study: every missing unit of a task, found at once",
+        stations: &[("restudy", "study")],
+        default: restudy::RESTUDY_PROMPT,
     },
 ];
 

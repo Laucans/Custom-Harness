@@ -54,6 +54,11 @@ src/dispatch/     one module per thing that can be run, plus what they share
                      on the integration branch
   rules.rs          the rules and their tests, or a contest settled, from a rules'
                      issue — writable, on the integration branch
+  restudy.rs        every missing unit of a task found at once (`Route::ReStudy`) — its
+                     own checkout (`router-restudy`, or the lane's), read-only, on the
+                     task's milestone branch (`restudy::run::branch_of`, read by
+                     `routes::restudy_here` before the mount), a `GitCli` on it as its
+                     `Repo` port: the gate that says the session committed nothing
   data_diagnosis.rs  a version of main or main_agent whose two sides disagree, right after
                      its snapshot: one Opus session in the snapshot clone says why; its
                      answer is the `DataModelDiverged` event, an error in the view
@@ -639,6 +644,7 @@ Three checkouts, and the difference is whether the tenant commits:
 | its own, writable | `router-prfix` | `pr_fix` | it commits; `force_reset`, on the PR's branch |
 | its own, writable | `router-testdebt` | `test_debt` | it commits; `force_reset`, on the integration branch |
 | its own, writable | `router-rules` | `rules` | it commits; `force_reset`, on the integration branch |
+| its own, read-only | `router-restudy` | `restudy` | it builds and runs the product to probe it (on its own runtime ports, `restudy::config::ports_pair`); no `force_reset`, on the task's milestone branch |
 
 Under `--parallel`, a route runs on a lane and mounts the lane's own
 `router-lane-<k>` instead of the shared or the writable id, so a writing

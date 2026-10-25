@@ -1555,6 +1555,19 @@ impl GitHub for GhCli {
         .await
     }
 
+    async fn close_issue_not_planned(&self, number: u64) -> Outcome<()> {
+        self.write(
+            &format!("close #{number} as not planned"),
+            "PATCH",
+            &format!("issues/{number}"),
+            &[
+                ("state", "closed".to_string()),
+                ("state_reason", "not_planned".to_string()),
+            ],
+        )
+        .await
+    }
+
     async fn pr(&self, pr_ref: &str) -> Outcome<Pr> {
         let ran = self
             .gh(&[
@@ -3111,6 +3124,13 @@ mod tests {
         let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
         assert!(gh.ensure_native_milestone(28, "Media", true).await.is_err());
         assert!(gh.set_issue_milestone(30, 3).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_close_as_not_planned_github_cannot_reach_is_an_error() {
+        use harness_core::ports::shell::github::GitHub as _;
+        let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
+        assert!(gh.close_issue_not_planned(554).await.is_err());
     }
 
     #[tokio::test]

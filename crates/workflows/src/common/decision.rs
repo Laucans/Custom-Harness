@@ -41,6 +41,14 @@ pub struct Question {
     pub ruled: Option<String>,
     /// The round `ruled` was given at.
     pub ruled_at: Option<u32>,
+    /// How many stops in a row opened at least one missing task — the
+    /// streak a re-study answers (`common::restudy`). Carried by what
+    /// re-renders the question, dropped by a fresh one.
+    pub discovered: u32,
+    /// The value of `discovered` when the last re-study of the streak ran.
+    pub restudied: Option<u32>,
+    /// How many re-studies ran in this streak.
+    pub restudies: u32,
 }
 
 /// The line the question's reason is on; a section without it is no question.
@@ -84,6 +92,12 @@ impl Question {
                 found.ruled = Some(value.trim().to_string()).filter(|v| !v.is_empty());
             } else if let Some(value) = line.strip_prefix("ruled-at:") {
                 found.ruled_at = value.trim().parse().ok();
+            } else if let Some(value) = line.strip_prefix("discovered:") {
+                found.discovered = value.trim().parse().unwrap_or(0);
+            } else if let Some(value) = line.strip_prefix("restudied:") {
+                found.restudied = value.trim().parse().ok();
+            } else if let Some(value) = line.strip_prefix("restudies:") {
+                found.restudies = value.trim().parse().unwrap_or(0);
             }
         }
         (seen && !found.blocks.is_empty()).then_some(found)
@@ -124,6 +138,15 @@ impl Question {
         }
         if let Some(at) = self.ruled_at {
             lines.push(format!("ruled-at: {at}"));
+        }
+        if self.discovered > 0 {
+            lines.push(format!("discovered: {}", self.discovered));
+        }
+        if let Some(at) = self.restudied {
+            lines.push(format!("restudied: {at}"));
+        }
+        if self.restudies > 0 {
+            lines.push(format!("restudies: {}", self.restudies));
         }
         lines.join("\n")
     }
@@ -196,6 +219,7 @@ mod tests {
             declared: vec!["feat/a".to_string(), "feat/b".to_string()],
             ruled: Some("answer — build it here (4/5)".to_string()),
             ruled_at: Some(3),
+            ..Question::default()
         };
         let text = question.render();
         assert_eq!(
@@ -214,6 +238,9 @@ mod tests {
             milestone in proptest::option::of(1u64..100_000),
             ruled in proptest::option::of("[a-z][a-z0-9 ,:#()/—-]{0,60}[a-z0-9)]"),
             ruled_at in proptest::option::of(1u32..50),
+            discovered in 0u32..20,
+            restudied in proptest::option::of(0u32..20),
+            restudies in 0u32..5,
         ) {
             let question = Question {
                 kind: Some("refused".to_string()),
@@ -223,10 +250,45 @@ mod tests {
                 declared,
                 ruled,
                 ruled_at,
+                discovered,
+                restudied,
+                restudies,
                 ..Question::default()
             };
             proptest::prop_assert_eq!(Question::parse(&question.render()), Some(question));
         }
+    }
+
+    #[test]
+    fn a_streak_round_trips_and_is_absent_at_zero() {
+        let question = Question {
+            kind: Some("wait".to_string()),
+            blocks: "AGENT_LOOP_STOP: tasks [...]".to_string(),
+            round: 1,
+            milestone: Some(28),
+            discovered: 2,
+            restudied: Some(2),
+            restudies: 1,
+            ..Question::default()
+        };
+        let text = question.render();
+        assert!(
+            text.ends_with("milestone: #28\ndiscovered: 2\nrestudied: 2\nrestudies: 1"),
+            "{text}"
+        );
+        assert_eq!(Question::parse(&text), Some(question));
+        let fresh = Question {
+            blocks: "x".to_string(),
+            round: 1,
+            ..Question::default()
+        };
+        assert_eq!(fresh.render(), "blocks: x\nround: 1");
+        let odd =
+            Question::parse("blocks: x\ndiscovered: many\nrestudied: -\nrestudies: ?").expect("q");
+        assert_eq!((odd.discovered, odd.restudied, odd.restudies), (0, None, 0));
+        let zero = Question::parse("blocks: x\nrestudied: 0").expect("q");
+        assert_eq!(zero.restudied, Some(0));
+        assert!(zero.render().contains("restudied: 0"));
     }
 
     #[test]
