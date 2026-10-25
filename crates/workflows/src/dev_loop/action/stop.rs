@@ -47,6 +47,17 @@
 //! to a person, gate or none. A slice whose branch a closed task built is
 //! never opened again — one branch is one feature — and is refused back.
 //!
+//! **Two discoveries in a row are a streak** (`common::restudy`): a stop
+//! that opened a missing task counts one more under the task's
+//! `## Decision` (`discovered:`), which a refusal or a decision asked
+//! carries and any fresh question drops; once it is due, the journal says
+//! so and the router sends a re-study instead of the next code session.
+//!
+//! **A task this opener opened may find it is not needed**
+//! (`AGENT_LOOP_STOP: not-needed — <evidence>`): it is closed as not
+//! planned, the evidence commented on it and on the task that waited on it.
+//! The same stop on any other task asks a decision.
+//!
 //! A halt of any other kind — a gate that refused, an unreadable input — is
 //! not a decision to take, and goes on as it was.
 
@@ -59,6 +70,8 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
 use crate::common::decision::Question;
+use crate::common::missing_task::refusal_note;
+use crate::common::restudy::{self, Streak};
 use crate::common::{contract_ask, labels, missing_task, native_milestone, sections};
 use crate::contract_manager::data::request as contract;
 use crate::dev_loop::data::missing::{self, Asked};
@@ -116,6 +129,18 @@ fn port_asked(reason: &str) -> Option<&str> {
         .strip_prefix("port ")?
         .trim();
     (!asked.is_empty()).then_some(asked)
+}
+
+/// The evidence a stop gives that the task is not needed —
+/// `AGENT_LOOP_STOP: not-needed — <evidence>` — when it gives some.
+fn not_needed(reason: &str) -> Option<String> {
+    let (_, after) = reason.split_once("AGENT_LOOP_STOP")?;
+    let evidence = after
+        .trim_start_matches(|c: char| c == ':' || c == '`' || c == '*' || c.is_whitespace())
+        .strip_prefix("not-needed")?
+        .trim_start_matches(|c: char| matches!(c, '—' | '-' | ':' | '`' | '*') || c.is_whitespace())
+        .trim();
+    (!evidence.is_empty()).then(|| evidence.to_string())
 }
 
 /// A stop's reason, on one line, cut to what a question holds.
@@ -224,28 +249,30 @@ fn waited(on: &[u64]) -> String {
         .join(", ")
 }
 
-/// What the session is told of the declared tasks the harness did not
-/// open, one line each — its title and why — or nothing when all were.
-fn refusal_note(unopened: &[(String, String)]) -> String {
-    if unopened.is_empty() {
-        return String::new();
+/// What a wait keeps under `## Decision` beside its blockers.
+struct Wait<'a> {
+    /// The round the stop counts as.
+    round: u32,
+    /// The stop's reason, on one line.
+    reason: &'a str,
+    /// Words under the question, for the next session.
+    extra: &'a str,
+    /// The streak of discoveries ([`restudy`]), nothing for a plain wait.
+    streak: Streak,
+    /// The milestone a re-study opens the slices under, if any.
+    milestone: Option<u64>,
+}
+
+/// Says in the journal that the question's streak is due a re-study.
+fn say_due(ctx: &Context<Loop>, number: u64, question: &Question) {
+    if restudy::due(question) {
+        ctx.traces.say(&format!(
+            "#{number}: missing tasks found {} rounds in a row — a re-study is due (cap {}/{})",
+            question.discovered,
+            question.restudies.saturating_add(1),
+            restudy::MAX
+        ));
     }
-    let lines: Vec<String> = unopened
-        .iter()
-        .map(|(title, why)| {
-            format!(
-                "- \"{title}\": {}",
-                why.split_whitespace().collect::<Vec<_>>().join(" ")
-            )
-        })
-        .collect();
-    format!(
-        "**Declared tasks the harness did not open** — declare each again, fixed, in one \
-         `AGENT_LOOP_STOP: tasks [...]` (the unit one of: {}), or build on without it if it \
-         is not missing after all:\n\n{}",
-        missing::unit_keys(),
-        lines.join("\n")
-    )
 }
 
 /// Hands a stopped task over: a decision asked, or a human task opened.
@@ -284,6 +311,16 @@ impl RaiseDecision {
         let previous = sections::parse(&issue.body)
             .get(sections::DECISION)
             .and_then(|text| Question::parse(text));
+        // A task this opener opened, found not needed: closed as not
+        // planned, the task that waited on it told — no decision to pay.
+        let evidence = not_needed(&whole);
+        if let Some(evidence) = &evidence
+            && let Some(waiting) = missing_task::opened_for(&issue)
+        {
+            self.not_needed(ctx, &issue, waiting, evidence).await?;
+            ctx.state.handed_over = true;
+            return Ok(Verdict::Continue);
+        }
         let round = previous.as_ref().map_or(1, |q| match q.kind.as_deref() {
             // A refusal sent the session back to declare again: a round.
             Some("stop" | "breaker" | "refused") => q.round.saturating_add(1),
@@ -341,7 +378,7 @@ impl RaiseDecision {
         } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
-        } else if let Some(on) = if asks_a_decision(&reason) {
+        } else if let Some(on) = if asks_a_decision(&reason) || evidence.is_some() {
             // A stop that says it needs a decision is one, whatever issues it
             // names on the way (ForgeDesMondes #182: "SPEC contradicts the
             // engine … same pattern in #188 … needs a Decision" waited on
@@ -355,10 +392,14 @@ impl RaiseDecision {
             // blocker GitHub refuses (ForgeDesMondes' #248 named PR #264,
             // which is no issue a dependency can point at) is no wait: the
             // stop asks a decision as before, the round is not lost.
-            if let Err(refused) = self
-                .wait_for(ctx, number, &issue.body, &[on], round, &reason, "")
-                .await
-            {
+            let wait = Wait {
+                round,
+                reason: &reason,
+                extra: "",
+                streak: Streak::default(),
+                milestone: None,
+            };
+            if let Err(refused) = self.wait_for(ctx, number, &issue.body, &[on], &wait).await {
                 ctx.traces.warn(&format!(
                     "#{number}: cannot wait for #{on} — {} — a decision is asked instead",
                     refused.reason()
@@ -451,42 +492,85 @@ impl RaiseDecision {
 
     /// Parks the task until every issue of `on` lands: a GitHub blocker
     /// each, written once, the stop kept under `## Decision` (`kind: wait`,
-    /// carrying `round` so the stops decided before it still count), `extra`
-    /// under it, and nothing to decide.
-    #[allow(clippy::too_many_arguments)] // The stop, and what it waits on.
+    /// carrying `round` so the stops decided before it still count, the
+    /// streak and the milestone a re-study reads), `extra` under it, and
+    /// nothing to decide.
     async fn wait_for(
         &self,
         ctx: &Context<Loop>,
         number: u64,
         body: &str,
         on: &[u64],
-        round: u32,
-        reason: &str,
-        extra: &str,
+        wait: &Wait<'_>,
     ) -> Outcome<()> {
         missing_task::block_on(self.gh.as_ref(), number, on).await?;
         let named: Vec<String> = on.iter().map(|n| format!("#{n}")).collect();
-        let question = Question {
+        let question = wait.streak.onto(Question {
             kind: Some("wait".to_string()),
-            blocks: reason.to_string(),
-            round,
+            blocks: wait.reason.to_string(),
+            round: wait.round,
             decided_by: Some("harness".to_string()),
             verdict: Some(format!(
                 "wait — until {} land{}",
                 named.join(", "),
                 if on.len() == 1 { "s" } else { "" }
             )),
+            milestone: wait.milestone,
             ..Question::default()
-        };
-        let kept = sections::replace(body, &[(sections::DECISION, &with_extra(&question, extra))]);
+        });
+        let kept = sections::replace(
+            body,
+            &[(sections::DECISION, &with_extra(&question, wait.extra))],
+        );
         self.gh.set_body(number, &kept).await?;
         for blocker in on {
             ctx.traces.event(&Event::TaskWaits {
                 task: number,
                 on: *blocker,
-                why: reason.to_string(),
+                why: wait.reason.to_string(),
             });
         }
+        say_due(ctx, number, &question);
+        Ok(())
+    }
+
+    /// A task this opener opened, found not needed by its own session:
+    /// closed as not planned, the evidence said on it and on the task that
+    /// waited on it, which a closed blocker no longer holds.
+    async fn not_needed(
+        &self,
+        ctx: &Context<Loop>,
+        issue: &Issue,
+        waiting: u64,
+        evidence: &str,
+    ) -> Outcome<()> {
+        let number = issue.number;
+        let quoted: Vec<String> = evidence.lines().map(|line| format!("> {line}")).collect();
+        let quoted = quoted.join("\n");
+        self.gh
+            .post_issue_comment(
+                number,
+                &format!(
+                    "Not needed — its session found it built already. Closed as not planned by \
+                     the harness; #{waiting} no longer waits on it. The evidence:\n\n{quoted}"
+                ),
+            )
+            .await?;
+        self.gh
+            .post_issue_comment(
+                waiting,
+                &format!(
+                    "#{number}, opened for this task, is not needed: its session found it built \
+                     already, and it is closed as not planned. Declared again, it is refused \
+                     unless the declaration shows it missing. The evidence:\n\n{quoted}"
+                ),
+            )
+            .await?;
+        self.gh.close_issue_not_planned(number).await?;
+        ctx.traces.warn(&format!(
+            "#{number}: not needed — closed as not planned, #{waiting} no longer waits on it: {}",
+            one_line(evidence)
+        ));
         Ok(())
     }
 
@@ -616,6 +700,9 @@ impl RaiseDecision {
             }
             None => missing_task::Found::default(),
         };
+        // Only a stop that opened something is a discovery: one that found
+        // its slices open already learned nothing new.
+        let streak = Streak::after(previous, !found.opened.is_empty());
         let on = found.on;
         // Built already is declared wrong: a round, and a person's at the
         // third, as any refusal.
@@ -637,17 +724,23 @@ impl RaiseDecision {
         if !on.is_empty() {
             // The wait keeps the stop's whole reason, and what was not
             // opened in words: the next stop declares it again.
-            self.wait_for(ctx, number, &issue.body, &on, round, reason, &note)
-                .await
+            let wait = Wait {
+                round,
+                reason,
+                extra: &note,
+                streak,
+                milestone,
+            };
+            self.wait_for(ctx, number, &issue.body, &on, &wait).await
         } else if asks {
-            let question = Question {
+            let question = streak.onto(Question {
                 kind: Some("stop".to_string()),
                 blocks: reason.to_string(),
                 round,
                 milestone,
                 declared,
                 ..Question::default()
-            };
+            });
             let extra = with_the_stop(&note, whole);
             self.write_asked(ctx, number, &issue.body, &question, &extra)
                 .await
@@ -655,7 +748,7 @@ impl RaiseDecision {
             let (ruled, ruled_at) = carried.map_or((None, None), |ruling| {
                 (Some(ruling.verdict), Some(ruling.at))
             });
-            let question = Question {
+            let question = streak.onto(Question {
                 kind: Some("refused".to_string()),
                 blocks: reason.to_string(),
                 round,
@@ -665,11 +758,12 @@ impl RaiseDecision {
                     unopened.len(),
                     if unopened.len() == 1 { "" } else { "s" }
                 )),
+                milestone,
                 declared,
                 ruled,
                 ruled_at,
                 ..Question::default()
-            };
+            });
             let body = sections::replace(
                 &issue.body,
                 &[(sections::DECISION, &with_extra(&question, &note))],
@@ -2582,5 +2676,290 @@ mod tests {
         nothing_declared.declared.clear();
         assert_eq!(ruled_on(Some(&nothing_declared), &[]), None);
         assert_eq!(ruled_on(None, &declared), None);
+    }
+
+    /// A sink that keeps the lines told.
+    #[derive(Default)]
+    struct Lines(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Lines {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    fn told_ctx() -> (Rc<Lines>, Context<Loop>) {
+        let sink = Rc::new(Lines::default());
+        let mut context = ctx(false);
+        context.traces = Logbook::new(
+            Rc::clone(&sink) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        (sink, context)
+    }
+
+    /// The board of #11 with `body`, its milestone #4 holding `subs`.
+    fn with_subs(body: &str, subs: Vec<Issue>) -> Rc<FakeGitHub> {
+        let gh = gh(body);
+        Rc::new(FakeGitHub {
+            issues: gh.issues.clone(),
+            subs: vec![(4, subs)],
+            next_issue_number: std::cell::Cell::new(10),
+            ..FakeGitHub::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn two_stops_of_219_that_open_tasks_in_a_row_make_a_re_study_due() {
+        let start = "## Scope\n\nbranch: feat/preparation-seance\n\nprepare";
+        let gh = with_subs(start, Vec::new());
+        let (lines, mut context) = told_ctx();
+        raise(&gh, true)
+            .on_halt(
+                &mut context,
+                Halt::Halted(STOP_219_ROUND_1.trim().to_string()),
+            )
+            .await
+            .expect("handed over");
+        let first = decision_of(&gh.writes());
+        assert_eq!(first.kind.as_deref(), Some("wait"));
+        assert_eq!((first.discovered, first.milestone), (1, Some(4)));
+        assert!(!restudy::due(&first));
+        assert!(
+            !lines.0.borrow().iter().any(|l| l.contains("re-study")),
+            "{:?}",
+            lines.0.borrow()
+        );
+        // The second stop, on the body the first one left.
+        let after = body_after(start, &gh.writes());
+        let gh = with_subs(&after, Vec::new());
+        let (lines, mut context) = told_ctx();
+        raise(&gh, true)
+            .on_halt(
+                &mut context,
+                Halt::Halted(STOP_219_ROUND_2.trim().to_string()),
+            )
+            .await
+            .expect("handed over");
+        let second = decision_of(&gh.writes());
+        assert_eq!((second.discovered, second.milestone), (2, Some(4)));
+        assert_eq!((second.restudied, second.restudies), (None, 0));
+        assert!(restudy::due(&second));
+        assert!(
+            lines
+                .0
+                .borrow()
+                .iter()
+                .any(|l| l
+                    == "#11: missing tasks found 2 rounds in a row — a re-study is due (cap 1/2)"),
+            "{:?}",
+            lines.0.borrow()
+        );
+    }
+
+    /// `Question` as `## Decision` under a body.
+    fn decided(question: &Question) -> String {
+        format!(
+            "## Scope\n\nbranch: feat/pay\n\npay\n\n## Decision\n\n{}",
+            question.render()
+        )
+    }
+
+    fn streak_of(discovered: u32) -> Question {
+        Question {
+            kind: Some("wait".to_string()),
+            blocks: "AGENT_LOOP_STOP: tasks [...]".to_string(),
+            round: 1,
+            decided_by: Some("harness".to_string()),
+            verdict: Some("wait — until #9 lands".to_string()),
+            milestone: Some(4),
+            discovered,
+            restudied: Some(1),
+            restudies: 1,
+            ..Question::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refusal_or_a_stop_that_found_its_slices_open_carries_the_streak_a_plain_stop_drops_it()
+     {
+        // Refused only: carried as it was.
+        let wrong = STOP_219_ROUND_2.replace(r#""unit": "server-fixtures""#, r#""unit": "widget""#);
+        let gh = with_subs(&decided(&streak_of(2)), Vec::new());
+        raise(&gh, true)
+            .on_halt(&mut ctx(false), Halt::Halted(wrong.trim().to_string()))
+            .await
+            .expect("handed over");
+        let refused = decision_of(&gh.writes());
+        assert_eq!(refused.kind.as_deref(), Some("refused"));
+        assert_eq!(
+            (refused.discovered, refused.restudied, refused.restudies),
+            (2, Some(1), 1)
+        );
+        assert_eq!(refused.milestone, Some(4), "the streak keeps its milestone");
+        // Found open already: a wait, no new discovery.
+        let open = Issue {
+            number: 9,
+            state: "open".to_string(),
+            title: "Battlemap rows".to_string(),
+            labels: vec![labels::AGENT.to_string()],
+            body: "## Scope\n\nbranch: feat/table-battlemap-instance-projection\n".to_string(),
+            ..Issue::default()
+        };
+        let gh = with_subs(&decided(&streak_of(2)), vec![open]);
+        raise(&gh, true)
+            .on_halt(&mut ctx(false), missing_stop())
+            .await
+            .expect("handed over");
+        let found = decision_of(&gh.writes());
+        assert_eq!(found.kind.as_deref(), Some("wait"));
+        assert!(
+            created(&gh.writes()).is_empty(),
+            "{:?}",
+            created(&gh.writes())
+        );
+        assert_eq!((found.discovered, found.restudies), (2, 1));
+        // Opened: one more.
+        let gh = with_subs(&decided(&streak_of(2)), Vec::new());
+        raise(&gh, true)
+            .on_halt(&mut ctx(false), missing_stop())
+            .await
+            .expect("handed over");
+        assert_eq!(decision_of(&gh.writes()).discovered, 3);
+        // A plain stop: a fresh question, the streak dropped.
+        let gh = with_subs(&decided(&streak_of(2)), Vec::new());
+        raise(&gh, true)
+            .on_halt(&mut ctx(false), stop())
+            .await
+            .expect("handed over");
+        let plain = decision_of(&gh.writes());
+        assert_eq!(plain.kind.as_deref(), Some("stop"));
+        assert_eq!(
+            (plain.discovered, plain.restudied, plain.restudies),
+            (0, None, 0)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_the_harness_opened_that_is_not_needed_closes_as_not_planned() {
+        // ForgeDesMondes' #554: opened for #219, found built already.
+        let body = "## Scope\n\nbranch: feat/oral-brief\n\nb\n\nOpened by the harness for #219, \
+                    whose session stopped on it: #219 waits on this task.";
+        let board = gh(body);
+        let (lines, mut context) = told_ctx();
+        let stop = "**AGENT_LOOP_STOP:** not-needed — session.getOralBrief answers the fixture's \
+                    brief on the live server (curl POST /capabilities/session.getOralBrief: 200)";
+        raise(&board, false)
+            .on_halt(&mut context, Halt::Halted(stop.to_string()))
+            .await
+            .expect("handed over");
+        assert!(context.state.handed_over);
+        let writes = board.writes();
+        assert_eq!(
+            writes.last(),
+            Some(&Wrote::ClosedNotPlanned(11)),
+            "{writes:?}"
+        );
+        let evidence = "> session.getOralBrief answers the fixture's brief on the live server";
+        assert!(
+            writes
+                .iter()
+                .any(|w| matches!(w, Wrote::Comment(11, said) if said.contains(evidence))),
+            "{writes:?}"
+        );
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(219, said)
+                if said.starts_with("#11, opened for this task, is not needed") && said.contains(evidence))),
+            "{writes:?}"
+        );
+        assert!(
+            !writes.iter().any(|w| matches!(
+                w,
+                Wrote::Label(..) | Wrote::Body(..) | Wrote::CreatedIssue(..)
+            )),
+            "{writes:?}"
+        );
+        assert!(
+            lines.0.borrow().iter().any(|l| l.contains(
+                "#11: not needed — closed as not planned, #219 no longer waits on it: \
+                 session.getOralBrief"
+            )),
+            "{:?}",
+            lines.0.borrow()
+        );
+        // On a task no opener opened, or with no evidence: a decision asked.
+        for (body, stop) in [
+            ("## Scope\n\nbranch: feat/pay\n\npay #219", stop),
+            (body, "AGENT_LOOP_STOP: not-needed —  "),
+        ] {
+            let board = gh(body);
+            raise(&board, true)
+                .on_halt(&mut ctx(false), Halt::Halted(stop.to_string()))
+                .await
+                .expect("handed over");
+            let writes = board.writes();
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::ClosedNotPlanned(_) | Wrote::BlockedByLink(..))),
+                "{writes:?}"
+            );
+            assert_eq!(decisions_asked(&writes), 1, "{writes:?}");
+        }
+    }
+
+    #[test]
+    fn the_evidence_of_a_not_needed_stop_is_what_follows_it() {
+        assert_eq!(
+            not_needed("AGENT_LOOP_STOP: not-needed — built by #567").as_deref(),
+            Some("built by #567")
+        );
+        assert_eq!(
+            not_needed("x `AGENT_LOOP_STOP`: not-needed: probe 200").as_deref(),
+            Some("probe 200")
+        );
+        assert_eq!(not_needed("AGENT_LOOP_STOP: not-needed"), None);
+        assert_eq!(not_needed("AGENT_LOOP_STOP: tasks []"), None);
+        assert_eq!(not_needed("not-needed — x"), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_not_needed_evidence_reads_back_trimmed_and_any_reason_never_panics(
+            evidence in "[a-z0-9#][a-z0-9 #.,()]{0,60}[a-z0-9#)]",
+            noise in "(?s).{0,200}",
+        ) {
+            let read = not_needed(&format!("AGENT_LOOP_STOP: not-needed — {evidence}"));
+            proptest::prop_assert_eq!(read.as_deref(), Some(evidence.as_str()));
+            let _ = not_needed(&noise);
+            let _ = not_needed(&format!("AGENT_LOOP_STOP: not-needed{noise}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slice_closed_as_not_needed_is_refused_with_its_evidence_named() {
+        let dropped = Issue {
+            number: 554,
+            title: "Old".to_string(),
+            state: "closed".to_string(),
+            not_planned: true,
+            labels: vec![labels::AGENT.to_string()],
+            body: "## Scope\n\nbranch: feat/table-battlemap-instance-projection\n".to_string(),
+            ..Issue::default()
+        };
+        let gh = with_subs("## Scope\n\nbranch: feat/pay\n\npay", vec![dropped]);
+        raise(&gh, true)
+            .on_halt(&mut ctx(false), missing_stop())
+            .await
+            .expect("handed over");
+        let writes = gh.writes();
+        assert!(created(&writes).is_empty(), "{writes:?}");
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(11, said) if said.contains(
+                "#554 was closed as not needed (its last comment says why): build on, or declare \
+                 it under a new branch with the probe that shows it missing"
+            ))),
+            "{writes:?}"
+        );
     }
 }

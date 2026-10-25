@@ -312,6 +312,10 @@ mod tests {
             self.note(format!("close #{number}"));
             Ok(())
         }
+        async fn close_issue_not_planned(&self, number: u64) -> Outcome<()> {
+            self.note(format!("close #{number} not planned"));
+            Ok(())
+        }
         async fn pr(&self, _pr_ref: &str) -> Outcome<harness_core::domain::Pr> {
             Err(refused())
         }

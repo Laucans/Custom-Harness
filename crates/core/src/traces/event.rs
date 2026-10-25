@@ -169,6 +169,17 @@ pub enum Event {
         /// The stop's reason, in a line.
         why: String,
     },
+    /// A task's every missing unit, found at once: its re-study opened or
+    /// found the tasks it now waits on, and named the rule tests the next
+    /// code session contests.
+    Restudied {
+        /// The task.
+        task: u64,
+        /// The tasks it waits on, opened or found by the re-study.
+        on: Vec<u64>,
+        /// The rules whose tests are to contest (`R15`).
+        contests: Vec<String>,
+    },
     /// A rules contest settled, and the harness followed it through: the
     /// `CONTEST.md` it was written in deleted where it lay, and the pull
     /// request that waited on it resumed, its repairs counted anew.
@@ -585,6 +596,20 @@ impl Event {
             } => format!("watch: lanes -> lane {lane} done with #{issue} ({status})"),
             Self::TaskWaits { task, on, why } => {
                 format!("#{task} parked until #{on} lands (wait): {why}")
+            }
+            Self::Restudied { task, on, contests } => {
+                let waits = if on.is_empty() {
+                    "nothing missing beyond the open tasks".to_string()
+                } else {
+                    let named: Vec<String> = on.iter().map(|n| format!("#{n}")).collect();
+                    format!("waits on {}", named.join(", "))
+                };
+                let contested = match contests.len() {
+                    0 => String::new(),
+                    1 => format!("; 1 rule test to contest ({})", contests.join(", ")),
+                    n => format!("; {n} rule tests to contest ({})", contests.join(", ")),
+                };
+                format!("#{task} re-studied: {waits}{contested}")
             }
             Self::Resumed {
                 contest,
@@ -1375,6 +1400,42 @@ mod tests {
         assert!(json.contains("\"event\":\"task_waits\""), "{json}");
         let back: Event = serde_json::from_str(&json).expect("back");
         assert_eq!(back, waits);
+    }
+
+    #[test]
+    fn a_re_study_says_what_the_task_waits_on_and_what_to_contest_and_reads_back() {
+        let restudied = Event::Restudied {
+            task: 219,
+            on: vec![567, 568, 570],
+            contests: vec!["R15".to_string()],
+        };
+        assert_eq!(
+            restudied.line().as_deref(),
+            Some("#219 re-studied: waits on #567, #568, #570; 1 rule test to contest (R15)")
+        );
+        assert_eq!(restudied.level(), Level::Info);
+        let two = Event::Restudied {
+            task: 219,
+            on: Vec::new(),
+            contests: vec!["R15".to_string(), "R11".to_string()],
+        };
+        assert_eq!(
+            two.line().as_deref(),
+            Some(
+                "#219 re-studied: nothing missing beyond the open tasks; 2 rule tests to \
+                 contest (R15, R11)"
+            )
+        );
+        let bare = Event::Restudied {
+            task: 9,
+            on: vec![3],
+            contests: Vec::new(),
+        };
+        assert_eq!(bare.line().as_deref(), Some("#9 re-studied: waits on #3"));
+        let json = serde_json::to_string(&restudied).expect("json");
+        assert!(json.contains("\"event\":\"restudied\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, restudied);
     }
 
     #[test]

@@ -70,6 +70,9 @@ impl GitHub for NoGitHub {
     async fn close_issue(&self, _number: u64) -> Outcome<()> {
         Err(refused())
     }
+    async fn close_issue_not_planned(&self, _number: u64) -> Outcome<()> {
+        Err(refused())
+    }
     async fn pr(&self, _pr_ref: &str) -> Outcome<harness_core::domain::Pr> {
         Err(refused())
     }

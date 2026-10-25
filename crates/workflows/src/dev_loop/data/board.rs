@@ -317,6 +317,38 @@ mod tests {
     }
 
     #[test]
+    fn a_task_due_a_re_study_is_not_picked_and_the_next_one_is() {
+        // #219 after its second discovery: a sequential dev loop must not
+        // start a code session on it.
+        let mut due = task(219);
+        due.body = "## Decision\n\nkind: wait\nblocks: AGENT_LOOP_STOP: tasks [...]\nround: \
+                    1\nmilestone: #28\ndiscovered: 2"
+            .to_string();
+        let board = Board {
+            milestone: issue(28, &[labels::MILESTONE]),
+            tasks: vec![due.clone(), task(220)],
+            resuming: None,
+        };
+        assert_eq!(board.next().map(|t| t.number), Some(220));
+        let alone = Board {
+            tasks: vec![due.clone()],
+            ..board.clone()
+        };
+        assert_eq!(alone.next().map(|t| t.number), None);
+        assert!(
+            tasks::startable_tasks(&alone.tasks, &[], None, &|_| true).is_empty(),
+            "a lane does not start it either"
+        );
+        // Re-studied once on this discovery: it runs again.
+        due.body.push_str("\nrestudied: 2\nrestudies: 1");
+        let studied = Board {
+            tasks: vec![due],
+            ..board
+        };
+        assert_eq!(studied.next().map(|t| t.number), Some(219));
+    }
+
+    #[test]
     fn find_returns_a_closed_task_so_an_interrupted_round_can_finish() {
         let mut done = task(11);
         done.state = "closed".to_string();

@@ -107,6 +107,7 @@ fn tag(route: &str) -> &'static str {
         "PrReview" => "pr_review",
         "PrFix" => "pr_fix",
         "TestDebt" => "test_debt",
+        "ReStudy" => "restudy",
         "Rules" => "rules",
         "Decide" => "decide",
         "Arbiter" => "arbiter",
@@ -420,6 +421,7 @@ mod tests {
         for (route, said) in [
             ("PrFix { pr: \"71\" }", "pr_fix"),
             ("TestDebt { issue: 80 }", "test_debt"),
+            ("ReStudy { task: 219 }", "restudy"),
             ("Arbiter { issue: 81 }", "arbiter"),
             ("ContractChange { issue: 70 }", "contract_manager"),
             (

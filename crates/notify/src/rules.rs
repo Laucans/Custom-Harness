@@ -323,7 +323,8 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         // blocker on GitHub and the journal line say it. Nor does a sweep of
         // stale scratch databases, nor a lane's build folder pruned:
         // housekeeping the journal tells. Nor a split pulled past the cap: the
-        // router's own way out of a starved milestone.
+        // router's own way out of a starved milestone. Nor a re-study: the
+        // tasks it opened are the board's, the journal line says it.
         Event::SessionEnded { .. }
         | Event::ScratchDatabasesSwept { .. }
         | Event::LaneTargetPruned { .. }
@@ -333,6 +334,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::GateChecked { .. }
         | Event::ChecksFailed { .. }
         | Event::TaskWaits { .. }
+        | Event::Restudied { .. }
         | Event::SplitPulled { .. } => {}
     }
 }

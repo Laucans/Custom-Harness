@@ -16,7 +16,8 @@
 //!   share one **read-only** checkout ([`shared`]): none of them commits.
 //! - [`pr_fix`] gets a **writable** one of its own, on the PR's branch,
 //!   because it does commit; [`test_debt`] and [`rules`] too, on the
-//!   integration branch.
+//!   integration branch; [`restudy`] too, read-only, on the milestone's
+//!   branch.
 //! - [`init_repo`] and [`main_agent_merge`] mount nothing: both are
 //!   deterministic commands that only talk to GitHub.
 //! - [`scratch_sweep`] mounts nothing either: it talks to the product's
@@ -58,6 +59,7 @@ pub mod planner;
 pub mod pr_fix;
 pub mod pr_review;
 pub mod refinement;
+pub mod restudy;
 pub mod rules;
 pub mod scratch_sweep;
 pub mod shared;

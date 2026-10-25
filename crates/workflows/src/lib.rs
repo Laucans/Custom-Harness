@@ -35,6 +35,7 @@ pub mod pr_fix;
 pub mod pr_review;
 pub mod prompts;
 pub mod refinement;
+pub mod restudy;
 pub mod rules;
 pub mod scratch_sweep;
 pub mod split;

@@ -493,6 +493,8 @@ pub enum RouteKind {
     Arbiter,
     /// `test_debt` on a test-debt issue.
     TestDebt,
+    /// `restudy` on a task its sessions kept finding missing units for.
+    Restudy,
 }
 
 /// `harness route <kind> <number>`: one of the router's paid routes, as a

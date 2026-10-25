@@ -167,6 +167,13 @@ pub trait GitHub {
     /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.
     async fn close_issue(&self, number: u64) -> Outcome<()>;
 
+    /// Close an issue as not planned: no work of it landed, and none will —
+    /// what a milestone's landing (`every_task_merged`) does not wait on.
+    ///
+    /// # Errors
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.
+    async fn close_issue_not_planned(&self, number: u64) -> Outcome<()>;
+
     // --- what the PR review demands, and nothing else ----------------------
     //
     // Via `gh pr view`/`gh pr comment`, not via `gh api`: a review does not need

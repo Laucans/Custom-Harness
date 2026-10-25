@@ -26,6 +26,8 @@ pub enum Wrote {
     Comment(u64, String),
     /// An issue closed.
     Closed(u64),
+    /// An issue closed as not planned.
+    ClosedNotPlanned(u64),
     /// A comment posted on a PR, and the file it comes from.
     PrComment(String, String),
     /// A label created: name, color, description.
@@ -193,6 +195,22 @@ impl FakeGitHub {
         self.wrote.borrow().clone()
     }
 
+    /// The issue this number names on the board — an issue or a
+    /// milestone's sub-issue — else a bare open one, as a blocker written
+    /// since reads back.
+    fn known(&self, number: u64) -> Issue {
+        self.issues
+            .iter()
+            .chain(self.subs.iter().flat_map(|(_, subs)| subs.iter()))
+            .find(|issue| issue.number == number)
+            .cloned()
+            .unwrap_or_else(|| Issue {
+                number,
+                state: "open".to_string(),
+                ..Issue::default()
+            })
+    }
+
     /// Refuses a native milestone write when told to.
     fn natives_ok(&self) -> Outcome<()> {
         self.ok()?;
@@ -258,15 +276,31 @@ impl GitHub for FakeGitHub {
 
     async fn blocked_by(&self, number: u64) -> Outcome<Vec<Issue>> {
         self.ok()?;
-        // Blockers are already carried by the issue in the fake: what we want
-        // to exercise is the rule, not the API shape.
-        Ok(self
+        // Blockers are carried by the issue in the fake, plus those written
+        // since, as GitHub reads them back: what we want to exercise is the
+        // rule, not the API shape.
+        let mut blockers: Vec<Issue> = self
             .subs
             .iter()
             .flat_map(|(_, subs)| subs.iter())
             .find(|issue| issue.number == number)
             .map(|issue| issue.blocked_by.clone())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        let written: Vec<u64> = self
+            .wrote
+            .borrow()
+            .iter()
+            .filter_map(|wrote| match wrote {
+                Wrote::BlockedByLink(task, on) if *task == number => Some(*on),
+                _ => None,
+            })
+            .collect();
+        for blocker in written {
+            if !blockers.iter().any(|known| known.number == blocker) {
+                blockers.push(self.known(blocker));
+            }
+        }
+        Ok(blockers)
     }
 
     async fn with_blockers(&self, tasks: Vec<Issue>) -> Outcome<Vec<Issue>> {
@@ -319,6 +353,13 @@ impl GitHub for FakeGitHub {
 
     async fn close_issue(&self, number: u64) -> Outcome<()> {
         self.wrote.borrow_mut().push(Wrote::Closed(number));
+        Ok(())
+    }
+
+    async fn close_issue_not_planned(&self, number: u64) -> Outcome<()> {
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::ClosedNotPlanned(number));
         Ok(())
     }
 
