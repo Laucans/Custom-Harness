@@ -977,6 +977,18 @@ list reads (`show`, `head_of`, a worktree per edited branch); under
 never changes, and a kit component, its reference image included, lands
 in the product's repository only. Routes `GET /mock/{branch slug}/{*path}` (a page's relative links
 resolve beside it), `GET /api/mockup?branch=`, `POST /api/mockup/{save,discard}`;
+`GET /mock/{branch slug}/__product/{*path}`, the product's files a page
+reads beside its `mock/`, read-only (`Mockups::product_files`, from the
+branch's workspace when one exists, else as committed): `plan/graph.json`
+(what is mocked until built), a `DataCapability`'s manifest
+(`crates/*/data-capabilities/*/data-capability.json`), and
+`data-capabilities.json`, every manifest indexed by its own
+`dataCapability` field (`domain::mockup::data_capability_index`, a
+duplicate or unreadable one a `problems` line) — what the mock server
+reads to warn, in the engine's words, of a payload key its manifest does
+not declare. The whitelist is the domain's (`mockup::PRODUCT_READS`,
+`is_product_read`: a `*` one safe segment, never a dot first, never `..`);
+the adapter checks it again and reads nothing else of the product;
 `POST /api/notes/{board}/{id}/session` carries the branch and the page for
 a board named `mockup--…`, and the server makes the workspace before the
 session opens. The product's rules on the mock-up — one page per screen,
@@ -1303,7 +1315,7 @@ src/adapters/
   prompt_files.rs      the prompt book, read only, and the drafts, read and written — through harness-adapters' stores
   trial_proc.rs        `harness trial` spawned with the text on stdin; its reports read back, a process dead before reporting told as failed
   limits_cli.rs        a minimal `claude -p` (haiku, no tool) for the subscription windows, `gh api rate_limit` for GitHub
-src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart, /api/factories, POST /api/factories/{id}/open, /api/creation, POST /api/creation/…
+src/server/            axum, one file per pane: `mod.rs` the state, the route table, the page's assets; `runs`, `desks`, `plant`, `janitor`, `data_model`, `mockup`, `drafts` (a page's draft and its versions), `design` (the design system's easel), `capabilities`, `notes`, `prompts` the handlers of each; `tests.rs` the router driven with fakes. The routes: the page, the scripts, /render/… (the wasm bundle, from disk), /api/snapshot, /api/events (SSE), /api/runs/… (tails, stages, graph), /api/issues/…, /api/history?from&to, /api/limits, /api/plant, POST /api/plant/{start,soft,hard}, /api/steward, /api/steward/term (WebSocket), /api/doctor, /api/doctor/term (WebSocket), /api/doctor/diagnoses, POST /api/doctor/diagnose/{workflow}/{run}, /api/janitor, POST /api/janitor/{diagnose,sweep,settings}, /api/data-model, /api/data-model/versions, /api/data-model/divergence, POST /api/data-model/issue, /mock/{slug}/{*path}, /mock/{slug}/__product/{*path} (the graph and the DataCapabilities' manifests, read-only), /api/mockup, POST /api/mockup/{save,discard}, /api/capabilities, POST /api/capabilities/fusion, /api/notes/{board}, /api/prompts/{line}/{station}, POST /api/prompts/{edit,restore,withdraw,trial}, /api/prompts/trials, /api/pending, POST /api/restart, /api/factories, POST /api/factories/{id}/open, /api/creation, POST /api/creation/…
 static/                index.html, style.css, viewport.js (the viewport picker the mock-up's easel and the creation page's preview share), clock.js (every clock a human reads, in the harness machine's time zone — the traces stay UTC), app.js (data, navigation, panes, the three notification signs and their pane, the bridge to the renderer), board.js (a pannable, zoomable canvas with pins and zones), data-model.js (the UML diagram on it), mockup.js (the product's pages in an iframe on it, the draft, the requests, the forks), edit.js (the draft engine: a page as source + operations, undo, materialization), design.js (the designer's hands: selection, handles, guides, marquee, layers, properties, tools, menu, keys), vendor/ (xterm.js; morphdom.js, the creation page's redraws), render/ (built, not committed)
 sample/                a product's data model to show under --demo: data/ (live files), archive/ (versions); units/ (manifests and mock/ pages, one folder per branch, dates.tsv)
 ```

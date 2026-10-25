@@ -108,8 +108,8 @@ use factories::{
 use janitor::{janitor, janitor_diagnose, janitor_settings, janitor_sweep};
 use mockup::{
     apply_requests, mf_apply, mf_drop_draft, mf_generate, mf_generations, mf_save, mock_file,
-    mock_preview, mockup_discard, mockup_files, mockup_restore, mockup_save, mockup_state,
-    mockup_write,
+    mock_preview, mock_product, mockup_discard, mockup_files, mockup_restore, mockup_save,
+    mockup_state, mockup_write,
 };
 use notes::{
     all_notes, backlog_note, close_session, delete_note, notes, open_session, put_note,
@@ -267,6 +267,7 @@ pub fn router(state: AppState) -> Router {
         .route("/mock/{slug}/__preview/{name}", get(mock_preview))
         .route("/mock/{slug}/__kit/{name}", get(kit_preview))
         .route("/mock/{slug}/__showcase/contact", get(kit_showcase))
+        .route("/mock/{slug}/__product/{*path}", get(mock_product))
         .route("/mock/{slug}/{*path}", get(mock_file))
         .route("/render/{file}", get(render_asset))
         .route("/vendor/xterm.js", get(xterm_js))

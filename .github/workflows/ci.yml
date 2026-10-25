@@ -19,6 +19,13 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # The architecture's tests run the installed scripts on node; the rules'
+      # kit (`journey_kit.rs`) needs node to strip TypeScript (22.6 or later),
+      # and is red, never skipped, when CI has none.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
       # Cheap checks first, so the slow build is not what fails on a typo.
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings

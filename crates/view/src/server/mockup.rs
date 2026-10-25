@@ -90,6 +90,58 @@ pub(super) async fn mock_file(
     }
 }
 
+/// A file of the product beside a branch's mock-up, read-only, under
+/// `/mock/<branch slug>/__product/`: the plan's graph, a `DataCapability`'s
+/// manifest, or `data-capabilities.json`, every manifest indexed by its
+/// `dataCapability` field — what the mock server reads to mirror the
+/// engine's payload check. Anything else of the product is not served.
+pub(super) async fn mock_product(
+    State(state): State<AppState>,
+    Path((slug, path)): Path<(String, String)>,
+) -> Response {
+    let Some(mockups) = state.mockups.clone() else {
+        return not_found(NO_MOCKUPS);
+    };
+    let Some(branch) = mockup::branch_of(&slug) else {
+        return not_found("no such branch");
+    };
+    let index = path == mockup::DATA_CAPABILITY_INDEX;
+    if !index && !mockup::is_product_read(&path) {
+        return not_found("not a file of the product a mock-up reads");
+    }
+    let read = tokio::task::spawn_blocking(move || {
+        if index {
+            let files = mockups.product_files(&branch, mockup::DATA_CAPABILITY_MANIFESTS)?;
+            return Ok(Some(
+                mockup::data_capability_index(&files)
+                    .to_string()
+                    .into_bytes(),
+            ));
+        }
+        Ok::<_, String>(
+            mockups
+                .product_files(&branch, &path)?
+                .into_iter()
+                .next()
+                .map(|(_, bytes)| bytes),
+        )
+    })
+    .await;
+    match read {
+        Ok(Ok(Some(bytes))) => (
+            [
+                (header::CONTENT_TYPE, mockup::content_type("x.json")),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(Ok(None)) => not_found("no such file in the product"),
+        Ok(Err(why)) => (StatusCode::SERVICE_UNAVAILABLE, why).into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "the read was dropped").into_response(),
+    }
+}
+
 /// `?branch=`: which branch's mock-up; empty, the integration branch.
 #[derive(Debug, Default, Deserialize)]
 pub(super) struct MockupQuery {

@@ -9,6 +9,8 @@
 //! defined twice is an error naming both files, never a silent override —
 //! found at startup for every id the legacy files or `mock/pages.json`
 //! name, which breaks the whole server, and on first use for any other.
+//! A payload key its manifest does not declare is warned in the engine's
+//! own words, never refused, with the engine's exemptions.
 //! Skipped, loudly, when `node` is not on the path.
 
 use std::fs;
@@ -137,6 +139,12 @@ fn write(root: &Path, path: &str, text: &str) {
 /// `driver` (a module under `src/`) with node, and answers whether it said
 /// `ok`, with what it printed. `None` when node is not on the path.
 fn run(case: &str, files: &[(&str, &str)], driver: &str) -> Option<(bool, String)> {
+    run_at(case, "", files, driver)
+}
+
+/// [`run`], the mock-up under `mock` (`""` or `"mock/"`) in the fresh
+/// folder — as a repository holds it — and `files` from the folder's root.
+fn run_at(case: &str, mock: &str, files: &[(&str, &str)], driver: &str) -> Option<(bool, String)> {
     if Command::new("node").arg("--version").output().is_err() {
         eprintln!("mock_server: node is not on the path, skipped");
         return None;
@@ -149,7 +157,8 @@ fn run(case: &str, files: &[(&str, &str)], driver: &str) -> Option<(bool, String
         "harness-mock-{case}-{}-{stamp}",
         std::process::id()
     )));
-    let root = &dir.0;
+    let base = &dir.0;
+    let root = &base.join(mock);
     write(root, "src/server.js", SERVER);
     write(root, "src/shims.mjs", SHIMS);
     write(root, "src/driver.mjs", driver);
@@ -160,7 +169,7 @@ fn run(case: &str, files: &[(&str, &str)], driver: &str) -> Option<(bool, String
         r#"{"id":"881","creditLimit":5000}"#,
     );
     for (path, text) in files {
-        write(root, path, text);
+        write(base, path, text);
     }
     let output = Command::new("node")
         .arg(root.join("src/driver.mjs"))
@@ -338,6 +347,109 @@ console.log('ok');
         ],
         &driver,
     ) else {
+        return;
+    };
+    assert!(ok, "{said}");
+}
+
+/// The index the factory view serves at `__product/data-capabilities.json`:
+/// the manifests by their `dataCapability` field, with its problems.
+const INDEX: &str = r#"{
+  "manifests": {
+    "credit.addPayment": {
+      "path": "crates/credit/data-capabilities/record-payment/data-capability.json",
+      "manifest": { "dataCapability": "credit.addPayment", "target": { "aggregate": "Account", "id": "$accountId" }, "payload": { "amount": "number", "entity.id": "uuid", "entity.name": "string" } }
+    },
+    "credit.free": {
+      "path": "crates/credit/data-capabilities/free/data-capability.json",
+      "manifest": { "dataCapability": "credit.free", "payload": {} }
+    },
+    "credit.planned": {
+      "path": "crates/credit/data-capabilities/planned/data-capability.json",
+      "manifest": { "dataCapability": "credit.planned", "payload": { "x": "string" } }
+    }
+  },
+  "problems": ["crates/credit/data-capabilities/broken/data-capability.json is not JSON"]
+}"#;
+
+const GRAPH: &str = r#"{"ids": {"credit.planned": {"kind": "data-capability", "producer": "M1"}}}"#;
+
+/// The console's errors, kept for the driver to read.
+const LOUD: &str = r"
+globalThis.said = [];
+console.error = (...parts) => globalThis.said.push(parts.join(' '));
+";
+
+#[test]
+fn an_undeclared_payload_key_is_warned_in_the_engine_s_words_never_refused() {
+    let driver = format!(
+        "{PRELUDE}{LOUD}{}",
+        r"
+import { undeclaredKeys, undeclaredWarning } from './server.js';
+const manifest = { target: { id: '$$id' }, payload: { 'entity.id': 'uuid', b: 'x' } };
+const keys = undeclaredKeys(manifest, { z: 1, entity: {}, entit: 1, id: 'x', b: 2, a: 3 }).join();
+expect(keys === 'a,entit,z', 'top-level keys, dotted paths, the target exempt, sorted: ' + keys);
+expect(undeclaredKeys({ payload: {} }, { any: 1 }).length === 0 && undeclaredKeys({}, { any: 1 }).length === 0, 'a manifest that declares no payload checks nothing');
+expect(undeclaredWarning(['a', 'b'], 'x.y') === 'payload key(s) a, b not declared by x.y', 'the engine words');
+
+const off = await call('/commands', { dataCapability: 'credit.addPayment@7', payload: { zeta: 1, amount: 12, colour: 'red', accountId: 'a1', entity: { id: 'e' } }, caller: { by: 'alice' } });
+const warning = 'payload key(s) colour, zeta not declared by credit.addPayment';
+expect(off.status === 202 && off.body.result.status === 'applied', 'accepted, as the engine does: ' + JSON.stringify(off));
+expect(off.body.warnings.includes(warning), 'the engine words, whatever the version: ' + JSON.stringify(off.body.warnings));
+expect(s.undeclared.length === 1 && s.undeclared[0].manifest === 'crates/credit/data-capabilities/record-payment/data-capability.json' && s.undeclared[0].commandId === off.body.commandId && s.undeclared[0].keys.join() === 'colour,zeta', 'kept for the page: ' + JSON.stringify(s.undeclared));
+expect(globalThis.said.some((l) => l.includes(warning) && l.includes('record-payment/data-capability.json') && l.includes('journeys fail')), 'said loudly: ' + JSON.stringify(globalThis.said));
+expect(globalThis.said.filter((l) => l === 'mock server: crates/credit/data-capabilities/broken/data-capability.json is not JSON').length === 1, 'the index problems, said once: ' + JSON.stringify(globalThis.said));
+
+const clean = await call('/commands', { dataCapability: 'credit.addPayment', payload: { amount: 3 }, caller: { by: 'alice' } });
+expect(clean.body.result.status === 'applied' && !clean.body.warnings.some((w) => w.startsWith('payload key(s)')), 'a declared payload is quiet: ' + JSON.stringify(clean));
+const rejected = await call('/commands', { dataCapability: 'credit.addPayment', payload: { amount: 0, extra: 1 }, caller: { by: 'alice' } });
+expect(rejected.body.result.status === 'rejected' && rejected.body.warnings.includes('payload key(s) extra not declared by credit.addPayment'), 'the handler still judges, the warning still said: ' + JSON.stringify(rejected));
+const free = await call('/commands', { dataCapability: 'credit.free', payload: { anything: 1 }, caller: { by: 'alice' } });
+expect(free.body.result.status === 'applied' && free.body.warnings.length === 0, 'an empty payload declares nothing to check: ' + JSON.stringify(free));
+const planned = await call('/commands', { dataCapability: 'credit.planned', payload: { y: 1 }, caller: { by: 'alice' } });
+expect(planned.body.result.status === 'applied' && planned.body.warnings.includes('mocked-data-capability: credit.planned is planned, not built') && planned.body.warnings.includes('payload key(s) y not declared by credit.planned'), 'planned, mocked, warned: ' + JSON.stringify(planned));
+const unknown = await call('/commands', { dataCapability: 'orders.nothing', payload: { q: 1 }, caller: { by: 'x' } });
+expect(unknown.body.warnings.length === 0, 'no manifest, nothing judged: ' + JSON.stringify(unknown));
+const replay = { dataCapability: 'credit.addPayment', payload: { amount: 5, nope: 1 }, idempotencyKey: 'k9', caller: { by: 'alice' } };
+await call('/commands', replay);
+const again = await call('/commands', replay);
+expect(again.body.replayed && again.body.warnings.length === 0, 'a replay answers no warning, as the engine: ' + JSON.stringify(again));
+console.log('ok');
+"
+    );
+    let Some((ok, said)) = run(
+        "undeclared",
+        &[
+            ("handlers/credit.addPayment.js", PAYMENT),
+            (
+                "handlers/_lib/credit.js",
+                "export const positive = (amount) => amount > 0;\n",
+            ),
+            (
+                "handlers/credit.free.js",
+                "export const commands = { 'credit.free': async () => undefined };\n",
+            ),
+            ("__product/data-capabilities.json", INDEX),
+            ("__product/plan/graph.json", GRAPH),
+        ],
+        &driver,
+    ) else {
+        return;
+    };
+    assert!(ok, "{said}");
+}
+
+#[test]
+fn a_plain_server_at_the_repository_s_root_serves_the_graph_two_folders_up() {
+    let driver = format!(
+        "{PRELUDE}{}",
+        r"
+const planned = await call('/commands', { dataCapability: 'credit.planned', payload: { y: 1 }, caller: { by: 'alice' } });
+expect(planned.body.result.status === 'applied' && planned.body.warnings.length === 1, 'the graph read at the root; no index there, nothing judged: ' + JSON.stringify(planned));
+console.log('ok');
+"
+    );
+    let Some((ok, said)) = run_at("root", "mock/", &[("plan/graph.json", GRAPH)], &driver) else {
         return;
     };
     assert!(ok, "{said}");

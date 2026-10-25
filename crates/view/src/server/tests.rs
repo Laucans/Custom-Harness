@@ -307,6 +307,24 @@ impl crate::ports::Mockups for FakeMockups {
     fn file(&self, _branch: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
         Ok((path == "pages/home.html").then(|| b"<h1>hi</h1>".to_vec()))
     }
+    fn product_files(
+        &self,
+        _branch: &str,
+        pattern: &str,
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        Ok([
+            ("Cargo.toml", "secret = 1"),
+            ("plan/graph.json", r#"{"ids":{}}"#),
+            (
+                "crates/table/data-capabilities/move/data-capability.json",
+                r#"{"dataCapability":"table.moveToken","payload":{"token":"uuid"}}"#,
+            ),
+        ]
+        .into_iter()
+        .filter(|(path, _)| *path == pattern || crate::domain::mockup::matches(pattern, path))
+        .map(|(path, text)| (path.to_string(), text.as_bytes().to_vec()))
+        .collect())
+    }
     fn workspace(&self, _branch: &str) -> Result<PathBuf, String> {
         Err("no workspace in a test".into())
     }
@@ -592,6 +610,49 @@ async fn the_easel_is_empty_without_a_product() {
     assert!(body.contains("\"enabled\":false"), "{body}");
     let (status, _) = get(state(Shelf::default(), None), "/mock/main/pages/home.html").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_page_reads_the_product_s_graph_and_manifests_and_nothing_else() {
+    let (status, _) = get(
+        state(Shelf::default(), None),
+        "/mock/main/__product/plan/graph.json",
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "no product, nothing read");
+    let with = || {
+        let mut st = state(Shelf::default(), None);
+        st.mockups = Some(Arc::new(FakeMockups));
+        st
+    };
+    let (status, body) = get(with(), "/mock/main/__product/plan/graph.json").await;
+    assert_eq!((status, body.as_str()), (StatusCode::OK, r#"{"ids":{}}"#));
+    let manifest =
+        "/mock/milestone__1/__product/crates/table/data-capabilities/move/data-capability.json";
+    let (status, body) = get(with(), manifest).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("table.moveToken"), "{body}");
+    let (status, body) = get(with(), "/mock/main/__product/data-capabilities.json").await;
+    assert_eq!(status, StatusCode::OK);
+    let index: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        index["manifests"]["table.moveToken"]["path"],
+        "crates/table/data-capabilities/move/data-capability.json",
+        "{body}"
+    );
+    assert_eq!(
+        index["manifests"]["table.moveToken"]["manifest"]["payload"]["token"],
+        "uuid"
+    );
+    for refused in [
+        "/mock/main/__product/Cargo.toml",
+        "/mock/main/__product/crates/table/data-capabilities/none/data-capability.json",
+        "/mock/main/__product/crates/table/data-capabilities/move/../../../../Cargo.toml",
+        "/mock/a..b/__product/plan/graph.json",
+    ] {
+        let (status, body) = get(with(), refused).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{refused}: {body}");
+    }
 }
 
 #[tokio::test]

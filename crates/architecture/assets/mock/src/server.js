@@ -17,6 +17,22 @@
 //   or `'not-found'`. A DataCapability with no handler is **rejected** with
 //   `unhandled-data-capability`: the real server refuses what no manifest
 //   registers, so does the mock;
+// - a payload key the DataCapability's manifest does not declare is
+//   **warned**, never refused — the engine's own check, mirrored exactly
+//   (`undeclared_keys` in `crates/dataguard`): the payload's top-level keys
+//   only (`entity.id` declared declares `entity`), the key naming the
+//   target (`target.id: "$sessionId"`) always declared, a manifest that
+//   declares no payload checks nothing, the `@version` ignored. The answer's
+//   `warnings` carries the engine's very words, `payload key(s) <keys> not
+//   declared by <dataCapability>`, the console says it loudly, and
+//   `server.undeclared` keeps it for the page and the tests. The mock is
+//   never stricter than the real server: what the engine accepts, it
+//   accepts — a screen that sends an undeclared key works on both, and the
+//   journeys (on the real server) fail on that warning. The manifests come
+//   indexed by their `dataCapability` field, never by a folder's name, from
+//   `__product/data-capabilities.json` beside the page's folder — what the
+//   factory view serves, read-only; with nothing serving it, nothing is
+//   checked;
 // - the aggregate's own invariants judge too, when the page ships
 //   `fixtures/aggregates/<Aggregate>.json` (an aggregate.json, contract I)
 //   and the command names its `target.aggregate`: every `rule` of the shape
@@ -120,6 +136,24 @@ export function ruleHolds(rule, payload) {
   }
 }
 
+/**
+ * The payload's keys `manifest` does not declare, sorted — the DataGuard
+ * engine's `undeclared_keys`, mirrored: nothing when its `payload` declares
+ * none, a key declared by name or through a dotted path under it
+ * (`entity.id` declares `entity`), and the key naming the target
+ * (`target.id`, its leading `$` dropped) always declared.
+ */
+export function undeclaredKeys(manifest, payload) {
+  const declared = Object.keys((manifest && manifest.payload) || {});
+  if (!declared.length) return [];
+  const id = manifest.target && typeof manifest.target.id === 'string' ? manifest.target.id.replace(/^\$+/, '') : null;
+  const declares = (key) => declared.some((d) => d === key || (d.startsWith(key) && d[key.length] === '.'));
+  return Object.keys(payload || {}).filter((key) => key !== id && !declares(key)).sort();
+}
+
+/** The engine's warning for `keys` sent to `dataCapability`, word for word (`crates/dataguard`, `submit_one`). */
+export const undeclaredWarning = (keys, dataCapability) => `payload key(s) ${keys.join(', ')} not declared by ${dataCapability}`;
+
 /** The page's mock server, made on first use. */
 export function mockServer() {
   if (window.__mockServer) return window.__mockServer;
@@ -188,10 +222,34 @@ export function mockServer() {
   };
   s.uuid = uuid;
   s.next = () => s.tick++;
+  /**
+   * A file of the product outside `mock/`, parsed, loaded once: from
+   * `__product/` beside the page's folder — what the factory view serves —
+   * else from the repository's root two folders up, when a plain server
+   * serves the repository; `undefined` when neither has it.
+   */
+  s.productFiles = new Map();
+  s.product = (path) => {
+    if (!s.productFiles.has(path)) {
+      const at = (base) => fetch(new URL(base + path, location.href)).then((r) => (r.ok ? r.json() : undefined)).catch(() => undefined);
+      s.productFiles.set(path, at('../__product/').then((found) => (found === undefined ? at('../../') : found)));
+    }
+    return s.productFiles.get(path);
+  };
+  /** The DataCapabilities' manifests by their `dataCapability` field: `{ <id>: { path, manifest } }`, empty when nothing serves the index; its problems said once. */
+  s.manifests = async () => {
+    const index = await s.product('data-capabilities.json');
+    if (index && !s.manifestsSaid) {
+      s.manifestsSaid = true;
+      for (const problem of index.problems || []) console.error(`mock server: ${problem}`);
+    }
+    return (index && index.manifests) || {};
+  };
+  /** The engine's undeclared-key warnings so far: `{ commandId, dataCapability, keys, manifest, warning }`, oldest first. */
+  s.undeclared = [];
   /** Whether the plan's graph (`plan/graph.json`, contract R) names `id` as a write a milestone produces: mocked until built. */
   s.planned = async (id) => {
-    if (!s.graph) s.graph = fetch(new URL('../../plan/graph.json', location.href)).then((r) => (r.ok ? r.json() : undefined)).catch(() => undefined);
-    const graph = await s.graph;
+    const graph = await s.product('plan/graph.json');
     const entry = graph && graph.ids && graph.ids[id];
     return Boolean(entry && entry.kind === 'data-capability' && entry.producer != null);
   };
@@ -243,7 +301,8 @@ export function mockServer() {
   };
   s.confirmed = new Map();
   const resultOf = (entry) => ({ commandId: entry.commandId, status: entry.state, dataVersion: entry.dataVersion || null, violations: entry.violations || [], reviewId: entry.reviewId || null });
-  const answer = (entry, replayed = false) => json({ commandId: entry.commandId, partition: entry.partition, replayed, warnings: entry.warnings || [], result: resultOf(entry) }, 202);
+  // A replay answers no warning, as the engine's: they were said to the first submission.
+  const answer = (entry, replayed = false) => json({ commandId: entry.commandId, partition: entry.partition, replayed, warnings: replayed ? [] : entry.warnings || [], result: resultOf(entry) }, 202);
 
   /** Applies every head that is ready, partition by partition; a head unconfirmed for `parkAfterMs` at the head is parked (the engine's grace, 30 s). */
   const drive = async () => {
@@ -309,15 +368,27 @@ export function mockServer() {
     const entry = { commandId, dataCapability, version: Number(version) || 1, aggregate, partition, targetId, by, payload, basedOn: body.basedOn, idempotencyKey: body.idempotencyKey, handler, position: s.next(), state: 'queued', warnings: [] };
     s.queue.set(commandId, entry);
     s.commands.set(commandId, entry);
+    // What the author sent against its manifest, as the engine judges it: a warning, never a refusal.
+    const known = (await s.manifests())[dataCapability];
+    const keys = known ? undeclaredKeys(known.manifest, payload) : [];
+    const warnUndeclared = () => {
+      if (!keys.length) return;
+      const warning = undeclaredWarning(keys, dataCapability);
+      entry.warnings.push(warning);
+      s.undeclared.push({ commandId, dataCapability, keys, manifest: known.path, warning });
+      console.error(`mock server: ${warning} (${known.path}) — the real server accepts it with this warning and the journeys fail on it: send only what the manifest's payload declares`);
+    };
     if (!handler && (await s.planned(dataCapability))) {
       // Mocked until its milestone builds it: accepted, applied, no effect.
       entry.state = 'applied';
       entry.warnings.push(`mocked-data-capability: ${dataCapability} is planned, not built`);
+      warnUndeclared();
       s.tell('CommandApplied', by, commandId, { mocked: true });
       s.bump();
       return answer(entry);
     }
     if (!handler) {
+      warnUndeclared();
       entry.state = 'rejected';
       entry.violations = ['unhandled-data-capability'];
       s.tell('CommandRejected', by, commandId, { violations: entry.violations, reason: `${dataCapability} has no handler: write mock/handlers/${dataCapability}.js` });
@@ -328,6 +399,7 @@ export function mockServer() {
       entry.warnings.push(`invariant(s) at risk: ${verdict.reject.concat(verdict.review).join(', ')}`);
       s.tell('InvariantAtRisk', by, commandId, { violations: verdict.reject.concat(verdict.review) });
     }
+    warnUndeclared();
     const needsReview = verdict.review.length > 0 || Object.keys(payload).some((f) => declared[f] && declared[f].criticality === 'critical');
     const merging = new Set(Object.keys(declared).filter((f) => declared[f].merge));
     const ahead = declaredAhead(entry, merging);

@@ -46,7 +46,8 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
                     gates_parity.rs: gates.yml's gates (each a step, found by its id) and tree::violations on the same fixture workspaces, one verdict for both
                     queries_script.rs: the installed queries.sh against a golden registry (tests/golden/) written by the GNU path — and on macOS, under PATH=/usr/bin:/bin with /bin/bash 3.2 and BSD sed, byte for byte
-                    mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise)
+                    mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise), an undeclared payload key warned in the engine's words (top-level keys, the target's key exempt, an empty payload unchecked, any version), never refused; the graph read beside the page (__product/) or at the repository's root
+                    journey_kit.rs: the installed rules' kit.ts on node (types stripped, Playwright stubbed) — a running journey fails once its body ran on the engine's undeclared-key warning in a POST /commands answer, "not a rule contest" in its first line, and on nothing else, an answer after the body, from a second context, or cut by a close included; the page's in-flight counter; a pending one stays on the plain test; the engine's warning, the kit's pattern and the mock's words checked against each other; red when CI has no node that strips TypeScript
                     split_handlers.rs: the installed split-handlers.mjs on a throwaway product — byte-for-byte split, idempotent, deterministic, every refusal with nothing written (guarded destructuring and for-of assignments, `this`), a file without semicolons, a handler file a merge already brought, the self-check catching a helper reached through eval
                     mock_handlers_gate.rs: the gate `mock-handlers` from gates.yml on a throwaway repository — ids twice, another id's key, a new legacy key on a pull request once mock/handlers/ holds a handler file (its README and _lib/ do not count)
                     skeleton_product.rs (ignored, on demand): the test kit and both skeletons rendered in a throwaway product — rustfmt-clean, `cargo check --all-targets`, the kit's clippy and tests (its Scratch with SCRATCH_DB_URL), the frames green, the holes red, the filled manifest planted through Bench
@@ -83,6 +84,37 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   side, whose own build change stales the arriving digests. The catch-up
   then skips GitHub's merge, and the merge train refreshes a task PR
   before it lands. Pure, like the rest.
+- **A payload is judged against its manifest the way the engine judges
+  it, and only there.** The DataGuard engine accepts a payload key its
+  manifest does not declare with the warning `payload key(s) <keys> not
+  declared by <dataCapability>` in `Submitted.warnings` (`crates/dataguard`,
+  `undeclared_keys`: top-level keys, a dotted declaration `entity.id`
+  declaring `entity`, the target's key always declared, a manifest that
+  declares no payload checking nothing, the version ignored). Two nets read
+  that one rule, no grammar of their own (H3 v1): the rules' journey kit
+  (`assets/rules/journey/kit.ts`) fails a running journey, once its body
+  ran, when a `POST /commands` the **real** server answered carries the
+  warning — the journeys never run on the mock — with "fix the payload, this is not a rule contest" in the line the
+  rules' gate shows; the mock server mirrors the check exactly, as a loud
+  warning (the answer's `warnings`, `console.error`, `server.undeclared`),
+  never a refusal: the mock is never stricter than the engine (contract H,
+  `DATA-INTEGRITY.md`). The mock reads the manifests indexed by their
+  `dataCapability` field — never by a folder's name — from
+  `__product/data-capabilities.json` beside the page's folder, which the
+  factory view serves read-only; `plan/graph.json` the same way, else at the
+  repository's root two folders up. The kit answers each page's
+  `POST /commands` itself (`route.fetch`, then `route.fulfill`), in the
+  default context and in every one `browser.newContext()` opens, so the
+  answer is read before the page sees it; an init script counts each
+  page's commands in flight, and a page or a context the test closes, and
+  the kit's own teardown (it takes `page`, so it ends while the page is
+  open), wait for them — a command the body did not await, or one a close
+  would have cut, is read all the same. `tests/journey_kit.rs` pins the
+  engine's words, the kit's pattern and the mock's template together; it
+  runs the kit on node (22.6 or later, pinned in CI) and is red, not
+  skipped, when `CI` is set and no node strips TypeScript.
+  Generated command types and a CI typecheck of every Micro-UI are a later
+  lot.
 - **A unit's mock handlers are its own file.** The mock server
   (`assets/mock/src/server.js`) imports `mock/handlers/<id>.js` the first
   time `<id>` is read or commanded — never bundled, so a handler file is no
