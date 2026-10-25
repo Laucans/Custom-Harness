@@ -448,6 +448,11 @@ pub enum Event {
         /// written before it existed.
         #[serde(default)]
         cache: String,
+        /// What the harness adds to every session's environment, in full:
+        /// `HARNESS_BIN=…`. Empty when the binary was not found (a problem
+        /// then says it), or in a row written before it existed.
+        #[serde(default)]
+        session: String,
         /// The `PATH` every spawned process gets.
         path: String,
         /// What is missing or too old, each line naming its fix.
@@ -683,6 +688,7 @@ impl Event {
                 tools,
                 shell,
                 cache,
+                session,
                 path,
                 problems,
             } => {
@@ -699,10 +705,11 @@ impl Event {
                     }
                 };
                 format!(
-                    "toolchain: {}{}{} · PATH={path}{told}",
+                    "toolchain: {}{}{}{} · PATH={path}{told}",
                     tools.join(" · "),
                     said(shell),
-                    said(cache)
+                    said(cache),
+                    said(session)
                 )
             }
             Self::DiskUnderFloor { free_gb, floor_gb } => format!(
@@ -826,6 +833,7 @@ mod tests {
             ],
             shell: String::new(),
             cache: String::new(),
+            session: String::new(),
             path: "/opt/homebrew/bin:/usr/bin".to_string(),
             problems: Vec::new(),
         };
@@ -841,6 +849,7 @@ mod tests {
             tools: vec!["cargo 1.98.1 (/opt/homebrew/bin/cargo)".to_string()],
             shell: String::new(),
             cache: String::new(),
+            session: String::new(),
             path: "/usr/bin".to_string(),
             problems: vec![
                 "cargo 1.99.1 missing: rustup toolchain install 1.99.1".to_string(),
@@ -870,6 +879,7 @@ mod tests {
             shell: "SHELL=/opt/homebrew/bin/bash CLAUDE_CODE_SHELL=/opt/homebrew/bin/bash"
                 .to_string(),
             cache: "build cache: sccache 0.18.0 — CARGO_INCREMENTAL=0".to_string(),
+            session: "HARNESS_BIN=/opt/harness/bin/harness".to_string(),
             path: "/usr/bin".to_string(),
             problems: Vec::new(),
         };
@@ -878,11 +888,11 @@ mod tests {
             Some(
                 "toolchain: bash 5.2.37 (/opt/homebrew/bin/bash) · SHELL=/opt/homebrew/bin/bash \
                  CLAUDE_CODE_SHELL=/opt/homebrew/bin/bash · build cache: sccache 0.18.0 \
-                 — CARGO_INCREMENTAL=0 · PATH=/usr/bin"
+                 — CARGO_INCREMENTAL=0 · HARNESS_BIN=/opt/harness/bin/harness · PATH=/usr/bin"
             )
         );
-        // A row written before the shell and the cache were said reads back
-        // with neither.
+        // A row written before the shell, the cache and the session's
+        // environment were said reads back with none.
         let old = r#"{"event":"toolchain_resolved","tools":[],"path":"/bin","problems":[]}"#;
         assert_eq!(
             serde_json::from_str::<Event>(old).expect("an old row"),
@@ -890,6 +900,7 @@ mod tests {
                 tools: Vec::new(),
                 shell: String::new(),
                 cache: String::new(),
+                session: String::new(),
                 path: "/bin".to_string(),
                 problems: Vec::new(),
             }

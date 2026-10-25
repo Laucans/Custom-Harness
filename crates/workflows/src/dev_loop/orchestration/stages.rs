@@ -43,6 +43,7 @@ use harness_core::execution::{
 
 use crate::common::labels;
 use crate::dev_loop::action::actions::Ask;
+use crate::dev_loop::action::facts::{SayGatesLocal, WriteFacts};
 use crate::dev_loop::action::narrow::{Narrow, Widen};
 use crate::dev_loop::action::scaffold::Scaffold;
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
@@ -104,9 +105,14 @@ SPEC. Plan it as /tech-analyst: the pre-flight gate, the ordered checklist
 against the real code, the stop line, the risks. Then, in this same session,
 without waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
-Verification bullet with real output, /code-review, run the architecture
-gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then the mutants the CI will judge, in
+Verification bullet with real output, /code-review, run `bash
+scripts/gates-local.sh` and fix what fails (every gate of gates.yml on a
+full copy of your work merged with your base, jobs in parallel, plus the
+closure check the loop runs after you; minutes long, so give the Bash call a
+`timeout` of 600000 ms; `--failed` reruns what was left red;
+a `base-red` gate is red on your base with the same errors, not yours to
+fix) — or, in a repository without that script, the gates of
+`.github/workflows/gates.yml` by hand —, then the mutants the CI will judge, in
 the foreground: `git diff origin/<your base> > .git/change.diff && cargo
 mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
 one before the PR (a mutant the CI finds costs a whole repair round), then branch -> PR, and
@@ -243,9 +249,14 @@ Plan it as /tech-analyst: the pre-flight gate, the ordered checklist against
 the real code, the stop line, the risks. Then, in this same session, without
 waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
-Verification bullet with real output, /code-review, run the architecture
-gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then the mutants the CI will judge, in
+Verification bullet with real output, /code-review, run `bash
+scripts/gates-local.sh` and fix what fails (every gate of gates.yml on a
+full copy of your work merged with your base, jobs in parallel, plus the
+closure check the loop runs after you; minutes long, so give the Bash call a
+`timeout` of 600000 ms; `--failed` reruns what was left red;
+a `base-red` gate is red on your base with the same errors, not yours to
+fix) — or, in a repository without that script, the gates of
+`.github/workflows/gates.yml` by hand —, then the mutants the CI will judge, in
 the foreground: `git diff origin/<your base> > .git/change.diff && cargo
 mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
 one before the PR (a mutant the CI finds costs a whole repair round); a Micro-UI or a screen ships with its
@@ -419,6 +430,16 @@ impl Paid<'_> {
                 root: config.root.clone(),
             })));
         }
+        // After the skeleton, which the facts list; before narrowing, which
+        // the session's tools must not depend on.
+        actions.push(Box::new(Unpaid(WriteFacts {
+            disk: Rc::clone(&ports.disk),
+            path: config.facts_path.clone(),
+            integration_branch: config.integration_branch.clone(),
+            report: config
+                .root
+                .join(crate::dev_loop::action::facts::GATES_LOCAL_REPORT),
+        })));
         if narrowed {
             actions.push(Box::new(Unpaid(Narrow {
                 repo: Rc::clone(&ports.repo),
@@ -527,11 +548,16 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             rules: true,
             narrow: true,
             scaffold: true,
-            then: vec![Box::new(Unpaid(
-                crate::dev_loop::action::chain::LeaveRelay {
+            then: vec![
+                Box::new(Unpaid(crate::dev_loop::action::chain::LeaveRelay {
                     handoffs: Rc::clone(&ports.handoffs),
-                },
-            ))],
+                })),
+                Box::new(Unpaid(SayGatesLocal {
+                    disk: Rc::clone(&ports.disk),
+                    process: Rc::clone(&ports.process),
+                    root: config.root.clone(),
+                })),
+            ],
         }
         .body(ports, config, turn),
     }
@@ -597,6 +623,26 @@ mod tests {
             let stop = at("rules-runtime.sh stop");
             assert!(clear < suite && suite < journey && journey < status && status < stop);
         }
+    }
+
+    #[test]
+    fn code_runs_the_gates_through_gates_local_before_its_pr() {
+        for text in [CODE, CODE_WRITE_SIDE] {
+            let gates = text.find("scripts/gates-local.sh").expect("named");
+            assert!(
+                gates < text.find("gh pr create").expect("the PR"),
+                "before the PR"
+            );
+            assert!(text.contains("`--failed`"), "{text}");
+            assert!(text.contains("`base-red`"), "{text}");
+            assert!(
+                !text.contains("gates of `.github/workflows/gates.yml` locally"),
+                "the hand-made runner is the fallback only"
+            );
+        }
+        assert!(
+            crate::pr_fix::orchestration::stages::FIX_PROMPT.contains("scripts/gates-local.sh")
+        );
     }
 
     #[test]

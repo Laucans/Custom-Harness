@@ -2,7 +2,8 @@
 //!
 //! Compiled in, so every repository the plant works on carries the same
 //! architecture from the same source: the architecture document, the rules
-//! section of `CLAUDE.md`, the eighteen contracts, the CI gates, the project's
+//! section of `CLAUDE.md`, the eighteen contracts, the CI gates and the
+//! script that runs them locally before a pull request, the project's
 //! CI for its stack, the script that scopes its tests, the one that finds the
 //! dead code the compiler cannot see, the mutation gate's configuration and
 //! its rotation with the script that files what it misses, the script that
@@ -34,9 +35,9 @@ pub const MARKER_OPEN: &str = "<!-- harness:architecture v2 -->";
 /// The version of the rules block in `CLAUDE.md`, counted apart from the
 /// documents: shortening the rules every session pays for must not rewrite
 /// a product's documents.
-pub const CLAUDE_VERSION: u32 = 8;
+pub const CLAUDE_VERSION: u32 = 9;
 /// The opening marker of the rules block in `CLAUDE.md`, with its version.
-pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v8 -->";
+pub const CLAUDE_MARKER_OPEN: &str = "<!-- harness:architecture v9 -->";
 /// What every version of the opening marker starts with.
 pub const MARKER_PREFIX: &str = "<!-- harness:architecture v";
 /// The closing marker.
@@ -62,7 +63,8 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// The files installed as they are.
 ///
 /// The two documents, the gates, the CI, the test scope, the quiet wrapper a
-/// session runs its checks through, the isolation check, the dead-code
+/// session runs its checks through, the local runner of the gates a session
+/// runs before its pull request (`gates-local`), the isolation check, the dead-code
 /// script, the mutants configuration, rotation and test-debt filing, the
 /// schema dump, the data model, the mock-up's files, the conformance
 /// runner, the tests' scratch-database guard and the units' test kit, the
@@ -71,7 +73,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// once and the product's from then on), the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 74] = [
+pub const FILES: [Asset; 76] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -95,6 +97,14 @@ pub const FILES: [Asset; 74] = [
     Asset {
         path: "scripts/quiet.sh",
         content: include_str!("../assets/quiet.sh"),
+    },
+    Asset {
+        path: "scripts/gates-local.sh",
+        content: include_str!("../assets/gates-local.sh"),
+    },
+    Asset {
+        path: "scripts/gates-local.mjs",
+        content: include_str!("../assets/gates-local.mjs"),
     },
     Asset {
         path: "scripts/dead-code.sh",

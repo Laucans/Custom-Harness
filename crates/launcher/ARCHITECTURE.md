@@ -130,7 +130,15 @@ optional `#[command(subcommand)] command: Option<Command>` — no subcommand
 still parses exactly as the flat `Cli` once did (`harness --rounds 1 --stages
 code` keeps meaning the dev loop). Thirteen subcommands today: `init-repo`,
 `watch`, `doctor`, `refine`, `split`, `arbitrate`, `trial`, `data-snapshot`,
-`data-model-draft`, `costs`, `route`, `plan-graph` and `toolchain`. `refine` and `split` exist for the lanes of a parallel
+`data-model-draft`, `costs`, `route`, `plan-graph` and `toolchain` — plus one
+hidden, `architecture-check` (`dispatch/architecture_check.rs`), which no
+human types: the product's `scripts/gates-local.sh` runs it through
+`HARNESS_BIN` on a session's work before its pull request — the loop's own
+`judge` (`workflows::dev_loop::checks::architecture::closure_check`) on a
+full copy of the work, the changes from the merge base to the snapshot, the
+declaration from the session facts (`--facts`) or, in a repair session, the
+task's body off GitHub (`--task`); exit 1 on a finding of the round's own,
+the older ones printed `(before this round, not yours)`. `refine` and `split` exist for the lanes of a parallel
 watch — one child process per issue — and for a human who wants one issue
 done now; `planner`, `pr_review`, `pr_fix`, `arbiter`, `test_debt`, `rules`, the merges and `data_diagnosis`
 have **no** subcommand on purpose: they are reached by the router, whose own
@@ -307,6 +315,18 @@ share a checkout), and `pr_review.rs` is the one place that names
 in `harness-workflows` — that is what leaves every port a single test seam, and
 what keeps a workflow unable to name an adapter.
 
+**What a run's sessions are told.** Their environment is the toolchain's
+(`HARNESS_BIN` in it) plus `HARNESS_FACTS`, the session facts' path in the
+run's own folder (`<loop>/<run>/session-facts.json`, per run because a
+parallel watch's lanes share the loop's folder; none for a dry run). The
+signature index carries, beside the product's files, `harness-dataguard`'s
+API (`dependency_index`): the lock file's `git` source, its commit found in
+cargo's checkouts (`$CARGO_HOME/git/checkouts/*/<rev7>/crates/dataguard`),
+else `cargo metadata --offline`; its `.rs` read through `Disk`, ordered by
+the product's tracked `.rs`; logged `dataguard signatures: harness-dataguard
+dataguard-v5 @ <sha7> — N module(s)…`; any failure an empty index and a
+warning, never a halt. `--no-signatures` turns it off too.
+
 **The assembly of the loop itself is not here** — `DevLoop`, its round factory
 and its preflight gates are generic to the workflow and live in
 `harness_workflows::dev_loop::run`. This file builds what no workflow has the
@@ -444,7 +464,12 @@ last `take` resolved. That value is a `thread_local`, not threaded through
 every `dispatch/*` signature: a start (the watch's, a run's mount) and the
 adapters it builds sit far apart in the composition root, and a watch or a
 run is one thread (`current_thread`) — while each test is its own thread, so
-a test that resolves a toolchain never reaches another's spawns. Nothing in
+a test that resolves a toolchain never reaches another's spawns. The same
+`Toolchain` carries `HARNESS_BIN` (this binary, `current_exe`, set by
+`with_harness_bin` in `take` and `harness toolchain`): what every process
+and session gets and what the `toolchain:` line says come from it — a
+binary not found is a problem of the line. The closure check of
+`gates-local` runs through it, in a `code` session and a repair one alike. Nothing in
 `harness-adapters`, `core` or `workflows` holds it. `git` and `gh` keep the
 harness's own environment; a command run by hand (`init-repo`, `doctor`)
 before any start gets none.

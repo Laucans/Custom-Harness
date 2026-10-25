@@ -92,6 +92,42 @@ pub enum Command {
     /// whole `PATH`: the line a watch or a run says when it starts. Exits 1
     /// when one is missing or too old, its fix named.
     Toolchain(ToolchainArgs),
+    /// Judge a session's work as the loop judges its round after it: the
+    /// unit's closure, the tree's violations split by whose they are, a
+    /// skeleton's holes. What the product's `scripts/gates-local.sh` runs
+    /// through `HARNESS_BIN`; exits 1 on a finding of the round's own.
+    #[command(hide = true)]
+    ArchitectureCheck(ArchitectureCheckArgs),
+}
+
+/// `harness architecture-check`'s own arguments.
+#[derive(Debug, Args)]
+pub struct ArchitectureCheckArgs {
+    /// The session facts (`HARNESS_FACTS`): the task's declaration and
+    /// skeleton.
+    #[arg(long, default_value = "")]
+    pub facts: String,
+
+    /// The task whose `## Architecture` is read off GitHub, without facts.
+    #[arg(long)]
+    pub task: Option<u64>,
+
+    /// The tree judged: a full copy of the work.
+    #[arg(long)]
+    pub tree: std::path::PathBuf,
+
+    /// The repository the changes are listed in.
+    #[arg(long)]
+    pub repo: std::path::PathBuf,
+
+    /// Where the round's changes start (the merge base); absent, no diff is
+    /// judged.
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Where they end: the snapshot of the work.
+    #[arg(long, default_value = "HEAD")]
+    pub to: String,
 }
 
 /// `harness toolchain`'s own arguments.

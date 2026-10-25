@@ -66,29 +66,30 @@
 //! this live" are different questions, and the session's own `grep` answers
 //! them.
 //!
-//! # Two known gaps in the Rust path
+//! # The Rust path, and what it no longer loses
 //!
-//! Both **latent**: the only target measured so far is TypeScript, which goes
-//! through `tsc` and has neither problem. Named here rather than left to be
-//! rediscovered, because the prompt template promises a session more than this
-//! half delivers.
+//! Two gaps were named here once, both closed by the scan of
+//! [`rust_shape`](super::rust_shape): a signature spanning several lines is
+//! joined whole (22 of this workspace's 311 public functions were written
+//! that way, and kept only `pub fn extra_for(`), and a bare `pub const` is
+//! kept. A trait now keeps its methods — they were dropped, and with them the
+//! API a unit implements (`Prepare::prepare`, written over six lines) — and
+//! a `#[cfg(test)]` module is skipped instead of leaking its helpers.
 //!
-//! - **A signature spanning several lines keeps only its first line.**
-//!   `signature_of` cuts at `" {"` on one line, so
-//!   `pub fn extra_for(\n  a: &str,\n) -> String` is carried as `pub fn
-//!   extra_for(` — the arguments, which are the point, are gone. 22 of this
-//!   workspace's 311 public functions (7%) are written that way. The emitted
-//!   fragment is at least visibly broken, so a session re-opens the file; the
-//!   cost is a wasted slice of the budget, not a wrong call.
-//! - **`pub const NAME: T = …;` is dropped entirely.** In `opens`,
-//!   `trim_start_matches("const ")` runs *before* the loop that tests for
-//!   `"const"`, so the word compared is the identifier. The strip is there to
-//!   let `pub const fn` through, which it does; a bare `pub const` falls to
-//!   `None`. `doctor::MISSING_DEPENDENCIES` is a real example — a marker other
-//!   modules match on, absent from its own file's shape.
+//! # A dependency's API
+//!
+//! The same scan, in [`Visibility::External`], shapes the sources of a crate
+//! the checkout depends on but does not track — `harness-dataguard`, a `git`
+//! dependency at a release tag — into [`Index::dependencies`]. Which tasks
+//! carry it, in what order and within what budget is
+//! [`dependency_api`](super::dependency_api)'s.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+
+pub use super::rust_shape::Visibility;
+
+use super::dependency_api::Dependency;
 
 /// The toolchain a checkout is built with, as far as its manifests say.
 ///
@@ -144,139 +145,24 @@ pub const fn source_suffix(of: Ecosystem) -> &'static str {
     }
 }
 
-/// Lines that carry no signature and only cost tokens.
-fn is_noise(line: &str) -> bool {
-    let trimmed = line.trim_start();
-    trimmed.starts_with("///")
-        || trimmed.starts_with("//!")
-        || trimmed.starts_with("//")
-        || trimmed.starts_with("#[")
-        || trimmed.is_empty()
-}
-
-/// Whether this line opens a public item, and whether its block is its shape.
+/// The public shape of one Rust file: items, fields, variants, signatures
+/// joined whole, no bodies — the checkout's own code, `pub(crate)` kept.
 ///
-/// `Some(true)` means the braces that follow **are** the signature — a struct's
-/// fields, an enum's variants. `Some(false)` means the signature ends at the
-/// brace, and what follows is a body to drop.
-fn opens(line: &str) -> Option<bool> {
-    let trimmed = line.trim_start();
-    let rest = trimmed.strip_prefix("pub(crate) ").or_else(|| {
-        trimmed
-            .strip_prefix("pub ")
-            .or_else(|| trimmed.strip_prefix("pub(super) "))
-    })?;
-    let word = rest
-        .trim_start_matches("async ")
-        .trim_start_matches("const ")
-        .trim_start_matches("unsafe ")
-        .trim_start_matches("extern ");
-    for kind in ["struct", "enum", "union"] {
-        if word.starts_with(kind) {
-            // `pub struct Wrapper(String);` is a line, not a block.
-            return Some(line.contains('{'));
-        }
-    }
-    for kind in ["fn", "trait", "type", "const", "static", "mod", "use"] {
-        if word.starts_with(kind) {
-            return Some(false);
-        }
-    }
-    None
-}
-
-/// The signature line alone: everything before the body or the terminator.
-fn signature_of(line: &str) -> String {
-    let cut = line.find(" {").unwrap_or(line.len());
-    line[..cut].trim_end().trim_end_matches(';').to_string()
-}
-
-/// How far into the braces this line leaves us.
-fn depth_after(line: &str, depth: i32) -> i32 {
-    depth + i32::try_from(line.matches('{').count()).unwrap_or(0)
-        - i32::try_from(line.matches('}').count()).unwrap_or(0)
-}
-
-/// The public shape of one Rust file: items, fields, variants, no bodies.
-///
-/// `impl` blocks are kept as their header plus the public methods inside, since
-/// a method is where most of a type's API actually lives — an index that listed
-/// `pub struct Workspace` and none of its methods would answer nothing.
-///
-/// Deliberately a scan and not a parse. It can be fooled — a brace inside a
-/// string literal in a signature line would miscount — and that is the accepted
-/// price of no dependency: the failure mode is a slightly wrong index, never a
-/// panic and never a wrong compilation, because nothing here is compiled.
+/// `impl` blocks are kept as their header plus the public methods inside,
+/// since a method is where most of a type's API actually lives — an index
+/// that listed `pub struct Workspace` and none of its methods would answer
+/// nothing. The scan itself is [`rust_shape::shape`](super::rust_shape::shape).
 #[must_use]
 pub fn rust_shape(source: &str) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut lines = source.lines();
-    while let Some(line) = lines.next() {
-        if is_noise(line) {
-            continue;
-        }
-        let trimmed = line.trim_start();
-        // An `impl` header, public or not: what it carries may be public.
-        if trimmed.starts_with("impl ") || trimmed.starts_with("impl<") {
-            let mut inner: Vec<String> = Vec::new();
-            let mut depth = depth_after(line, 0);
-            while depth > 0 {
-                let Some(next) = lines.next() else { break };
-                depth = depth_after(next, depth);
-                if !is_noise(next) && opens(next) == Some(false) {
-                    inner.push(format!("    {}", signature_of(next).trim()));
-                }
-            }
-            // An impl with nothing public in it says nothing worth paying for.
-            if !inner.is_empty() {
-                // With its brace: the block has to read as Rust, since that is
-                // what the session is about to pattern-match against.
-                out.push(format!("{} {{", signature_of(line)));
-                out.extend(inner);
-                out.push("}".to_string());
-            }
-            continue;
-        }
-        match opens(line) {
-            Some(true) => {
-                // An enum's variants are public with it; a struct's fields are
-                // only API when they say `pub`. Keeping private ones would both
-                // cost tokens and mislead — a session could take `root` for
-                // something it may set.
-                let fields_only_if_public = trimmed.contains("struct ");
-                let mut depth = depth_after(line, 0);
-                let mut kept: Vec<String> = Vec::new();
-                let mut hidden = 0;
-                while depth > 0 {
-                    let Some(next) = lines.next() else { break };
-                    depth = depth_after(next, depth);
-                    if is_noise(next) {
-                        continue;
-                    }
-                    let inner = next.trim();
-                    if depth == 0 && inner == "}" {
-                        break;
-                    }
-                    if fields_only_if_public && !inner.starts_with("pub ") {
-                        hidden += 1;
-                        continue;
-                    }
-                    kept.push(next.trim_end().to_string());
-                }
-                out.push(line.trim_end().to_string());
-                out.extend(kept);
-                if hidden > 0 {
-                    // Said rather than left out: a struct that looks fieldless
-                    // reads as one you can build with `Self {}`.
-                    out.push(format!("    /* {hidden} private field(s) */"));
-                }
-                out.push("}".to_string());
-            }
-            Some(false) => out.push(signature_of(line)),
-            None => {}
-        }
-    }
-    out.join("\n")
+    rust_shape_with(source, Visibility::Crate)
+}
+
+/// The public shape of one Rust file, as `visibility` reads it: a
+/// dependency's ([`Visibility::External`]) keeps `pub` alone and each item's
+/// first doc line.
+#[must_use]
+pub fn rust_shape_with(source: &str, visibility: Visibility) -> String {
+    super::rust_shape::shape(source, visibility)
 }
 
 /// How much the carried signatures may weigh, in characters (~3k tokens at the
@@ -322,13 +208,16 @@ pub struct Index {
     pub by_path: BTreeMap<String, String>,
     /// The checkout's tracked files, so a path in a body can be recognised.
     pub tracked: Vec<String>,
+    /// The API of the dependencies the checkout builds and does not track,
+    /// at the version its lock file resolves.
+    pub dependencies: Vec<Dependency>,
 }
 
 impl Index {
     /// Whether there is anything to carry at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.by_path.is_empty()
+        self.by_path.is_empty() && self.dependencies.is_empty()
     }
 }
 
@@ -746,6 +635,7 @@ mod tests {
                 .map(|(path, shape)| ((*path).to_string(), (*shape).to_string()))
                 .collect(),
             tracked: paths(&of.iter().map(|(path, _)| *path).collect::<Vec<_>>()),
+            dependencies: Vec::new(),
         }
     }
 

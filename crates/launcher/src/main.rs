@@ -107,6 +107,7 @@ async fn main() -> ExitCode {
         }
         Some(cli::Command::Costs(sub)) => costs_by_hand(sub, &here),
         Some(cli::Command::Toolchain(sub)) => toolchain_by_hand(sub, &here).await,
+        Some(cli::Command::ArchitectureCheck(sub)) => architecture_check_by_hand(sub).await,
         Some(cli::Command::BackfillMilestones(sub)) => exit_of(
             dispatch::backfill::by_hand(sub, &here)
                 .await
@@ -132,6 +133,13 @@ async fn main() -> ExitCode {
             Err(halt) => halt_to_code(&halt),
         },
     }
+}
+
+/// `harness architecture-check`: its lines on stdout, its own exit code.
+async fn architecture_check_by_hand(sub: &cli::ArchitectureCheckArgs) -> ExitCode {
+    let (said, code) = dispatch::architecture_check::run(sub).await;
+    println!("{said}");
+    ExitCode::from(code)
 }
 
 /// `harness costs`: the table on stdout, or the halt's code.

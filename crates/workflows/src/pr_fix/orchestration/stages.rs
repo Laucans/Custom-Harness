@@ -46,7 +46,11 @@ Diagnose from the real output, never from the check's name alone:
   gh pr diff {num}
 
 Then fix the cause in this working tree, run the project's own gates
-locally until they pass, and push to `{head}`:
+locally until they pass — `bash scripts/gates-local.sh` when the repository
+has it (every gate of gates.yml on a full copy of your work, minutes long:
+a Bash `timeout` of 600000 ms; `--failed` for what was left red; a
+`base-red` gate is red on the base too, not this PR's)
+—, and push to `{head}`:
   git add <the files you changed, by name>
   git commit -m "fix(<scope>): <what the failure was>"
   git push

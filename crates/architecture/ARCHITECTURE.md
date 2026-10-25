@@ -37,7 +37,7 @@ src/compare.rs      two data models side by side: tables, fields, links and view
 src/graph.rs        the plan's graph (contract R): what every milestone produces and consumes, derived from the dossier; the read-ahead errors; the critical path
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
-src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep), the units' test kit (assets/test-kit, `platform-test-kit`: Bench plants a unit's real manifest beside its aggregate over memory or a Scratch database migrated by the product's `data::migrate`; submit/applied/plant/refused, planter, uuid, writes_only_touches, a Capability's guard checks in `read` — what 80%+ of the first product's units retyped), the unit-conventions gate (assets/unit-conventions-gate.mjs)
+src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates and their local runner (gates-local.sh/.mjs), CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep), the units' test kit (assets/test-kit, `platform-test-kit`: Bench plants a unit's real manifest beside its aggregate over memory or a Scratch database migrated by the product's `data::migrate`; submit/applied/plant/refused, planter, uuid, writes_only_touches, a Capability's guard checks in `read` — what 80%+ of the first product's units retyped), the unit-conventions gate (assets/unit-conventions-gate.mjs)
 src/mock_handlers.rs the mock server's handlers, one file per unit (mock/handlers/<id>.js): the rule every prompt states (RULE) and the parent-first migration a merge follows when the legacy files conflict as deleted (on_conflict: the split commit checked first — one parent, the split's paths only, or stop — and the add/add rule for a handler the base added before it split itself)
 src/skeleton.rs     the skeleton of the unit a task is about to build (a DataCapability or a Capability, hostless aside): target (the id's folder, package, library, query file), render (assets/skeleton/<kind>/ filled with what needs no judgement — Cargo.toml, the manifest's constants and what the declaration states, the lib.rs and test frames on the test kit, the query frame named after the folder — every judged part a `SCAFFOLD:` hole), the commands that register and check it (register.sh, queries.sh, cargo check --all-targets); the dev loop's Scaffold writes it
 src/generated.rs    the files of a product a script writes (GENERATED: Cargo.lock, the registry's Cargo.toml, queries/registry.json, mock/components/*.js, mock/pages.json's builtFrom digests), how a conflict in each is taken, their generators in run order (Regenerator), the digest-only resolution of mock/pages.json (digests_only, both marker styles), the repair prompt's lines (instructions)
@@ -55,6 +55,7 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
                     skeleton_product.rs (ignored, on demand): the test kit and both skeletons rendered in a throwaway product — rustfmt-clean, `cargo check --all-targets`, the kit's clippy and tests (its Scratch with SCRATCH_DB_URL), the frames green, the holes red, the filled manifest planted through Bench
                     unit_conventions_gate.rs: the gates `data-capability-conventions` and `capability-conventions` on a throwaway repository — each rule on an added unit, the changed-unit rules on an edited old one, an old unit's past never judged
                     capability_sql_gate.rs: the part `queries-valid--capabilities` on a real PostgreSQL (GATES_PGPASSWORD) — a changed Capability's SQL prepared against the migrated schema, an untouched one unjudged
+                    gates_local.rs: the installed gates-local.mjs on node and git — every step of gates.yml read (the sync guard: the ids in order, none unreadable, no reason given on any) and every expression of it in the table, with its value under the local pull request; on throwaway products with a bare origin: the uncommitted work judged, merged with the base's tip, a conflict a finding, base-red only when the head's errors are the base's (one more is red), a sparse checkout's hidden files judged and its sparse list left as it was, two jobs side by side and a job's steps in order, an unknown step unreadable (exit 2), a job or workflow key it does not run (needs, env) or a job env it cannot give unreadable, continue-on-error and timeout-minutes run, the gates.yml of the merged tree (a step the base added), --failed (the red gates, a red closure, the merge after a conflict), a Postgres gate skipped without docker, the closure through a fake HARNESS_BIN with the facts (exit 2 when it cannot judge); red when CI has no node 22
                     assets_rustfmt.rs: every installed .rs asset passes `rustfmt --check --edition 2024` under default settings — a product's CI runs `cargo fmt --check`, and the assets are no member of this workspace, so `cargo fmt --all` here never sees them
 ```
 
@@ -189,6 +190,24 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   `assets/showcase.html` is the same kind of thing: a page the harness
   codes once — a contact page of the kit's components (`kit::SHOWCASE`) —
   that the view shows to preview a product's design system at work.
+- **The gates run locally from the workflow itself.**
+  `assets/gates-local.mjs` (entry `gates-local.sh`, node 22, no dependency)
+  reads the product's `gates.yml` at run time — never a generated copy, which
+  goes stale on the product's first edit — with a parser for the YAML the
+  harness writes and an exact-string table of the expressions it uses
+  (`if:` and `${{ }}`); a step it cannot read is `unreadable`, never skipped
+  in silence, and `tests/gates_local.rs` keeps the table in step with
+  `assets/gates.yml`. It judges the pull request's tree: a snapshot of the
+  work (the real index copied, so a sparse checkout hides nothing) merged
+  with the base's tip, each job in a worktree of its own under
+  `.git/gates-local/`, jobs in parallel, a job's Postgres service a
+  container of its own removed on exit and reaped when a killed run left
+  it. A red gate is `base-red` only when the base is red there with every
+  error the head reports (`::error` lines), the base's verdict taken from
+  its last finished `gates` run at the same commit (gh), else from a rerun
+  of the jobs that build nothing. `rules-hold` is off unless `--rules`. The
+  closure check is not rewritten in JS: it is the harness binary's
+  (`HARNESS_BIN architecture-check`), the loop's own reading.
 - **The rules exist twice, knowingly.** `tree::violations` is the loop's own
   reading; `assets/gates.yml` runs the same rules in the target's CI. A change
   to one is a change to the other, and `tests/gates_parity.rs` runs both on

@@ -295,8 +295,32 @@ its precheck, its lock and its trigger.
 - `dev_loop` has **preflight** gates (labels, milestone, skills, installed
   dependencies) because several opus sessions follow, and a `stat` costs less
   than a `/code`.
-- `dev_loop`'s `code` body is `Scaffold → Narrow → Ask → Widen`, then its
-  relay and `MarkDone`. `Scaffold` (`action::scaffold`, unpaid, off under
+- `dev_loop`'s `code` body is `Scaffold → WriteFacts → Narrow → Ask →
+  Widen`, then its relay, `SayGatesLocal` and `MarkDone`. `WriteFacts`
+  (`action::facts`, unpaid, never a halt) writes the session facts
+  (`data::facts`: the task, the base `origin/<integration>`, the declared
+  branch, the `## Architecture` section, the skeleton) where the session's
+  `HARNESS_FACTS` points, for the product's `scripts/gates-local.sh` and
+  `harness architecture-check`; `SayGatesLocal` journals whether the
+  session's last gates-local run judged the tree it left (`HEAD^{tree}`
+  against the report's `head_tree`) — a measure, never a gate. The pure
+  decision of `ArchitectureHolds` is `checks::architecture::judge` (the
+  violations split into the round's own and older ones, the files changed
+  outside the closure); `closure_check` runs it on a session's work before
+  its pull request, so the session's check and the loop's are one reading.
+  The paths a `missing` stop reopened stay outside the judged closure.
+- `dev_loop`'s signature index (`data::signatures`) shapes Rust with
+  `data::rust_shape`, a scan over the source with literals emptied and
+  comments dropped: multi-line signatures joined, traits with their methods
+  (a defaulted one `{ … }`), `pub const` kept, `#[cfg(test)]` skipped. The
+  same scan in `Visibility::External` shapes `harness-dataguard`, the `git`
+  dependency at a tag no tracked file holds (`data::dependency_api`): the
+  launcher reads the source the lock file resolves, the modules are carried
+  the unit's five first (`DATAGUARD_UNIT_MODULES`: lib, plugins, manifest,
+  aggregate, command), then by the product's use, within `DEPENDENCY_BUDGET` (10k
+  characters, apart from the product files' 12k), into every write-side
+  task's prompt and every task naming the engine.
+- `dev_loop`'s `code` body, step by step: `Scaffold` (`action::scaffold`, unpaid, off under
   `--no-scaffold`) writes the skeleton of a `DataCapability` or a Capability
   whose folder does not exist — `harness_architecture::skeleton`'s templates,
   **uncommitted**, through `Disk`; `register.sh`, `queries.sh` and `cargo

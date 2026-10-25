@@ -36,10 +36,16 @@
 //! inherited `RUSTC_WRAPPER` is cleared, so no build goes through a
 //! wrapper the line does not say.
 //!
+//! Every spawned process and session also gets `HARNESS_BIN`, this binary:
+//! the product's `scripts/gates-local.sh` runs the closure check through it.
+//! When the binary cannot be found it is a problem of the line, never a
+//! variable dropped in silence.
+//!
 //! What it found is said once per start — the watch's, every run's — as
 //! [`Event::ToolchainResolved`]: each tool with its version and where it
-//! is, the build cache's variables, then the whole `PATH`. `harness
-//! toolchain` prints the same line.
+//! is, the build cache's variables, `HARNESS_BIN`, then the whole `PATH`.
+//! `harness toolchain` prints the same line. The line and the environment
+//! come from the same [`Toolchain`].
 
 use std::cell::RefCell;
 use std::os::unix::fs::PermissionsExt;
@@ -246,6 +252,9 @@ pub struct Toolchain {
     cache: Vec<(String, String)>,
     /// The compilation cache, as the line says it.
     cache_said: String,
+    /// This binary (`HARNESS_BIN`), once [`Toolchain::with_harness_bin`]
+    /// found it.
+    harness_bin: Option<String>,
 }
 
 impl Toolchain {
@@ -259,16 +268,38 @@ impl Toolchain {
                 .map(|shell| format!("SHELL={shell} CLAUDE_CODE_SHELL={shell}"))
                 .unwrap_or_default(),
             cache: self.cache_said.clone(),
+            session: self
+                .harness_bin
+                .as_ref()
+                .map(|bin| format!("HARNESS_BIN={bin}"))
+                .unwrap_or_default(),
             path: self.path.clone(),
             problems: self.problems.clone(),
         }
+    }
+
+    /// The toolchain with this binary as `HARNESS_BIN`: the variable and the
+    /// line's part, or a problem when it could not be found (the product's
+    /// `scripts/gates-local.sh` then skips the closure check).
+    #[must_use]
+    pub fn with_harness_bin(mut self, exe: Option<&Path>) -> Self {
+        match exe {
+            Some(exe) => self.harness_bin = Some(exe.display().to_string()),
+            None => self.problems.push(
+                "HARNESS_BIN missing (current_exe failed): sessions' gates-local skips the \
+                 closure check"
+                    .to_string(),
+            ),
+        }
+        self
     }
 
     /// What every spawned process gets on top of the harness's own
     /// environment: the `PATH`, and when a bash 5 was found, `SHELL` and
     /// Claude Code's own override of its shell detection
     /// (`CLAUDE_CODE_SHELL`), so a session's Bash tool runs it; then the
-    /// compilation cache's variables — on, or an inherited wrapper cleared.
+    /// compilation cache's variables — on, or an inherited wrapper cleared;
+    /// then `HARNESS_BIN` when it was found.
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut env = vec![("PATH".to_string(), self.path.clone())];
         if let Some(shell) = &self.shell {
@@ -276,6 +307,11 @@ impl Toolchain {
             env.push(("CLAUDE_CODE_SHELL".to_string(), shell.clone()));
         }
         env.extend(self.cache.iter().cloned());
+        env.extend(
+            self.harness_bin
+                .iter()
+                .map(|bin| ("HARNESS_BIN".to_string(), bin.clone())),
+        );
         env
     }
 }
@@ -368,6 +404,7 @@ pub async fn resolve(inputs: &Inputs) -> Toolchain {
         problems,
         cache,
         cache_said,
+        harness_bin: None,
     }
 }
 
@@ -854,8 +891,15 @@ fn shown(path: &Path, home: Option<&Path>) -> String {
 /// Resolves this process's toolchain for a product pinned as `pin`, makes
 /// it every adapter the launcher builds from now on ([`environment`]), and
 /// says it in `log`.
+///
+/// `HARNESS_BIN`, this binary, reaches every process and session the
+/// launcher spawns: the product's `scripts/gates-local.sh` runs the closure
+/// check through it (`harness architecture-check`), the loop's own reading,
+/// so the session's check and the loop's cannot drift.
 pub async fn take(here: &Path, pin: Pin, log: &Logbook) -> Toolchain {
-    let toolchain = resolve(&Inputs::of_process(here, pin)).await;
+    let toolchain = resolve(&Inputs::of_process(here, pin))
+        .await
+        .with_harness_bin(std::env::current_exe().ok().as_deref());
     TAKEN.with(|taken| *taken.borrow_mut() = toolchain.environment());
     log.event(&toolchain.event());
     toolchain
@@ -942,7 +986,9 @@ pub async fn by_hand(args: &ToolchainArgs, here: &Path) -> (String, bool) {
             Ok(None) | Err(_) => pin_in(here),
         },
     };
-    let toolchain = resolve(&Inputs::of_process(here, pin)).await;
+    let toolchain = resolve(&Inputs::of_process(here, pin))
+        .await
+        .with_harness_bin(std::env::current_exe().ok().as_deref());
     (
         toolchain.event().line().unwrap_or_default(),
         toolchain.problems.is_empty(),
@@ -960,6 +1006,57 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
+
+    fn bare_toolchain() -> Toolchain {
+        Toolchain {
+            tools: vec!["bash 5.2 (/bin/bash)".to_string()],
+            path: "/bin".to_string(),
+            shell: None,
+            problems: Vec::new(),
+            cache: Vec::new(),
+            cache_said: String::new(),
+            harness_bin: None,
+        }
+    }
+
+    #[test]
+    fn every_spawned_process_is_told_where_the_harness_binary_is_and_the_line_says_it() {
+        let found = bare_toolchain().with_harness_bin(Some(Path::new("/opt/harness/bin/harness")));
+        assert!(
+            found.environment().contains(&(
+                "HARNESS_BIN".to_string(),
+                "/opt/harness/bin/harness".to_string()
+            )),
+            "{:?}",
+            found.environment()
+        );
+        let line = found.event().line().unwrap_or_default();
+        assert!(
+            line.contains(" · HARNESS_BIN=/opt/harness/bin/harness · PATH=/bin"),
+            "{line}"
+        );
+        assert!(found.problems.is_empty(), "{:?}", found.problems);
+
+        let lost = bare_toolchain().with_harness_bin(None);
+        assert!(
+            lost.environment().iter().all(|(k, _)| k != "HARNESS_BIN"),
+            "{:?}",
+            lost.environment()
+        );
+        let line = lost.event().line().unwrap_or_default();
+        assert!(!line.contains("HARNESS_BIN="), "{line}");
+        assert!(
+            line.contains("problems: HARNESS_BIN missing (current_exe failed)"),
+            "{line}"
+        );
+        assert!(
+            bare_toolchain()
+                .environment()
+                .iter()
+                .all(|(k, _)| k != "HARNESS_BIN"),
+            "a toolchain resolved for a tree carries no binary"
+        );
+    }
 
     struct Dir(PathBuf);
 

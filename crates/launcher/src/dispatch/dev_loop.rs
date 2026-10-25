@@ -41,8 +41,8 @@ use harness_core::ports::store::checkpoint::Checkpoints;
 use harness_core::ports::store::spending::Spending;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::dev_loop::config::Config;
-use harness_workflows::dev_loop::data::signatures;
 use harness_workflows::dev_loop::data::state::Loop;
+use harness_workflows::dev_loop::data::{dependency_api, signatures};
 use harness_workflows::dev_loop::orchestration::stages;
 use harness_workflows::dev_loop::ports::Ports;
 use harness_workflows::dev_loop::run;
@@ -383,13 +383,17 @@ async fn signature_index(
     let Ok(tracked) = repo.tracked_files().await else {
         return signatures::Index::default();
     };
+    let dependencies = dependency_index(workspace.root(), disk, &tracked, log).await;
     let ecosystem = signatures::detect(&tracked);
     let by_path = match ecosystem {
         signatures::Ecosystem::Rust => rust_index(workspace.root(), disk, &tracked),
         signatures::Ecosystem::TypeScript => typescript_index(workspace, &tracked, log).await,
         signatures::Ecosystem::Unknown => {
             log.say("no known ecosystem in this checkout — no signature index");
-            return signatures::Index::default();
+            return signatures::Index {
+                dependencies,
+                ..signatures::Index::default()
+            };
         }
     };
     log.say(&format!(
@@ -401,6 +405,153 @@ async fn signature_index(
         ecosystem,
         by_path,
         tracked,
+        dependencies,
+    }
+}
+
+/// The API of `harness-dataguard` at the version the checkout's lock file
+/// resolves — see [`dependency_api`]. From the lock file's `git` source and
+/// cargo's own checkout of it (`$CARGO_HOME/git/checkouts/*/<rev>`), else
+/// from `cargo metadata --offline`. Built once per run: an immutable tag
+/// needs no cache, and a bump is read by the next run.
+///
+/// **A failure is never the run's**: no index, a warning, and the sessions
+/// read the engine as before.
+async fn dependency_index(
+    root: &Path,
+    disk: &dyn Disk,
+    tracked: &[String],
+    log: &Logbook,
+) -> Vec<dependency_api::Dependency> {
+    let Some(lock) = disk.read_to_string(&root.join("Cargo.lock")) else {
+        return Vec::new();
+    };
+    if !lock.contains(&format!("name = \"{}\"", dependency_api::DATAGUARD)) {
+        return Vec::new();
+    }
+    let from_lock = dependency_api::locked(&lock, dependency_api::DATAGUARD).and_then(|locked| {
+        checkout_source(&cargo_home(), &locked, disk).map(|src| (src, locked.label()))
+    });
+    let found = match from_lock {
+        Some(found) => Some(found),
+        None => metadata_source(root, log).await,
+    };
+    let Some((src, source)) = found else {
+        log.warn(&format!(
+            "dataguard signatures: no source of {} found (lock file, cargo's checkouts, \
+             cargo metadata) — sessions read the engine themselves",
+            dependency_api::DATAGUARD
+        ));
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    rust_files(disk, &src, "", &mut files);
+    let product: Vec<String> = tracked
+        .iter()
+        .filter(|path| Path::new(path).extension().is_some_and(|ext| ext == "rs"))
+        .filter_map(|path| disk.read_to_string(&root.join(path)))
+        .collect();
+    let engine = dependency_api::dependency(
+        dependency_api::DATAGUARD,
+        &source,
+        &files,
+        &product,
+        dependency_api::DATAGUARD_IDENT,
+        &dependency_api::DATAGUARD_UNIT_MODULES,
+    );
+    log.say(&format!(
+        "dataguard signatures: {} {source} — {} module(s), carried when a task is on the \
+         write side or names DataGuard (budget {})",
+        dependency_api::DATAGUARD,
+        engine.modules.len(),
+        dependency_api::DEPENDENCY_BUDGET
+    ));
+    vec![engine]
+}
+
+/// Cargo's home: `CARGO_HOME`, else `~/.cargo`.
+fn cargo_home() -> PathBuf {
+    std::env::var_os("CARGO_HOME").map_or_else(
+        || {
+            std::env::var_os("HOME")
+                .map_or_else(PathBuf::new, PathBuf::from)
+                .join(".cargo")
+        },
+        PathBuf::from,
+    )
+}
+
+/// The `src` folder of the locked package in cargo's checkout of its
+/// repository: `git/checkouts/<repo>-<hash>/<rev7>/`, the crate at
+/// `crates/dataguard` or any `crates/*` whose manifest names it.
+fn checkout_source(
+    cargo_home: &Path,
+    locked: &dependency_api::Locked,
+    disk: &dyn Disk,
+) -> Option<PathBuf> {
+    let short: String = locked.rev.chars().take(7).collect();
+    let checkouts = cargo_home.join("git").join("checkouts");
+    disk.dir_names(&checkouts).into_iter().find_map(|repo| {
+        let at = checkouts.join(repo).join(&short);
+        let conventional = at.join("crates/dataguard");
+        let named = |dir: &Path| {
+            disk.read_to_string(&dir.join("Cargo.toml"))
+                .is_some_and(|toml| {
+                    toml.contains(&format!("name = \"{}\"", dependency_api::DATAGUARD))
+                })
+        };
+        if named(&conventional) {
+            return Some(conventional.join("src"));
+        }
+        disk.dir_names(&at.join("crates"))
+            .into_iter()
+            .map(|name| at.join("crates").join(name))
+            .find(|dir| named(dir))
+            .map(|dir| dir.join("src"))
+    })
+}
+
+/// The package's `src` from `cargo metadata --offline`, and how its id names
+/// its version.
+async fn metadata_source(root: &Path, log: &Logbook) -> Option<(PathBuf, String)> {
+    let args: Vec<String> = ["metadata", "--format-version", "1", "--offline"]
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect();
+    let ran = crate::toolchain::processes()
+        .run("cargo", &args, root, INDEX_TIMEOUT)
+        .await;
+    let ran = match ran {
+        Ok(ran) if ran.ok() => ran,
+        Ok(ran) => {
+            log.debug(&format!("cargo metadata: {}", ran.why()));
+            return None;
+        }
+        Err(why) => {
+            log.debug(&format!("cargo metadata: {}", why.reason()));
+            return None;
+        }
+    };
+    let (manifest, id) = dependency_api::package_in_metadata(ran.out(), dependency_api::DATAGUARD)?;
+    let dir = Path::new(&manifest).parent()?.to_path_buf();
+    let label = id.split_once("tag=").map_or_else(
+        || dir.display().to_string(),
+        |(_, rest)| rest.split(['#', '&']).next().unwrap_or(rest).to_string(),
+    );
+    Some((dir.join("src"), label))
+}
+
+/// Every `.rs` under `dir`, by its path relative to the crate's `src`.
+fn rust_files(disk: &dyn Disk, dir: &Path, prefix: &str, found: &mut Vec<(String, String)>) {
+    for name in disk.file_names(dir) {
+        if Path::new(&name).extension().is_some_and(|ext| ext == "rs")
+            && let Some(text) = disk.read_to_string(&dir.join(&name))
+        {
+            found.push((format!("{prefix}{name}"), text));
+        }
+    }
+    for name in disk.dir_names(dir) {
+        rust_files(disk, &dir.join(&name), &format!("{prefix}{name}/"), found);
     }
 }
 
@@ -503,6 +654,37 @@ fn resumable(pointer: Option<String>, own: Option<u64>) -> Option<String> {
     pointer.filter(|task| own.is_none_or(|own| task.trim_start_matches('#') == own.to_string()))
 }
 
+/// Where this run's sessions find their facts (`HARNESS_FACTS`): in the
+/// run's own folder. None for a dry run, which writes nothing.
+fn facts_path(workspace: &Workspace, run_id: &str, dry_run: bool) -> PathBuf {
+    if dry_run {
+        return PathBuf::new();
+    }
+    workspace.loop_dir().join(run_id).join("session-facts.json")
+}
+
+/// The environment of this run's sessions: the toolchain's (`HARNESS_BIN`
+/// among it), and where the session facts are.
+fn session_environment(facts: &Path) -> Vec<(String, String)> {
+    let mut env = crate::toolchain::environment();
+    if !facts.as_os_str().is_empty() {
+        env.push(("HARNESS_FACTS".to_string(), facts.display().to_string()));
+    }
+    env
+}
+
+/// How the run says, once, where its sessions read their facts: `None` for
+/// a dry run, which gives none.
+fn facts_said(facts: &Path) -> Option<String> {
+    (!facts.as_os_str().is_empty()).then(|| {
+        format!(
+            "session facts: HARNESS_FACTS={} in every session's environment (gates-local's base, \
+             branch and closure check)",
+            facts.display()
+        )
+    })
+}
+
 /// Whether the stages narrow the working tree: the default, unless
 /// `--no-narrow` was given. Its own function so the double negative is
 /// read once, and tested.
@@ -528,6 +710,12 @@ async fn turns(
     // which the run is launched: that is where sessions edit, and that is where
     // `gh` must respond.
     let gh: Rc<dyn GitHub> = Rc::new(GhCli::new(workspace.root()));
+    // Per run, never per factory: the lanes of a parallel watch share the
+    // loop's folder, and each session reads its own task's facts.
+    let facts_path = facts_path(workspace, run_id, args.dry_run);
+    if let Some(said) = facts_said(&facts_path) {
+        log.say(&said);
+    }
     let sessions: Rc<dyn SessionFactory> = if args.dry_run {
         // A dry-run is a wiring choice, not a framework branch.
         Rc::new(Rehearsal::new(log.clone()))
@@ -539,7 +727,7 @@ async fn turns(
                 Some(crate::dispatch::shared::trace_dir(run_log)),
             )
             .with_short_cache()
-            .with_env(crate::toolchain::environment()),
+            .with_env(session_environment(&facts_path)),
         )
     };
     let spending: Rc<dyn Spending> = Rc::new(
@@ -590,6 +778,7 @@ async fn turns(
         stack: configuration_digest(workspace, disk.as_ref(), log).await,
         signatures,
         root: workspace.root().to_path_buf(),
+        facts_path: facts_path.clone(),
         narrow: narrowing(args),
         scaffold: scaffolding(args),
         ignore_budget: args.ignore_budget,
@@ -689,6 +878,108 @@ mod tests {
         assert!(scaffolding(&on.run));
         let off = crate::cli::Cli::parse_from(["harness", "--no-scaffold"]);
         assert!(!scaffolding(&off.run));
+    }
+
+    /// A throwaway folder, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(case: &str) -> Scratch {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        Scratch(
+            std::env::temp_dir().join(format!("dev-loop-{case}-{}-{stamp}", std::process::id())),
+        )
+    }
+
+    fn put(root: &Path, path: &str, text: &str) {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    }
+
+    #[test]
+    fn the_engine_s_source_is_cargo_s_checkout_of_the_locked_commit() {
+        let home = scratch("cargo-home");
+        let at = "git/checkouts/custom-harness-68e549c37e73101b";
+        put(
+            &home.0,
+            &format!("{at}/16370bc/crates/dataguard/Cargo.toml"),
+            "name = \"harness-dataguard\"\n",
+        );
+        put(
+            &home.0,
+            &format!("{at}/56cb6be/crates/dataguard/Cargo.toml"),
+            "[package]\nname = \"harness-dataguard\"\n",
+        );
+        put(
+            &home.0,
+            &format!("{at}/56cb6be/crates/dataguard/src/lib.rs"),
+            "pub mod plugins;\n",
+        );
+        put(
+            &home.0,
+            &format!("{at}/56cb6be/crates/dataguard/src/postgres/values.rs"),
+            "pub fn v() {}\n",
+        );
+        let locked = dependency_api::Locked {
+            url: "https://github.com/laucans/custom-harness".to_string(),
+            tag: Some("dataguard-v5".to_string()),
+            rev: "56cb6be9f54a5b29dae0cdf8e544600eaa63c556".to_string(),
+        };
+        let src = checkout_source(&home.0, &locked, &RealDisk).expect("found");
+        assert!(
+            src.ends_with("56cb6be/crates/dataguard/src"),
+            "{}",
+            src.display()
+        );
+        let mut files = Vec::new();
+        rust_files(&RealDisk, &src, "", &mut files);
+        files.sort();
+        let paths: Vec<&str> = files.iter().map(|(path, _)| path.as_str()).collect();
+        assert_eq!(paths, ["lib.rs", "postgres/values.rs"]);
+        let elsewhere = dependency_api::Locked {
+            rev: "0000000".to_string(),
+            ..locked
+        };
+        assert_eq!(checkout_source(&home.0, &elsewhere, &RealDisk), None);
+    }
+
+    #[test]
+    fn each_run_s_sessions_find_their_own_facts() {
+        let workspace = Workspace::new(Path::new("/factory"));
+        let path = facts_path(&workspace, "20261025-0300-x", false);
+        assert!(
+            path.ends_with("20261025-0300-x/session-facts.json"),
+            "{}",
+            path.display()
+        );
+        assert!(
+            facts_path(&workspace, "r", true).as_os_str().is_empty(),
+            "a dry run writes none"
+        );
+        let env = session_environment(&path);
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "HARNESS_FACTS" && Path::new(v) == path)
+        );
+        assert!(
+            facts_said(&path)
+                .is_some_and(|said| said.contains(&format!("HARNESS_FACTS={}", path.display()))),
+            "the run says where the facts are"
+        );
+        assert_eq!(facts_said(Path::new("")), None);
+        assert!(
+            !session_environment(Path::new(""))
+                .iter()
+                .any(|(k, _)| k == "HARNESS_FACTS")
+        );
     }
 
     #[test]

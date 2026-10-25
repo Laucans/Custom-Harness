@@ -1,4 +1,4 @@
-<!-- harness:architecture v8 -->
+<!-- harness:architecture v9 -->
 ## Agent-native architecture — the rules every change is checked against
 
 This repository follows the agent-native architecture of
@@ -168,6 +168,8 @@ scripts/                                register.sh, queries.sh, isolation.sh, d
   with `AGENT_LOOP_STOP: missing <path>`; the harness widens it.
 - Manifest first, from its `contracts/*.schema.json`, then the code.
 - For a Micro-UI or a screen, open its page under `mock/pages/` first.
-- Run the gates locally where they exist (the manifest's `ajv` validation,
-  `scripts/isolation.sh`), then the project's tests.
+- Run the gates before the pull request: `bash scripts/gates-local.sh`
+  (every gate of gates.yml on a copy of your work; minutes long: a Bash
+  `timeout` of 600000 ms, or in the background; `--failed` reruns what was
+  left red; `base-red` is not yours), then the project's tests.
 <!-- /harness:architecture -->

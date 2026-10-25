@@ -152,12 +152,13 @@ from here fails, the file on disk wins — re-read it and carry on.
 --- END REPOSITORY CONFIGURATION ---";
 
 const SIGNATURES: &str = "--- PUBLIC SIGNATURES (injected by {injector}) ---
-The public shape of the files this task names — what you can call, with what
-arguments; bodies left out on purpose. Read it instead of opening these files
-to learn their API. Only public items, only the files the issue names: a
-neighbour not listed here is a file you still open. Outside TypeScript it is
-derived by pattern, not by a compiler — where it disagrees with the code, the
-code wins.
+The public shape of the files this task names, and of a dependency it builds
+on (at the version this checkout builds) — what you can call, with what
+arguments; bodies left out on purpose. Read it instead of opening these files,
+or the dependency's source, to learn their API. Only public items, only what
+the task names: a neighbour not listed here is a file you still open. Outside
+TypeScript it is derived by pattern, not by a compiler — where it disagrees
+with the code, the code wins.
 
 {files}
 --- END PUBLIC SIGNATURES ---";

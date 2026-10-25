@@ -740,6 +740,7 @@ mod tests {
                     tools: vec!["bash 5.2.37 (/opt/homebrew/bin/bash)".to_string()],
                     shell: String::new(),
                     cache: String::new(),
+                    session: String::new(),
                     path: "/opt/homebrew/bin:/usr/bin".to_string(),
                     problems: problems.iter().map(ToString::to_string).collect(),
                 },
