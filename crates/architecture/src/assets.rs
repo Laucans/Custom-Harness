@@ -755,6 +755,31 @@ mod tests {
     }
 
     #[test]
+    fn the_rules_steps_read_the_branch_at_run_time_not_the_payload_labels() {
+        let gates = content_of(".github/workflows/gates.yml").unwrap_or_default();
+        assert!(
+            !gates.contains("pull_request.labels"),
+            "the `opened` payload misses the label added after it"
+        );
+        assert_eq!(
+            gates
+                .matches("!startsWith(github.head_ref, 'rules/')")
+                .count(),
+            3,
+            "rule-tests-untouched, its contest step and the strict rules hold"
+        );
+        assert!(
+            gates.contains(
+                "node scripts/rules-gate.mjs contest \"${{ github.event.pull_request.number }}\" \
+                 \"origin/${{ github.base_ref }}\""
+            ),
+            "the contest is measured against the base"
+        );
+        let gate = content_of("scripts/rules-gate.mjs").unwrap_or_default();
+        assert!(gate.contains("is inherited from"), "{gate}");
+    }
+
+    #[test]
     fn the_ci_runs_the_dead_code_script_and_the_mutants_it_is_installed_with() {
         let ci = content_of(".github/workflows/ci.yml").unwrap_or_default();
         assert!(ci.contains("cargo machete"), "{ci}");

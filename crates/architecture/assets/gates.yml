@@ -818,19 +818,23 @@ jobs:
       # Contract P — only the rules' task (label harness:rules) writes rules.json
       # and the rules' tests: a development conforms to them, or contests them
       # with CONTEST.md — which opens a `Rules contested` issue for the rules'
-      # task, and holds the change until it is settled.
+      # task, and holds the change until it is settled. The rules' task's PR is
+      # told by its branch, `rules/<n>`, read when the job runs: the label
+      # `gh pr create --label` adds lands after the `opened` event, which the
+      # payload's labels would miss. A CONTEST.md the PR took from its base is
+      # the base's: warned, never contested again.
       # The rules and their tests are left alone.
       - id: rule-tests-untouched
         name: rule-tests-untouched
-        if: ${{ !cancelled() && github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'harness:rules') }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && !startsWith(github.head_ref, 'rules/') }}
         run: node scripts/rules-gate.mjs untouched "origin/${{ github.base_ref }}"
       # No rule's test is contested.
       - id: rule-tests-untouched--contest
         name: rule-tests-untouched--contest
-        if: ${{ !cancelled() && github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'harness:rules') }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && !startsWith(github.head_ref, 'rules/') }}
         env:
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/rules-gate.mjs contest "${{ github.event.pull_request.number }}"
+        run: node scripts/rules-gate.mjs contest "${{ github.event.pull_request.number }}" "origin/${{ github.base_ref }}"
 
       # Contract N — the mock server's handlers are one file per unit,
       # mock/handlers/<id>.js, keyed by its own id only, and no id is defined
@@ -1260,7 +1264,7 @@ jobs:
           RULES_STATUS: ${{ github.workspace }}/target/rules-status.jsonl
           # Strict where a milestone lands (its pull request into main_agent),
           # never on the rules' own change: a changed rule's test lands red.
-          STRICT: ${{ github.event_name == 'pull_request' && github.base_ref == 'main_agent' && !contains(github.event.pull_request.labels.*.name, 'harness:rules') && '--strict' || '' }}
+          STRICT: ${{ github.event_name == 'pull_request' && github.base_ref == 'main_agent' && !startsWith(github.head_ref, 'rules/') && '--strict' || '' }}
         run: node scripts/rules-gate.mjs status $STRICT
       # Stop the product.
       - id: rules-hold--stop

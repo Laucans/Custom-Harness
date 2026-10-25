@@ -139,6 +139,28 @@ pub enum Event {
         /// The stop's reason, in a line.
         why: String,
     },
+    /// A rules contest settled, and the harness followed it through: the
+    /// `CONTEST.md` it was written in deleted where it lay, and the pull
+    /// request that waited on it resumed, its repairs counted anew.
+    Resumed {
+        /// The contest issue, closed.
+        contest: u64,
+        /// The pull request that waited on it (`516`), if one did.
+        pr: Option<String>,
+        /// The branch `CONTEST.md` was deleted on, if it was.
+        branch: Option<String>,
+    },
+    /// A pull request whose contest closed still waits to resume after
+    /// many board reads: its base has not taken the settled rules — a
+    /// milestone's catch-up held, most often. Told once per watch.
+    SettlingStalled {
+        /// The contest issue, closed.
+        contest: u64,
+        /// The pull request that waits (`516`).
+        pr: String,
+        /// The full board reads it has waited.
+        reads: u32,
+    },
     /// A task whose lane stopped for a human is not taken again until its
     /// issue changes.
     TaskParked {
@@ -496,6 +518,24 @@ impl Event {
             Self::TaskWaits { task, on, why } => {
                 format!("#{task} parked until #{on} lands (wait): {why}")
             }
+            Self::Resumed {
+                contest,
+                pr,
+                branch,
+            } => {
+                let lifted = branch.as_ref().map_or_else(
+                    || "no CONTEST.md of its own to lift".to_string(),
+                    |branch| format!("CONTEST.md lifted on {branch}"),
+                );
+                let resumed = pr.as_ref().map_or_else(String::new, |pr| {
+                    format!("; PR #{pr} resumed, its repairs counted anew")
+                });
+                format!("watch: contest #{contest} settled -> {lifted}{resumed}")
+            }
+            Self::SettlingStalled { contest, pr, reads } => format!(
+                "watch: pr #{pr} still waits on contest #{contest}, settled, after {reads} reads \
+                 — its base has not taken the settled rules (a catch-up held?)"
+            ),
             Self::TaskParked { task } => format!(
                 "watch: lanes -> #{task} parked: it stopped for a human, and is not taken \
                  again until its issue changes"
@@ -671,6 +711,7 @@ impl Event {
             | Self::HumanTaskOpened { .. }
             | Self::ContractChangeAsked { .. }
             | Self::BaseRed { .. }
+            | Self::SettlingStalled { .. }
             | Self::WorkKept { .. }
             | Self::Halted { .. }
             | Self::LaneEnded {
@@ -1034,6 +1075,69 @@ mod tests {
         assert_eq!(json, r#"{"event":"task_parked","task":15}"#);
         let back: Event = serde_json::from_str(&json).expect("back");
         assert_eq!(back, Event::TaskParked { task: 15 });
+    }
+
+    #[test]
+    fn a_settled_contest_says_where_it_lifted_and_what_resumed() {
+        let resumed = Event::Resumed {
+            contest: 517,
+            pr: Some("516".to_string()),
+            branch: Some("feat/scene".to_string()),
+        };
+        assert_eq!(
+            resumed.line().as_deref(),
+            Some(
+                "watch: contest #517 settled -> CONTEST.md lifted on feat/scene; PR #516 \
+                 resumed, its repairs counted anew"
+            )
+        );
+        assert_eq!(resumed.level(), Level::Info);
+        let milestone = Event::Resumed {
+            contest: 459,
+            pr: None,
+            branch: Some("milestone/28-x".to_string()),
+        };
+        assert_eq!(
+            milestone.line().as_deref(),
+            Some("watch: contest #459 settled -> CONTEST.md lifted on milestone/28-x")
+        );
+        let inherited = Event::Resumed {
+            contest: 9,
+            pr: Some("3".to_string()),
+            branch: None,
+        };
+        assert_eq!(
+            inherited.line().as_deref(),
+            Some(
+                "watch: contest #9 settled -> no CONTEST.md of its own to lift; PR #3 resumed, \
+                 its repairs counted anew"
+            )
+        );
+        let json = serde_json::to_string(&resumed).expect("json");
+        assert!(json.contains("\"event\":\"resumed\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, resumed);
+    }
+
+    #[test]
+    fn a_settling_pr_that_stalls_is_a_warning_that_reads_back() {
+        let stalled = Event::SettlingStalled {
+            contest: 517,
+            pr: "516".to_string(),
+            reads: 60,
+        };
+        assert_eq!(
+            stalled.line().as_deref(),
+            Some(
+                "watch: pr #516 still waits on contest #517, settled, after 60 reads — its base \
+                 has not taken the settled rules (a catch-up held?)"
+            )
+        );
+        assert_eq!(stalled.level(), Level::Warning);
+        let json = serde_json::to_string(&stalled).expect("json");
+        assert!(json.contains("\"event\":\"settling_stalled\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, stalled);
     }
 
     #[test]

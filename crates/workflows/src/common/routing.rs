@@ -8,7 +8,8 @@
 //!
 //! **One scheduler for every route** ([`schedule`]): every piece of work the
 //! snapshot shows becomes a [`Job`], weighted, and the watch starts them in
-//! weight order — the free ones (the catch-ups and the two merges) in the
+//! weight order — the free ones (the catch-ups, a settled contest's
+//! follow-through and the two merges) in the
 //! tick, each paid one
 //! on a free lane, as many as there are lanes. Nothing paid runs in the
 //! tick under `--parallel`, so a long session never keeps the lanes from
@@ -28,8 +29,13 @@
 //! ahead work, and a bonus for every tick a job has waited
 //! ([`Pulse::waited`]), capped, so the low ones are never starved. **While a
 //! rules' task is open, ready or not, no development task starts**
-//! ([`rules_first`]). [`decide`] is the schedule's first job, for a watch
-//! that runs one route at a time.
+//! ([`rules_first`]) — a contest aside: it holds only the PR that contests,
+//! which waits ([`Snapshot::prs_waiting`], `common::contest`) with no
+//! repair, decision or merge until the contest settles; the settled contest
+//! is then followed through for free ([`Route::Resume`]). A rules' task
+//! whose PR is faithful and still checking is neither tapped nor attempted
+//! again ([`Snapshot::rules_on_pr`]). [`decide`] is the schedule's first
+//! job, for a watch that runs one route at a time.
 //!
 //! **While the integration branch is red** ([`base_red`]), the jobs that
 //! would build on it or merge into it — a task's start, since its milestone
@@ -56,6 +62,7 @@ use harness_core::traces::{Event, Logbook};
 pub use harness_architecture::graph::Graph;
 
 use crate::common::catch_up::CatchUps;
+use crate::common::contest::{PrWait, Settled};
 use crate::common::labels;
 
 /// What the router decides to run next.
@@ -105,6 +112,18 @@ pub enum Route {
         milestone: u64,
         /// Its branch.
         branch: String,
+    },
+    /// Follow a settled rules contest through — `common::contest::resume`:
+    /// `CONTEST.md` deleted on the branch it was written for, and the PR
+    /// that waited on it marked resumed, its repairs counted anew. Free,
+    /// run in the tick.
+    Resume {
+        /// The contest issue, closed.
+        contest: u64,
+        /// The PR that waited on it, if one did.
+        pr: Option<String>,
+        /// The branch to delete `CONTEST.md` on, if any.
+        lift: Option<String>,
     },
     /// Open or merge this milestone's PR into the base branch —
     /// `main_agent_merge`.
@@ -191,7 +210,7 @@ pub struct Snapshot {
     /// The tasks whose PR is open on their milestone, reviewed and green,
     /// with that PR — what `milestone_merge` merges, one per board — and the
     /// rules' task whose PR the harness decided to merge as it is, once
-    /// green (`milestone_merge::rules_ready_to_merge`).
+    /// green (`milestone_merge::rules_prs`, `RulesPr::Mergeable`).
     pub tasks_to_merge: Vec<(u64, Pr)>,
     /// Every open PR carrying `harness:to-review` or `harness:pr-fix`, as read.
     ///
@@ -257,6 +276,16 @@ pub struct Snapshot {
     /// script solves, a failure parked ([`CatchUps::holding`]): their tasks
     /// wait.
     pub catch_up_held: Vec<u64>,
+    /// The PRs of [`Snapshot::task_prs`] that wait — on their open contest,
+    /// or on an issue a decision named (`common::contest::waiting`): no
+    /// repair, no decision on their task, no merge. The review still runs.
+    pub prs_waiting: Vec<(Pr, PrWait)>,
+    /// The open rules' tasks whose PR is judged faithful and mergeable or
+    /// still checking (`milestone_merge::RulesPr`): neither tapped nor
+    /// attempted again while it is.
+    pub rules_on_pr: Vec<u64>,
+    /// The settled contests to follow through ([`Route::Resume`]).
+    pub settled: Vec<Settled>,
 }
 
 /// Whether the integration branch is red: its newest head has a failed
@@ -275,9 +304,24 @@ pub const fn base_red(snapshot: &Snapshot) -> bool {
 /// The rules' task development waits on: the lowest open `harness:rules`
 /// issue, ready or not — a failed attempt hands it to a human, and the
 /// tests still come first.
+///
+/// A contest (`Rules contested: …`) holds no development: the PR that
+/// contests waits on it ([`Snapshot::prs_waiting`]) and nothing else does —
+/// one test of one rule is in flux, not the tests.
 #[must_use]
 pub fn rules_first(snapshot: &Snapshot) -> Option<u64> {
-    lowest_open(&snapshot.rules).map(|issue| issue.number)
+    let holding: Vec<Issue> = snapshot
+        .rules
+        .iter()
+        .filter(|issue| {
+            !issue
+                .title
+                .trim_start()
+                .starts_with(crate::rules::data::request::CONTESTED)
+        })
+        .cloned()
+        .collect();
+    lowest_open(&holding).map(|issue| issue.number)
 }
 
 /// The first job of the [`schedule`], for a watch that runs one route at a
@@ -297,7 +341,8 @@ pub fn decide(snapshot: &Snapshot) -> Route {
 /// rest; a free one is a few GitHub calls, run in the tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cost {
-    /// No session: the catch-ups and the two merges.
+    /// No session: the catch-ups, a settled contest's follow-through and
+    /// the two merges.
     Free,
     /// One session or more.
     Paid,
@@ -326,6 +371,7 @@ pub struct Job {
 pub const fn base_weight(route: &Route) -> u32 {
     match route {
         Route::CatchUp { .. } => 1010,
+        Route::Resume { .. } => 1005,
         Route::MergeIntoMilestone { .. } => 1000,
         Route::MergeMainAgent { .. } => 990,
         Route::Planner { .. } => 900,
@@ -378,6 +424,7 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
             cost: if matches!(
                 route,
                 Route::CatchUp { .. }
+                    | Route::Resume { .. }
                     | Route::MergeMainAgent { .. }
                     | Route::MergeIntoMilestone { .. }
             ) {
@@ -441,10 +488,51 @@ fn landing_caught_up(snapshot: &Snapshot, pr: &Pr) -> bool {
         .is_some_and(|m| snapshot.catch_up.iter().any(|(due, _)| *due == m))
 }
 
+/// Whether `pr` waits ([`Snapshot::prs_waiting`]).
+fn waits(snapshot: &Snapshot, pr: &str) -> bool {
+    snapshot.prs_waiting.iter().any(|(held, _)| held.num == pr)
+}
+
+/// Whether `issue` is the task of a PR that waits: no decision is paid on
+/// it until the wait settles.
+fn task_waits(snapshot: &Snapshot, issue: &Issue) -> bool {
+    snapshot
+        .prs_waiting
+        .iter()
+        .any(|(pr, _)| crate::dev_loop::data::tasks::pr_names_task(pr, issue))
+}
+
+/// The issue or PR a [`Route::Resume`] works on, and its milestone: the
+/// PR's number, else the milestone of the branch it lifts on.
+fn resume_found(settled: &Settled) -> Found {
+    let milestone = settled
+        .lift
+        .as_deref()
+        .and_then(crate::common::branching::milestone_number);
+    let key = settled
+        .pr
+        .as_deref()
+        .and_then(|pr| pr.parse::<u64>().ok())
+        .or(milestone)
+        .unwrap_or(settled.contest);
+    (
+        Route::Resume {
+            contest: settled.contest,
+            pr: settled.pr.clone(),
+            lift: settled.lift.clone(),
+        },
+        key,
+        milestone,
+    )
+}
+
 /// What is in flight: the catch-ups, the merges, the plan, the rules'
 /// tests, the decisions and contracts asked, the PRs to repair or review.
 fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
     let mut found: Vec<Found> = Vec::new();
+    // A settled contest is followed through on a red base too: it merges
+    // nothing, it lifts a file and resumes a PR.
+    found.extend(snapshot.settled.iter().map(resume_found));
     // Nothing merges on a red base: a merge into a milestone would spread
     // it, a merge into the base would bury it. A catch-up whose landing PR
     // a repair works on waits for it (`catch_up::catch_up`, which reads the
@@ -466,17 +554,23 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
                 .iter()
                 .map(|m| (Route::MergeMainAgent { milestone: *m }, *m, Some(*m))),
         );
-        found.extend(snapshot.tasks_to_merge.iter().map(|(task, pr)| {
-            (
-                Route::MergeIntoMilestone {
-                    task: *task,
-                    pr: pr.num.clone(),
-                    base: pr.base.clone(),
-                },
-                *task,
-                crate::common::branching::milestone_number(&pr.base),
-            )
-        }));
+        found.extend(
+            snapshot
+                .tasks_to_merge
+                .iter()
+                .filter(|(_, pr)| !waits(snapshot, &pr.num))
+                .map(|(task, pr)| {
+                    (
+                        Route::MergeIntoMilestone {
+                            task: *task,
+                            pr: pr.num.clone(),
+                            base: pr.base.clone(),
+                        },
+                        *task,
+                        crate::common::branching::milestone_number(&pr.base),
+                    )
+                }),
+        );
     }
     if let Some(lowest) = plannable_roadmap(&snapshot.roadmap)
         && lowest.has(labels::READY)
@@ -490,17 +584,30 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
             None,
         ));
     }
+    // A rules' task whose faithful PR is still checking is not attempted
+    // again: the attempt would judge the same PR faithful again
+    // (ForgeDesMondes' #517, attempted three times while PR #518 waited on
+    // `rust`).
     let ready_rules: Vec<Issue> = snapshot
         .rules
         .iter()
-        .filter(|issue| issue.has(labels::READY))
+        .filter(|issue| issue.has(labels::READY) && !snapshot.rules_on_pr.contains(&issue.number))
         .cloned()
         .collect();
     found.extend(of_issues(snapshot, &ready_rules, |issue| Route::Rules {
         issue,
     }));
-    found.extend(of_issues(snapshot, &snapshot.deciding, |issue| {
-        Route::Decide { issue }
+    // A decision on the task of a PR that waits is not paid: whatever it
+    // decides, the PR waits first (ForgeDesMondes' #486: two decisions
+    // "wait on #517" while the contest was open).
+    let deciding: Vec<Issue> = snapshot
+        .deciding
+        .iter()
+        .filter(|issue| !task_waits(snapshot, issue))
+        .cloned()
+        .collect();
+    found.extend(of_issues(snapshot, &deciding, |issue| Route::Decide {
+        issue,
     }));
     found.extend(of_issues(snapshot, &snapshot.contract_changes, |issue| {
         Route::ContractChange { issue }
@@ -519,7 +626,7 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
             snapshot
                 .prs_to_fix
                 .iter()
-                .filter(|pr| !landing_caught_up(snapshot, pr))
+                .filter(|pr| !landing_caught_up(snapshot, pr) && !waits(snapshot, &pr.num))
                 .filter_map(|pr| of_pr(pr, Route::PrFix { pr: pr.num.clone() })),
         );
     }
@@ -745,7 +852,24 @@ pub struct Pulse {
     /// The integration branch's head and what each milestone branch holds
     /// of it ([`crate::common::catch_up`]).
     pub catch_ups: CatchUps,
+    /// How many full reads each settled contest has kept its PR waiting
+    /// ([`PrWait::Settling`]) — what tells a stalled one ([`tell_settling`]).
+    pub settling: std::collections::BTreeMap<u64, u32>,
+    /// How many full reads each rules' task has been held on its faithful
+    /// PR ([`Snapshot::rules_on_pr`]) — what bounds the hold
+    /// ([`bound_rules_on_pr`]).
+    pub rules_held: std::collections::BTreeMap<u64, u32>,
 }
+
+/// How many full reads a PR waits on a settled contest before a human is
+/// told ([`tell_settling`]): a catch-up takes minutes, one held takes a
+/// person.
+pub const SETTLING_TELL: u32 = 60;
+
+/// How many full reads a rules' task is held on its faithful PR, at most
+/// ([`bound_rules_on_pr`]): a PR with no check at all, or one that never
+/// ends, reads as "checking" forever.
+pub const RULES_HELD_READS: u32 = 30;
 
 /// The first rest after a `QUOTA` stop, in ticks.
 pub const FIRST_REST: u32 = 4;
@@ -823,6 +947,23 @@ impl Pulse {
         self.waiting = next;
     }
 
+    /// A full read: each of `now` counted once more, what is no longer
+    /// there forgotten. Returns the new counts, in `now`'s order.
+    fn count_reads(
+        counts: &mut std::collections::BTreeMap<u64, u32>,
+        now: &[u64],
+    ) -> Vec<(u64, u32)> {
+        let mut next = std::collections::BTreeMap::new();
+        let mut found = Vec::new();
+        for key in now {
+            let reads = counts.get(key).copied().unwrap_or(0).saturating_add(1);
+            next.insert(*key, reads);
+            found.push((*key, reads));
+        }
+        *counts = next;
+        found
+    }
+
     /// What the pulse remembers after a full read.
     pub fn read_in_full(&mut self, etag: Option<String>, watching_ci: bool) {
         self.etag = etag;
@@ -858,14 +999,21 @@ impl Pulse {
 }
 
 /// How many times one watch marks an issue `harness:ready` itself, at most.
+///
+/// Counted per watch process ([`Pulse::taps`]), so a restart or a quota
+/// stop ([`Pulse::quota_struck`]) counts again from zero: a rules' task
+/// whose attempt keeps failing is attempted twice per watch, not once in
+/// all.
 pub const TAP_REOPENS: u32 = 2;
 
 /// What a watch with no human gate marks `harness:ready` itself.
 ///
 /// Every open roadmap item, milestone and rules' task without the label,
 /// and what it is, for the journal. Never an issue a person must act on
-/// (`harness:human`), one a decision is pending on, nor a milestone already
-/// split (`harness:triggered`), which would be split again.
+/// (`harness:human`), one a decision is pending on, a milestone already
+/// split (`harness:triggered`), which would be split again, nor a rules'
+/// task whose faithful PR is still checking ([`Snapshot::rules_on_pr`]) —
+/// the merge train waits on it, as on a task's PR.
 #[must_use]
 pub fn taps_to_open(snapshot: &Snapshot) -> Vec<(u64, &'static str)> {
     let closed_to_the_watch = |issue: &Issue| {
@@ -873,6 +1021,7 @@ pub fn taps_to_open(snapshot: &Snapshot) -> Vec<(u64, &'static str)> {
             || issue.has(labels::READY)
             || issue.has(labels::HUMAN)
             || issue.has(labels::NEEDS_DECISION)
+            || snapshot.rules_on_pr.contains(&issue.number)
     };
     let mut taps: Vec<(u64, &'static str)> = Vec::new();
     for (issues, what) in [
@@ -929,6 +1078,65 @@ pub fn mark_ready(snapshot: &mut Snapshot, number: u64) {
         .filter(|issue| issue.number == number && !issue.has(labels::READY))
     {
         issue.labels.push(labels::READY.to_string());
+    }
+}
+
+/// Counts a full read for each PR that waits on a settled contest.
+///
+/// Kept in [`Pulse::settling`]; the one whose wait reaches
+/// [`SETTLING_TELL`] is told — once per watch, a warning a human hears
+/// (`Event::SettlingStalled`). Each other wait is said in debug.
+pub fn tell_settling(snapshot: &Snapshot, pulse: &mut Pulse, log: &Logbook) {
+    let settling: Vec<(u64, &Pr)> = snapshot
+        .prs_waiting
+        .iter()
+        .filter_map(|(pr, wait)| match wait {
+            PrWait::Settling { issue } => Some((*issue, pr)),
+            _ => None,
+        })
+        .collect();
+    let contests: Vec<u64> = settling.iter().map(|(contest, _)| *contest).collect();
+    for (contest, reads) in Pulse::count_reads(&mut pulse.settling, &contests) {
+        let Some((_, pr)) = settling.iter().find(|(c, _)| *c == contest) else {
+            continue;
+        };
+        if reads == SETTLING_TELL {
+            log.event(&Event::SettlingStalled {
+                contest,
+                pr: pr.num.clone(),
+                reads,
+            });
+        } else {
+            log.debug(&format!(
+                "pr #{} waits on contest #{contest}, settled, for its base to take the rules \
+                 ({reads} read(s))",
+                pr.num
+            ));
+        }
+    }
+}
+
+/// Bounds how long a rules' task is held on its faithful PR.
+///
+/// A full read counts once more each task held ([`Pulse::rules_held`]);
+/// one held past [`RULES_HELD_READS`] is released from
+/// [`Snapshot::rules_on_pr`] — tapped and attempted again, within
+/// [`TAP_REOPENS`] — and said once, a warning: its PR reads as checking
+/// with no end (no check at all, or one that never concludes).
+pub fn bound_rules_on_pr(snapshot: &mut Snapshot, pulse: &mut Pulse, log: &Logbook) {
+    let held = snapshot.rules_on_pr.clone();
+    for (task, reads) in Pulse::count_reads(&mut pulse.rules_held, &held) {
+        if reads <= RULES_HELD_READS {
+            continue;
+        }
+        snapshot.rules_on_pr.retain(|on| *on != task);
+        if reads == RULES_HELD_READS.saturating_add(1) {
+            log.warn(&format!(
+                "watch: rules' task #{task} — its faithful PR still reads as checking after \
+                 {RULES_HELD_READS} reads (no check at all, or one that never ends): attempted \
+                 again"
+            ));
+        }
     }
 }
 
@@ -1326,6 +1534,9 @@ mod tests {
             review_backlog_full: false,
             catch_up: Vec::new(),
             catch_up_held: Vec::new(),
+            prs_waiting: Vec::new(),
+            rules_on_pr: Vec::new(),
+            settled: Vec::new(),
         }
     }
 
@@ -1384,6 +1595,9 @@ mod tests {
             review_backlog_full: false,
             catch_up: Vec::new(),
             catch_up_held: Vec::new(),
+            prs_waiting: Vec::new(),
+            rules_on_pr: Vec::new(),
+            settled: Vec::new(),
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -1602,6 +1816,335 @@ mod tests {
         assert_eq!(rules_first(&settled), None);
         assert_eq!(decide(&settled), Route::DevLoop { milestone: 3 });
         assert!(routes(&settled).contains(&Route::DevLoop { milestone: 3 }));
+    }
+
+    #[test]
+    fn a_contest_holds_only_the_pr_that_contests() {
+        let mut contest = issue(517, &[labels::RULES, labels::READY]);
+        contest.title = "Rules contested: PR #516".to_string();
+        let snapshot = Snapshot {
+            rules: vec![contest],
+            dev_loop_milestones: vec![3],
+            ..empty()
+        };
+        assert_eq!(rules_first(&snapshot), None, "no development waits on it");
+        let found = routes(&snapshot);
+        assert!(found.contains(&Route::Rules { issue: 517 }), "{found:?}");
+        assert!(
+            found.contains(&Route::DevLoop { milestone: 3 }),
+            "{found:?}"
+        );
+        // The first rules' task still holds everything.
+        let mut first = issue(5, &[labels::RULES]);
+        first.title = crate::rules::data::request::FIRST_TITLE.to_string();
+        let both = Snapshot {
+            rules: vec![first, snapshot.rules[0].clone()],
+            ..snapshot
+        };
+        assert_eq!(rules_first(&both), Some(5));
+    }
+
+    /// PR #516 into milestone/27, of task #486, waiting on contest #517.
+    fn waiting_on_its_contest() -> (Pr, Issue) {
+        let mut task = issue(486, &[labels::AGENT, labels::NEEDS_DECISION]);
+        task.body = "## Scope\n\nbranch: feat/scene\n".to_string();
+        let pr = Pr {
+            head: "feat/scene".to_string(),
+            ..pr("516", "milestone/27-x")
+        };
+        (pr, task)
+    }
+
+    #[test]
+    fn a_pr_waiting_on_its_contest_is_neither_repaired_nor_decided_nor_merged() {
+        let (waiting, task) = waiting_on_its_contest();
+        let other = pr("520", "milestone/27-x");
+        let snapshot = Snapshot {
+            prs_to_fix: vec![waiting.clone(), other],
+            prs_to_review: vec![waiting.clone()],
+            tasks_to_merge: vec![(486, waiting.clone())],
+            deciding: vec![task, issue(600, &[labels::NEEDS_DECISION])],
+            prs_waiting: vec![(waiting, PrWait::Contest { issue: 517 })],
+            ..empty()
+        };
+        let found = routes(&snapshot);
+        assert!(
+            !found.contains(&Route::PrFix {
+                pr: "516".to_string()
+            }),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&Route::PrFix {
+                pr: "520".to_string()
+            }),
+            "{found:?}"
+        );
+        assert!(!found.contains(&Route::Decide { issue: 486 }), "{found:?}");
+        assert!(found.contains(&Route::Decide { issue: 600 }), "{found:?}");
+        assert!(
+            !found
+                .iter()
+                .any(|r| matches!(r, Route::MergeIntoMilestone { .. })),
+            "{found:?}"
+        );
+        assert!(
+            found.contains(&Route::PrReview {
+                pr: "516".to_string(),
+                base: "milestone/27-x".to_string()
+            }),
+            "the review does not depend on the contest: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_red_pr_fix_pr_past_its_repairs_waits_too() {
+        // The `to_fix` branch of the repair route is uncapped: a decided
+        // wait is what holds it.
+        let (waiting, _) = waiting_on_its_contest();
+        let snapshot = Snapshot {
+            prs_to_fix: vec![waiting.clone()],
+            prs_waiting: vec![(waiting, PrWait::Decided { issue: 20 })],
+            ..empty()
+        };
+        assert!(routes(&snapshot).is_empty(), "{:?}", routes(&snapshot));
+    }
+
+    #[test]
+    fn a_pr_settling_on_a_closed_contest_is_neither_repaired_nor_decided_nor_merged() {
+        // The window between the contest closing and the resume: the
+        // catch-up and the resume are due, never a paid repair beside them.
+        let (waiting, task) = waiting_on_its_contest();
+        let snapshot = Snapshot {
+            prs_to_fix: vec![waiting.clone()],
+            prs_to_review: vec![waiting.clone()],
+            tasks_to_merge: vec![(486, waiting.clone())],
+            deciding: vec![task],
+            prs_waiting: vec![(waiting, PrWait::Settling { issue: 517 })],
+            ..empty()
+        };
+        let found = routes(&snapshot);
+        assert!(
+            !found.iter().any(|r| matches!(
+                r,
+                Route::PrFix { .. } | Route::Decide { .. } | Route::MergeIntoMilestone { .. }
+            )),
+            "{found:?}"
+        );
+    }
+
+    /// A sink that keeps the lines and the events told.
+    #[derive(Default)]
+    struct Told(std::cell::RefCell<(Vec<String>, Vec<Event>)>);
+
+    impl harness_core::traces::Sink for Told {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().0.push(line.to_string());
+        }
+        fn keep(&self, _line: &str) {}
+        fn record(&self, event: &Event) {
+            self.0.borrow_mut().1.push(event.clone());
+        }
+    }
+
+    fn told() -> (std::rc::Rc<Told>, Logbook) {
+        let sink = std::rc::Rc::new(Told::default());
+        let log = Logbook::new(
+            std::rc::Rc::clone(&sink) as std::rc::Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Verbose,
+        );
+        (sink, log)
+    }
+
+    #[test]
+    fn a_settling_wait_that_stalls_is_told_once() {
+        let (waiting, _) = waiting_on_its_contest();
+        let snapshot = Snapshot {
+            prs_waiting: vec![
+                (waiting, PrWait::Settling { issue: 517 }),
+                (pr("40", "milestone/27-x"), PrWait::Decided { issue: 20 }),
+            ],
+            ..empty()
+        };
+        let (sink, log) = told();
+        let mut pulse = Pulse::default();
+        for _ in 0..SETTLING_TELL.saturating_add(3) {
+            tell_settling(&snapshot, &mut pulse, &log);
+        }
+        let events = sink.0.borrow().1.clone();
+        assert_eq!(
+            events,
+            [Event::SettlingStalled {
+                contest: 517,
+                pr: "516".to_string(),
+                reads: SETTLING_TELL,
+            }],
+            "told once, the decided wait never"
+        );
+        assert_eq!(
+            pulse.settling.get(&517).copied(),
+            Some(SETTLING_TELL.saturating_add(3))
+        );
+        assert!(
+            sink.0.borrow().0.iter().any(|line| line
+                .contains("pr #516 waits on contest #517, settled")
+                && line.contains("(1 read(s))")),
+            "{:?}",
+            sink.0.borrow().0
+        );
+        // Resumed: forgotten, so a later wait counts from zero.
+        tell_settling(&empty(), &mut pulse, &log);
+        assert!(pulse.settling.is_empty());
+    }
+
+    #[test]
+    fn a_rules_task_held_on_its_pr_past_the_bound_is_released_and_said_once() {
+        // A faithful PR with no check at all reads as checking forever.
+        let (sink, log) = told();
+        let mut pulse = Pulse::default();
+        let held = || Snapshot {
+            rules: vec![issue(517, &[labels::RULES]), issue(518, &[labels::RULES])],
+            rules_on_pr: vec![517],
+            ..empty()
+        };
+        for _ in 0..RULES_HELD_READS {
+            let mut found = held();
+            bound_rules_on_pr(&mut found, &mut pulse, &log);
+            assert_eq!(found.rules_on_pr, [517], "held within the bound");
+            assert!(taps_to_open(&found).iter().all(|(n, _)| *n != 517));
+        }
+        for _ in 0..3 {
+            let mut found = held();
+            bound_rules_on_pr(&mut found, &mut pulse, &log);
+            assert!(found.rules_on_pr.is_empty(), "released past the bound");
+            assert!(taps_to_open(&found).contains(&(517, "rules' task")));
+        }
+        let warned: Vec<String> = sink
+            .0
+            .borrow()
+            .0
+            .iter()
+            .filter(|line| line.contains("rules' task #517"))
+            .cloned()
+            .collect();
+        assert_eq!(warned.len(), 1, "said once: {warned:?}");
+        // Off its PR: forgotten, the next hold counts from zero.
+        bound_rules_on_pr(&mut empty(), &mut pulse, &log);
+        assert!(pulse.rules_held.is_empty());
+        let mut found = held();
+        bound_rules_on_pr(&mut found, &mut pulse, &log);
+        assert_eq!(found.rules_on_pr, [517]);
+    }
+
+    #[test]
+    fn a_rules_task_whose_pr_is_checking_is_neither_tapped_nor_routed() {
+        let snapshot = Snapshot {
+            rules: vec![
+                issue(517, &[labels::RULES, labels::READY]),
+                issue(518, &[labels::RULES]),
+            ],
+            rules_on_pr: vec![517, 518],
+            ..empty()
+        };
+        assert!(
+            !routes(&snapshot).contains(&Route::Rules { issue: 517 }),
+            "{:?}",
+            routes(&snapshot)
+        );
+        assert!(
+            taps_to_open(&snapshot).is_empty(),
+            "{:?}",
+            taps_to_open(&snapshot)
+        );
+    }
+
+    #[test]
+    fn a_rules_task_whose_faithful_pr_went_red_is_attempted_again() {
+        // Red is not in `rules_on_pr`: the task is tapped and routed.
+        let snapshot = Snapshot {
+            rules: vec![issue(517, &[labels::RULES])],
+            ..empty()
+        };
+        assert_eq!(taps_to_open(&snapshot), [(517, "rules' task")]);
+        let tapped = Snapshot {
+            rules: vec![issue(517, &[labels::RULES, labels::READY])],
+            ..empty()
+        };
+        assert!(routes(&tapped).contains(&Route::Rules { issue: 517 }));
+    }
+
+    #[test]
+    fn a_settled_contest_is_a_free_resume_before_the_merges() {
+        let snapshot = Snapshot {
+            settled: vec![
+                Settled {
+                    contest: 517,
+                    pr: Some("516".to_string()),
+                    lift: Some("feat/scene".to_string()),
+                },
+                Settled {
+                    contest: 459,
+                    pr: None,
+                    lift: Some("milestone/28-x".to_string()),
+                },
+            ],
+            tasks_to_merge: vec![(64, pr("68", "milestone/52-socle"))],
+            catch_up: vec![(28, "milestone/28-x".to_string())],
+            base_checks: None,
+            ..empty()
+        };
+        let jobs = schedule(&snapshot, &[], &|_| 0);
+        let order: Vec<(&Route, u64, Cost)> =
+            jobs.iter().map(|j| (&j.route, j.key, j.cost)).collect();
+        assert!(
+            matches!(order[0], (Route::CatchUp { .. }, 28, Cost::Free)),
+            "{order:?}"
+        );
+        assert!(
+            matches!(
+                order[1],
+                (Route::Resume { contest: 517, .. }, 516, Cost::Free)
+            ),
+            "{order:?}"
+        );
+        assert!(
+            matches!(
+                order[2],
+                (Route::Resume { contest: 459, .. }, 28, Cost::Free)
+            ),
+            "keyed on its milestone: the catch-up of the branch goes first, {order:?}"
+        );
+        assert!(
+            matches!(order[3], (Route::MergeIntoMilestone { .. }, _, Cost::Free)),
+            "{order:?}"
+        );
+        // One job per key: the lift of milestone/28 waits for its catch-up.
+        let picked = plan(jobs, &[], &[], 0, false);
+        assert!(
+            picked
+                .free
+                .iter()
+                .all(|j| !matches!(j.route, Route::Resume { contest: 459, .. }))
+        );
+        // Followed through on a red base too: it merges nothing.
+        let red = Snapshot {
+            base_checks: Some(false),
+            ..snapshot
+        };
+        assert!(
+            routes(&red)
+                .iter()
+                .any(|r| matches!(r, Route::Resume { contest: 517, .. }))
+        );
+        // A lane on the PR holds it.
+        let running = schedule(&red, &[516], &|_| 0);
+        let picked = plan(running, &[516], &[], 0, false);
+        assert!(
+            !picked
+                .free
+                .iter()
+                .any(|j| matches!(j.route, Route::Resume { contest: 517, .. }))
+        );
     }
 
     #[test]
@@ -1933,6 +2476,8 @@ mod tests {
             taps: std::collections::BTreeMap::new(),
             waiting: std::collections::BTreeMap::new(),
             catch_ups: CatchUps::default(),
+            settling: std::collections::BTreeMap::new(),
+            rules_held: std::collections::BTreeMap::new(),
         }
     }
 

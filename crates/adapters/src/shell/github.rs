@@ -351,6 +351,63 @@ fn failing_checks(rows: &[Value]) -> Vec<String> {
         .collect()
 }
 
+/// The run and the job a check row's link names
+/// (`…/actions/runs/<run>/job/<job>`), when it names both.
+fn run_and_job(row: &Value) -> Option<(u64, u64)> {
+    let link = row.get("link")?.as_str()?;
+    let after = link.split("/actions/runs/").nth(1)?;
+    let mut parts = after.split('/');
+    let run = parts.next()?.parse().ok()?;
+    if parts.next()? != "job" {
+        return None;
+    }
+    let job = parts.next()?.split(['?', '#']).next()?.parse().ok()?;
+    Some((run, job))
+}
+
+/// A check row's place among the attempts of its job: its start, then its
+/// job id — a re-run gets a new, higher one. A row with no start loses to
+/// one that has one.
+fn attempt_order(row: &Value) -> (String, u64) {
+    (
+        text_at(row, "startedAt"),
+        run_and_job(row).map_or(0, |(_, job)| job),
+    )
+}
+
+/// The check rows with the attempts of one job collapsed: for each run id
+/// and job name, the newest row only.
+///
+/// Never across runs: a landing PR gets a `push` run and a
+/// `pull_request` run of the same workflow on one sha, and the strict rules
+/// gate runs only in the second — a newer green push row hiding a red PR
+/// row would merge a red milestone. A re-run keeps its run id, so an old
+/// FAILURE beside its newer SUCCESS (or its re-run still PENDING) is read
+/// as the newer one. A row whose link names no run is kept as it is.
+fn latest_per_job(rows: Vec<Value>) -> Vec<Value> {
+    let mut kept: Vec<Value> = Vec::new();
+    for row in rows {
+        let Some((run, _)) = run_and_job(&row) else {
+            kept.push(row);
+            continue;
+        };
+        let name = text_at(&row, "name");
+        let same = kept.iter_mut().find(|seen| {
+            run_and_job(seen).is_some_and(|(seen_run, _)| seen_run == run)
+                && text_at(seen, "name") == name
+        });
+        match same {
+            Some(seen) => {
+                if attempt_order(&row) > attempt_order(seen) {
+                    *seen = row;
+                }
+            }
+            None => kept.push(row),
+        }
+    }
+    kept
+}
+
 /// `gh pr view --json mergeable`: `MERGEABLE`, `CONFLICTING`, or `UNKNOWN`
 /// while GitHub still computes it.
 fn mergeable_from(payload: &Value) -> Option<bool> {
@@ -578,14 +635,22 @@ struct OpenPr {
 /// reads, shorter than anything a check run changes meanwhile.
 const OPEN_PRS_FRESH: Duration = Duration::from_secs(45);
 
+/// The fields `gh pr checks --json` is asked for: enough to tell the
+/// attempts of one job apart ([`latest_per_job`]).
+const CHECK_FIELDS: &str = "name,state,link,startedAt";
+
 /// The fields the one read asks for.
 const OPEN_PR_FIELDS: &str = "number,updatedAt,mergeable,headRefOid,statusCheckRollup";
 
 /// A check of `statusCheckRollup` as a row of `gh pr checks --json
-/// name,state,link`: a check run's conclusion once completed (`PENDING`
-/// before), a status context's state.
+/// name,state,link,startedAt`: a check run's conclusion once completed
+/// (`PENDING` before), a status context's state.
 fn check_row(rollup: &Value) -> Value {
     let text = |key: &str| rollup.get(key).and_then(Value::as_str).unwrap_or("");
+    let started = [text("startedAt"), text("createdAt"), text("completedAt")]
+        .into_iter()
+        .find(|at| !at.is_empty())
+        .unwrap_or("");
     let (name, state, link) = if rollup.get("context").is_some() {
         (
             text("context"),
@@ -600,7 +665,7 @@ fn check_row(rollup: &Value) -> Value {
         };
         (text("name"), state, text("detailsUrl"))
     };
-    serde_json::json!({ "name": name, "state": state, "link": link })
+    serde_json::json!({ "name": name, "state": state, "link": link, "startedAt": started })
 }
 
 /// The one read's rows by PR number; `None` when it is no list.
@@ -613,7 +678,7 @@ fn open_prs_from(payload: &Value) -> Option<HashMap<u64, OpenPr>> {
                 let checks = row
                     .get("statusCheckRollup")
                     .and_then(Value::as_array)
-                    .map(|checks| checks.iter().map(check_row).collect())
+                    .map(|checks| latest_per_job(checks.iter().map(check_row).collect()))
                     .unwrap_or_default();
                 Some((
                     number,
@@ -1021,6 +1086,16 @@ impl GhCli {
         }
         Err(unreadable(what, &ran.why()))
     }
+}
+
+/// The blob sha of a contents API answer for one file, if it names one.
+fn blob_sha(payload: &str) -> Option<String> {
+    serde_json::from_str::<Value>(payload)
+        .ok()?
+        .get("sha")
+        .and_then(Value::as_str)
+        .filter(|sha| !sha.is_empty())
+        .map(ToString::to_string)
 }
 
 /// Standard base64 with padding, as the contents API wants a file: a few
@@ -1612,16 +1687,10 @@ impl GitHub for GhCli {
             "-f".to_string(),
             format!("ref={branch}"),
         ];
-        let sha = match self.read_optional(&what, &read).await? {
-            Some(ran) => serde_json::from_str::<Value>(&ran.stdout)
-                .ok()
-                .and_then(|v| {
-                    v.get("sha")
-                        .and_then(Value::as_str)
-                        .map(ToString::to_string)
-                }),
-            None => None,
-        };
+        let sha = self
+            .read_optional(&what, &read)
+            .await?
+            .and_then(|ran| blob_sha(&ran.stdout));
         let mut fields = vec![
             ("message", message.to_string()),
             ("content", base64(content.as_bytes())),
@@ -1637,6 +1706,37 @@ impl GitHub for GhCli {
             &fields,
         )
         .await
+    }
+
+    async fn delete_file(&self, path: &str, branch: &str, message: &str) -> Outcome<bool> {
+        // The contents API deletes a file only against its current blob.
+        let what = format!("{path}@{branch}");
+        let repo = self.repo().await?;
+        let read = vec![
+            "api".to_string(),
+            format!("repos/{repo}/contents/{path}"),
+            "-X".to_string(),
+            "GET".to_string(),
+            "-f".to_string(),
+            format!("ref={branch}"),
+        ];
+        let Some(ran) = self.read_optional(&what, &read).await? else {
+            return Ok(false);
+        };
+        let sha = blob_sha(&ran.stdout)
+            .ok_or_else(|| unreadable(&what, "the contents API named no blob sha for the file"))?;
+        self.write(
+            &format!("delete {path} on {branch}"),
+            "DELETE",
+            &format!("contents/{path}"),
+            &[
+                ("message", message.to_string()),
+                ("sha", sha),
+                ("branch", branch.to_string()),
+            ],
+        )
+        .await?;
+        Ok(true)
     }
 
     async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {
@@ -1753,13 +1853,13 @@ impl GitHub for GhCli {
                 "checks".to_string(),
                 pr_ref.to_string(),
                 "--json".to_string(),
-                "state".to_string(),
+                CHECK_FIELDS.to_string(),
             ])
             .await?;
         // `gh pr checks` exits non-zero whenever a check is pending or
         // failing — a normal answer, not a failed read. Success is read from
         // the JSON body, which is printed either way.
-        Ok(checks_are_green(&ci_rows(pr_ref, &ran)?))
+        Ok(checks_are_green(&latest_per_job(ci_rows(pr_ref, &ran)?)))
     }
 
     async fn open_prs_labelled(&self, label: &str) -> Outcome<Vec<Pr>> {
@@ -1869,13 +1969,13 @@ impl GitHub for GhCli {
                 "checks".to_string(),
                 pr_ref.to_string(),
                 "--json".to_string(),
-                "name,state,link".to_string(),
+                CHECK_FIELDS.to_string(),
             ])
             .await?;
         // Same contract as `pr_checks_green`: a non-zero exit is how `gh`
         // reports "something is pending or failing", which is precisely the
         // answer being asked for. Only an empty body is unreadable.
-        Ok(failing_checks(&ci_rows(pr_ref, &ran)?))
+        Ok(failing_checks(&latest_per_job(ci_rows(pr_ref, &ran)?)))
     }
 
     async fn artifact_file(
@@ -2072,6 +2172,157 @@ mod tests {
         assert_eq!(prs[&268].head, "abc123");
         assert_eq!(prs[&279].head, "", "no head read, no pin");
         assert!(open_prs_from(&json!({"message": "x"})).is_none());
+    }
+
+    fn job(name: &str, state: &str, run: u64, job: u64, at: &str) -> Value {
+        json!({
+            "name": name,
+            "state": state,
+            "link": format!("https://github.com/o/r/actions/runs/{run}/job/{job}"),
+            "startedAt": at,
+        })
+    }
+
+    #[test]
+    fn a_superseded_failure_beside_a_newer_success_is_green() {
+        // A re-run of one job keeps its run id: the old FAILURE is gone.
+        let rows = vec![
+            job("rust", "FAILURE", 7, 70, "2026-10-24T20:00:00Z"),
+            job("gates", "SUCCESS", 7, 71, "2026-10-24T20:00:00Z"),
+            job("rust", "SUCCESS", 7, 90, "2026-10-24T21:00:00Z"),
+        ];
+        let kept = latest_per_job(rows);
+        assert_eq!(kept.len(), 2, "{kept:?}");
+        assert!(checks_are_green(&kept));
+        assert_eq!(failing_checks(&kept), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_rerun_still_running_hides_the_old_failure_from_the_repairs() {
+        let rows = vec![
+            job("rust", "FAILURE", 7, 70, "2026-10-24T20:00:00Z"),
+            job("rust", "PENDING", 7, 90, "2026-10-24T21:00:00Z"),
+        ];
+        let kept = latest_per_job(rows);
+        assert!(!checks_are_green(&kept), "pending is not green");
+        assert_eq!(
+            failing_checks(&kept),
+            Vec::<String>::new(),
+            "nor failing: no repair"
+        );
+    }
+
+    #[test]
+    fn two_runs_of_one_workflow_are_never_collapsed() {
+        // A landing PR: the `pull_request` run (red, strict rules) is older
+        // than the `push` run (green) of the same sha. Both stay.
+        let rows = vec![
+            job("rules-hold", "FAILURE", 7, 70, "2026-10-24T20:00:00Z"),
+            job("rules-hold", "SUCCESS", 8, 80, "2026-10-24T20:05:00Z"),
+        ];
+        let kept = latest_per_job(rows);
+        assert_eq!(kept.len(), 2);
+        assert!(!checks_are_green(&kept));
+        assert_eq!(failing_checks(&kept).len(), 1);
+    }
+
+    #[test]
+    fn a_row_with_no_run_in_its_link_is_kept_as_it_is() {
+        let rows = vec![
+            json!({"name": "deploy", "state": "FAILURE", "link": "https://ci.example/1"}),
+            json!({"name": "deploy", "state": "SUCCESS", "link": "https://ci.example/2"}),
+            json!({"name": "rust", "state": "SUCCESS", "link": "https://github.com/o/r/actions/runs/7/attempts/2"}),
+        ];
+        assert_eq!(latest_per_job(rows).len(), 3);
+        assert_eq!(
+            run_and_job(&job("x", "SUCCESS", 12, 34, "")),
+            Some((12, 34))
+        );
+        assert_eq!(
+            run_and_job(&json!({"link": "https://github.com/o/r/actions/runs/12/job/34?pr=5"})),
+            Some((12, 34))
+        );
+        assert_eq!(
+            run_and_job(&json!({"link": "https://github.com/o/r/actions/runs/x/job/34"})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_rollup_row_keeps_its_start_for_the_dedupe() {
+        let row = check_row(
+            &json!({"__typename": "CheckRun", "name": "rust", "status": "COMPLETED",
+            "conclusion": "FAILURE", "detailsUrl": "u", "startedAt": "2026-10-24T20:00:00Z"}),
+        );
+        assert_eq!(text_at(&row, "startedAt"), "2026-10-24T20:00:00Z");
+        let context = check_row(
+            &json!({"context": "deploy", "state": "PENDING", "targetUrl": "u",
+            "createdAt": "2026-10-24T19:00:00Z"}),
+        );
+        assert_eq!(text_at(&context, "startedAt"), "2026-10-24T19:00:00Z");
+        let payload = json!([{"number": 5, "statusCheckRollup": [
+            {"name": "rust", "status": "COMPLETED", "conclusion": "FAILURE",
+             "detailsUrl": "https://github.com/o/r/actions/runs/7/job/70", "startedAt": "2026-10-24T20:00:00Z"},
+            {"name": "rust", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "detailsUrl": "https://github.com/o/r/actions/runs/7/job/90", "startedAt": "2026-10-24T21:00:00Z"}]}]);
+        let prs = open_prs_from(&payload).expect("a list");
+        assert!(
+            checks_are_green(&prs[&5].checks),
+            "the one read dedupes too"
+        );
+    }
+
+    #[test]
+    fn a_contents_answer_names_its_blob() {
+        assert_eq!(
+            blob_sha(r#"{"sha":"abc","path":"CONTEST.md"}"#).as_deref(),
+            Some("abc")
+        );
+        assert_eq!(blob_sha(r#"{"sha":""}"#), None);
+        assert_eq!(blob_sha("not json"), None);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn latest_per_job_keeps_one_row_per_run_and_name_the_newest_and_is_idempotent(
+            rows in proptest::collection::vec(
+                (0u64..3, 0usize..3, 1u64..50, 0u32..5, 0usize..3),
+                0..12,
+            )
+        ) {
+            const NAMES: [&str; 3] = ["rust", "gates", "rules-hold"];
+            const STATES: [&str; 3] = ["SUCCESS", "FAILURE", "PENDING"];
+            let rows: Vec<Value> = rows
+                .into_iter()
+                .map(|(run, name, job_id, minute, state)| {
+                    job(NAMES[name], STATES[state], run, job_id, &format!("2026-10-24T20:0{minute}:00Z"))
+                })
+                .collect();
+            let kept = latest_per_job(rows.clone());
+            // One row per (run, name), each the newest of its group.
+            for row in &kept {
+                let (run, _) = run_and_job(row).expect("a run");
+                let name = text_at(row, "name");
+                let group: Vec<&Value> = rows
+                    .iter()
+                    .filter(|r| run_and_job(r).map(|(x, _)| x) == Some(run) && text_at(r, "name") == name)
+                    .collect();
+                proptest::prop_assert!(group.iter().all(|r| attempt_order(r) <= attempt_order(row)));
+                proptest::prop_assert_eq!(
+                    kept.iter()
+                        .filter(|k| run_and_job(k).map(|(x, _)| x) == Some(run) && text_at(k, "name") == name)
+                        .count(),
+                    1
+                );
+            }
+            // Every group of the input is still there.
+            for row in &rows {
+                let (run, _) = run_and_job(row).expect("a run");
+                let name = text_at(row, "name");
+                proptest::prop_assert!(kept.iter().any(|k| run_and_job(k).map(|(x, _)| x) == Some(run) && text_at(k, "name") == name));
+            }
+            proptest::prop_assert_eq!(latest_per_job(kept.clone()), kept);
+        }
     }
 
     #[test]

@@ -314,6 +314,18 @@ pub trait GitHub {
     async fn put_file(&self, path: &str, branch: &str, content: &str, message: &str)
     -> Outcome<()>;
 
+    /// Deletes `path` on `branch` as one commit saying `message`, made on
+    /// GitHub against the branch's head — no checkout, no push to race.
+    /// Answers whether it deleted it: `false` when the file is not there,
+    /// so a second call changes nothing.
+    ///
+    /// # Errors
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if the file's
+    /// blob cannot be read for any reason other than "absent";
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses the
+    /// delete.
+    async fn delete_file(&self, path: &str, branch: &str, message: &str) -> Outcome<bool>;
+
     // --- what the three-tier issue model demands, and nothing else ---------
     //
     // These are writes, so they share `issue`'s writes' failure shape

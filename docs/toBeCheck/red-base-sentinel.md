@@ -74,7 +74,8 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
   (review finding): a rules' task's PR (head `rules/<n>`, labelled
   `harness:rules`) sits on no board, so the `merge_when_green` leg above
   left it to nobody — and `routing::rules_first` held every task on the
-  open rules' issue. Now `milestone_merge::rules_ready_to_merge` (read by
+  open rules' issue. Now `milestone_merge::rules_ready_to_merge` (since the
+  contest-flow lot: `rules_prs`, `RulesPr::Mergeable`; read by
   the snapshot only while a rules' issue is open: one
   `gh pr list --label harness:rules`, then the comments, mergeability and
   checks of each candidate) offers the PR whose last review is the decision

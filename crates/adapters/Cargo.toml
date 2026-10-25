@@ -16,3 +16,6 @@ tokio.workspace = true
 # The watch's sweep of the product's scratch databases (`shell/database`):
 # the same client, version and runtime feature `harness-dataguard` locks.
 tokio-postgres = { version = "0.7", default-features = false, features = ["runtime"] }
+
+[dev-dependencies]
+proptest.workspace = true

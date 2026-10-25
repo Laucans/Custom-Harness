@@ -6,8 +6,10 @@
 //! kinds open one: the creation's Initialize (every rule, the first task of
 //! the roadmap), a rule changed in the view afterwards (the rules again, the
 //! changed ones marked `conform`), and a development's `CONTEST.md` (the CI
-//! opens `Rules contested: PR #<n>`). While one is open, no development task
-//! starts (`common::routing`): the tests are what the code conforms to.
+//! opens `Rules contested: PR #<n>`). While one of the first two is open, no
+//! development task starts (`common::routing`): the tests are what the code
+//! conforms to. A contest holds only the PR that contests, which waits on it
+//! (`common::contest`); once settled, the harness lifts `CONTEST.md` itself.
 //!
 //! **One `harness:ready`, one attempt.** The request is consumed in the free
 //! stage, before anything is paid for — the route outranks the dev loop, so

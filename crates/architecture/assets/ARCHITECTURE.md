@@ -772,7 +772,7 @@ red carries the same name in the run's log.
 | Secrets encrypted | Only sops-encrypted `secrets/<env>.enc.yaml` and no `.env` file are committed (`secrets`) | Q |
 | Rules covered | Every rule of `rules.json` has a test of its family naming it, its criterion copied as it is; no test names a rule `rules.json` has not (`scripts/rules-gate.mjs coverage`) | P |
 | Rules hold | Every rule's test whose units are built runs on the product the runtime serves, and passes; each rule's state (pending, green, red) is kept as `rules-status.json`; a rule marked `conform` may be red in a task, never where a milestone lands (`scripts/rules-gate.mjs status`) | P |
-| Rule tests untouched | A change that is not the rules' task leaves `rules.json` and `tests/rules/` alone (`scripts/rules-gate.mjs untouched`), and carries no `CONTEST.md` — which opens the `Rules contested` issue the rules' task settles (`contest`) | P |
+| Rule tests untouched | A change that is not the rules' task leaves `rules.json` and `tests/rules/` alone (`scripts/rules-gate.mjs untouched`), and carries no `CONTEST.md` — which opens the `Rules contested` issue the rules' task settles (`contest`). The rules' task's own PR is told by its branch, `rules/<n>`, read when the job runs. A `CONTEST.md` the change took from its base is the base's: warned, the gate passes, no issue opened; the harness deletes `CONTEST.md` itself once the contest is settled | P |
 
 Beside the gates, the project's own CI (`.github/workflows/ci.yml`) judges
 the code and its tests, not the contracts: format and lint; the tests a

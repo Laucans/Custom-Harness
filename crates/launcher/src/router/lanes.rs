@@ -378,6 +378,9 @@ mod tests {
             review_backlog_full: false,
             catch_up: Vec::new(),
             catch_up_held: Vec::new(),
+            prs_waiting: Vec::new(),
+            rules_on_pr: Vec::new(),
+            settled: Vec::new(),
         }
     }
 

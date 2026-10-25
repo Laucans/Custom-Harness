@@ -359,6 +359,9 @@ mod tests {
         ) -> Outcome<()> {
             Err(refused())
         }
+        async fn delete_file(&self, _path: &str, _branch: &str, _message: &str) -> Outcome<bool> {
+            Err(refused())
+        }
         async fn create_issue(&self, _title: &str, _body: &str, _labels: &[&str]) -> Outcome<u64> {
             Err(refused())
         }

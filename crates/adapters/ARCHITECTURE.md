@@ -26,7 +26,12 @@ shell/    process      the only place in the crate that spawns a subprocess; `Pr
                        carries the variables it was built with (`with_env`: the
                        launcher's toolchain `PATH`) to every child it spawns
           git          GitCli, GitRepos — every call names the repo with `-C <root>`
-          github       GhCli — issues go through `gh api`, not `gh issue`
+          github       GhCli — issues go through `gh api`, not `gh issue`; a PR's
+                       check rows keep, per run id and job name, the newest attempt
+                       only (`latest_per_job`: a re-run's SUCCESS or PENDING hides
+                       its old FAILURE), never collapsed across runs (a landing PR's
+                       `push` and `pull_request` runs stay apart); `delete_file`
+                       is a contents API DELETE against the blob's sha
           disk         RealDisk
           database     whether the product's database answers (a TCP connect), and
                        PgDatabases — the databases the factory's role owns and a plain

@@ -52,6 +52,8 @@ pub enum Wrote {
     MergedPr(String),
     /// A file written on a branch: path, branch, content.
     PutFile(String, String, String),
+    /// A file deleted on a branch: path, branch, message.
+    DeletedFile(String, String, String),
 }
 
 /// An in-memory GitHub.
@@ -454,6 +456,22 @@ impl GitHub for FakeGitHub {
             content.to_string(),
         ));
         Ok(())
+    }
+
+    async fn delete_file(&self, path: &str, branch: &str, message: &str) -> Outcome<bool> {
+        self.ok()?;
+        if !self
+            .files
+            .contains_key(&(path.to_string(), branch.to_string()))
+        {
+            return Ok(false);
+        }
+        self.wrote.borrow_mut().push(Wrote::DeletedFile(
+            path.to_string(),
+            branch.to_string(),
+            message.to_string(),
+        ));
+        Ok(true)
     }
 
     async fn create_issue(&self, title: &str, body: &str, labels: &[&str]) -> Outcome<u64> {

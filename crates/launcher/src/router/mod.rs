@@ -55,10 +55,11 @@ use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug};
 use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
-use harness_workflows::common::{branching, catch_up, labels, sentinel};
+use harness_workflows::common::{branching, catch_up, contest, labels, sentinel};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::main_agent_merge::data::merge_train;
+use harness_workflows::milestone_merge::RulesPr;
 use harness_workflows::pr_fix::data::candidates;
 use harness_workflows::pr_review::data::skip_rules;
 
@@ -277,6 +278,11 @@ async fn tick(
     // catch-ups due at the head just read, once its own checks are green.
     pulse.read_in_full(etag, watching_ci || routing::base_red(&found));
     routing::read_catch_ups(&mut found, pulse, crate::dispatch::dev_loop::now_seconds());
+    // A PR held on a settled contest is told once it stalls; a rules' task
+    // held on its faithful PR is released past the bound — before the taps,
+    // which read the hold.
+    routing::tell_settling(&found, pulse, log);
+    routing::bound_rules_on_pr(&mut found, pulse, log);
     if args.no_human_gate {
         routing::open_taps(gh.as_ref(), &mut found, pulse, log).await?;
     }
@@ -353,7 +359,8 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
     log.debug(&format!(
         "saw: base={:?}, {} roadmap, {} milestone(s), {} refining, {} tech-refining, \
          {} arbitrating, {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, to_merge={:?}, \
-         ready_to_merge={:?}, dev_loop={:?}, catch_up={:?}, catch_up_held={:?}",
+         ready_to_merge={:?}, dev_loop={:?}, catch_up={:?}, catch_up_held={:?}, \
+         rules_on_pr={:?}, resume={:?}",
         found.base_checks,
         found.roadmap.len(),
         found.milestones.len(),
@@ -385,6 +392,12 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
             .map(|(milestone, _)| *milestone)
             .collect::<Vec<_>>(),
         found.catch_up_held,
+        found.rules_on_pr,
+        found
+            .settled
+            .iter()
+            .map(|settled| settled.contest)
+            .collect::<Vec<_>>(),
     ));
 }
 
@@ -559,7 +572,9 @@ async fn snapshot(
         not_running(&to_fix, running),
         not_running(&to_review, running),
     );
-    let prs_to_fix = by_number(candidates::due(gh, &fixable, &reviewable).await?);
+    let rules = gh.issues_labelled(labels::RULES, "open").await?;
+    let (prs_waiting, prs_to_fix, closed_rules) =
+        repairs_due(gh, &task_prs, (&fixable, &reviewable), &rules, log).await?;
     let prs_to_review = prs_worth_reviewing(gh, &reviewable).await?;
     // The plan's graph, when the plan wrote one: what orders the milestones
     // and says which may build side by side.
@@ -571,7 +586,6 @@ async fn snapshot(
         .issues_labelled(labels::NEEDS_AI_DECISION, "open")
         .await?;
     let test_debt = gh.issues_labelled(labels::TEST_DEBT, "open").await?;
-    let rules = gh.issues_labelled(labels::RULES, "open").await?;
     let deciding = gh.issues_labelled(labels::NEEDS_DECISION, "open").await?;
     let contract_changes = gh.issues_labelled(labels::CONTRACT_CHANGE, "open").await?;
     // One board per milestone building (`harness:triggered`), the critical
@@ -595,23 +609,16 @@ async fn snapshot(
     // One green PR per board: a milestone's branch takes one merge a tick,
     // the next one is read against it.
     let mut tasks_to_merge = Vec::new();
+    let mergeable = contest::not_waiting(&to_review, &prs_waiting);
     for board in &boards {
-        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &to_review, log).await?);
+        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &mergeable, log).await?);
     }
-    // The rules' task the harness decided to merge as it is while its checks
-    // ran: its PR sits on no board, so the train reads it here — once green
-    // it merges into the integration branch and the task closes, which is
-    // what frees the development the rules hold. Nothing is read while no
-    // rules' task is open.
-    if rules.iter().any(Issue::is_open) {
-        let open_rules = by_number(gh.open_prs_labelled(labels::RULES).await?);
-        if let Some((task, pr)) =
-            harness_workflows::milestone_merge::rules_ready_to_merge(gh, &rules, &open_rules)
-                .await?
-        {
-            tasks_to_merge.push((task.number, pr.clone()));
-        }
-    }
+    let (rules_merge, rules_on_pr) = rules_train(gh, &rules).await?;
+    tasks_to_merge.extend(rules_merge);
+    // The settled contests, followed through for free: a few reads per
+    // contest whose PR or milestone is still open.
+    let settled =
+        contest::settled(gh, &closed_rules, &rules, &task_prs, &milestones, branch).await?;
     let boards_read = boards;
     let snapshot = Snapshot {
         tasks_to_merge,
@@ -637,6 +644,9 @@ async fn snapshot(
         review_backlog_full,
         catch_up: Vec::new(),
         catch_up_held: Vec::new(),
+        prs_waiting,
+        rules_on_pr,
+        settled,
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
@@ -648,6 +658,77 @@ async fn snapshot(
         })
         .or(idle);
     Ok((snapshot, idle, watching_ci))
+}
+
+/// The PRs that wait, the PRs to repair among the others, and the page of
+/// closed rules' issues read for it — the settled contests are followed
+/// through from the same page.
+///
+/// The rules' issues, open and closed, are read before the repairs: a PR
+/// whose contest is open waits, so does one whose contest closed and that
+/// is not resumed yet, and one a decision told to wait — no repair, no
+/// decision on its task, no merge (`common::contest`). Its review runs.
+async fn repairs_due(
+    gh: &dyn GitHub,
+    task_prs: &[Pr],
+    (fixable, reviewable): (&[Pr], &[Pr]),
+    rules: &[Issue],
+    log: &Logbook,
+) -> Outcome<(Vec<(Pr, contest::PrWait)>, Vec<Pr>, Vec<Issue>)> {
+    let closed = gh.issues_labelled(labels::RULES, "closed").await?;
+    let waiting = contest::waiting(gh, task_prs, rules, &closed).await?;
+    say_waits(&waiting, rules, log);
+    let due = candidates::due(
+        gh,
+        &contest::not_waiting(fixable, &waiting),
+        &contest::not_waiting(reviewable, &waiting),
+    )
+    .await?;
+    Ok((waiting, by_number(due), closed))
+}
+
+/// The rules' task whose PR the train merges now, if one, and the rules'
+/// tasks whose faithful PR is mergeable or still checking — neither tapped
+/// nor attempted again while it is.
+///
+/// The rules' PR sits on no board, so the train reads it here — once green
+/// it merges into the integration branch and the task closes, which is what
+/// frees the development the rules hold. Nothing is read while no rules'
+/// task is open.
+async fn rules_train(gh: &dyn GitHub, rules: &[Issue]) -> Outcome<(Option<(u64, Pr)>, Vec<u64>)> {
+    if !rules.iter().any(Issue::is_open) {
+        return Ok((None, Vec::new()));
+    }
+    let open_rules = by_number(gh.open_prs_labelled(labels::RULES).await?);
+    let stands = harness_workflows::milestone_merge::rules_prs(gh, rules, &open_rules).await?;
+    let merge = stands
+        .iter()
+        .find(|(_, _, stands)| *stands == RulesPr::Mergeable)
+        .map(|(task, pr, _)| (task.number, (*pr).clone()));
+    let on_pr = stands
+        .iter()
+        .filter(|(_, _, stands)| matches!(stands, RulesPr::Mergeable | RulesPr::Checking))
+        .map(|(task, _, _)| task.number)
+        .collect();
+    Ok((merge, on_pr))
+}
+
+/// Says, once a full read, each PR that waits and on what, and warns of an
+/// open contest that names no rule: it holds nothing beyond its PR.
+fn say_waits(waiting: &[(Pr, contest::PrWait)], rules: &[Issue], log: &Logbook) {
+    for (pr, on) in waiting {
+        log.say(&format!("watch: pr #{} waits on {}", pr.num, on.describe()));
+    }
+    for issue in rules.iter().filter(|issue| {
+        issue.is_open()
+            && contest::contested_pr(&issue.title).is_some()
+            && harness_workflows::common::dossier::rule_ids(&issue.body).is_empty()
+    }) {
+        log.warn(&format!(
+            "watch: contest #{} names no rule — it holds nothing beyond its PR",
+            issue.number
+        ));
+    }
 }
 
 /// How many task PRs are open — those into a milestone's branch, the

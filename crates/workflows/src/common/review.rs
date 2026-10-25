@@ -134,11 +134,15 @@ pub fn repairs_in_all(comments: &str) -> usize {
     comments.matches(FIX_MARKER).count()
 }
 
-/// The comments since the last decision to repair once more: what the cap
-/// counts in.
+/// The comments since the last decision to repair once more, or the last
+/// settled contest the PR resumed from (`common::contest::RESUMED`): what
+/// the cap counts in. A contest settled hands the PR fresh repairs — the
+/// test it was red on may have changed; a decided wait does not.
 fn since_decision(comments: &str) -> &str {
-    comments
-        .rfind(DECIDED_MARKER)
+    let decided = comments.rfind(DECIDED_MARKER);
+    let resumed = comments.rfind(crate::common::contest::RESUMED);
+    decided
+        .max(resumed)
         .and_then(|at| comments.get(at..))
         .unwrap_or(comments)
 }
@@ -210,6 +214,31 @@ mod tests {
         assert_eq!(repairs(&decided), 0);
         let again = format!("{decided} {review}");
         assert!(status(&again).wants_a_fix(), "one more repair is owed");
+    }
+
+    #[test]
+    fn a_resume_counts_the_repairs_anew() {
+        let review = format!("{MARKER}\n{BLOCKING}");
+        let used = format!("{FIX_MARKER} {review} {FIX_MARKER} {review}");
+        assert!(status(&used).exhausted());
+        let resumed = format!(
+            "{used}\n{}\ncontest #517 settled",
+            crate::common::contest::resumed_marker(517)
+        );
+        assert_eq!(repairs(&resumed), 0);
+        assert_eq!(
+            repairs_in_all(&resumed),
+            2,
+            "the model choice still counts them"
+        );
+        let once_more = format!("{resumed}\n{FIX_MARKER}\n{review}");
+        assert_eq!(repairs(&once_more), 1);
+        // A decided wait is no reset.
+        let waited = format!("{used}\n{}", crate::common::contest::waits_on_marker(20));
+        assert_eq!(repairs(&waited), 2);
+        // A decision to repair after the resume counts from itself.
+        let decided = format!("{once_more}\n{DECIDED_MARKER}");
+        assert_eq!(repairs(&decided), 0);
     }
 
     #[test]

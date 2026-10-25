@@ -13,7 +13,7 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
-use crate::common::{labels, review, sections};
+use crate::common::{contest, labels, review, sections};
 use crate::decide::data::decision::{self, Action as Act, Decided};
 use crate::decide::data::state::DecideState;
 
@@ -115,7 +115,7 @@ impl Apply {
     /// The PR gets the review that lets it through, so the merge train —
     /// a reviewed, mergeable, green PR of a `review-pending` task, or the
     /// rules' task's PR carrying this very decision
-    /// (`milestone_merge::rules_ready_to_merge`) — takes it once green and
+    /// (`milestone_merge::rules_prs`, `RulesPr::Mergeable`) — takes it once green and
     /// closes the task, and the task says so.
     async fn merge_when_green(
         &self,
@@ -198,12 +198,31 @@ impl Apply {
                 self.gh.add_label(issue.number, labels::READY).await?;
                 Ok(Act::Answer)
             }
-            (Act::Wait { on }, _) => {
+            (Act::Wait { on }, pr) => {
                 // The blocker holds the task until `on` lands, for free; one
                 // already there is not posted twice.
                 let blocked_by = self.gh.blocked_by(issue.number).await?;
                 if !blocked_by.iter().any(|blocker| blocker.number == on) {
                     self.gh.add_blocked_by(issue.number, on).await?;
+                }
+                // The wait is a fact of the PR too: no repair, decision or
+                // merge on it while `on` blocks (`common::contest::waiting`),
+                // whatever board the router reads that tick.
+                if let Some(pr) = pr {
+                    let comments = self.gh.pr_comments(&pr.num).await?;
+                    if !contest::waits_named(&comments).contains(&on) {
+                        self.gh
+                            .post_issue_comment(
+                                pr_number(pr)?,
+                                &format!(
+                                    "{}\nThe harness decided this PR waits on #{on}: {}\n\nNo \
+                                     repair, decision or merge until #{on} lands.",
+                                    contest::waits_on_marker(on),
+                                    decided.summary
+                                ),
+                            )
+                            .await?;
+                    }
                 }
                 Ok(Act::Wait { on })
             }
@@ -774,7 +793,62 @@ mod tests {
         assert!(
             !writes.contains(&Wrote::MergedPr("40".to_string()))
                 && !writes.contains(&Wrote::Label(40, labels::PR_FIX.to_string())),
-            "a wait touches no PR: {writes:?}"
+            "a wait neither merges nor repairs: {writes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_writes_waits_on_and_its_blocker_once() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            labels: vec![labels::AI_DECIDED.to_string()],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"wait","on":517,"summary":"the contest settles R10's test first"}"#,
+            Some(pr()),
+            &[labels::REVIEW_PENDING],
+        );
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        assert!(
+            writes.contains(&Wrote::BlockedByLink(15, 517)),
+            "{writes:?}"
+        );
+        let marked: Vec<&String> = writes
+            .iter()
+            .filter_map(|w| match w {
+                Wrote::Comment(40, said) => Some(said),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(marked.len(), 1, "{writes:?}");
+        assert!(
+            marked[0].starts_with(&contest::waits_on_marker(517)),
+            "{}",
+            marked[0]
+        );
+        assert!(marked[0].contains("the contest settles R10's test first"));
+        // Already marked on the PR: not marked twice.
+        let again = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            labels: vec![labels::AI_DECIDED.to_string()],
+            pr_comment_bodies: vec![("40".to_string(), contest::waits_on_marker(517))],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"wait","on":517,"summary":"still"}"#,
+            Some(pr()),
+            &[labels::REVIEW_PENDING],
+        );
+        apply(&again).run(&mut context).await.expect("applied");
+        assert!(
+            !again
+                .writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::Comment(40, _))),
+            "{:?}",
+            again.writes()
         );
     }
 }

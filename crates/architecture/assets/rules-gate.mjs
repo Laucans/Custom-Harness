@@ -23,13 +23,17 @@
 //       alone — only the rules' task writes them — and scripts/rules-runtime.sh
 //       alone: nobody does.
 //
-//   node scripts/rules-gate.mjs contest <pr>
+//   node scripts/rules-gate.mjs contest <pr> [<base>]
 //       A development that cannot meet a rule's test writes CONTEST.md at the
 //       root instead of changing it. Its pull request opens, once, the issue
 //       `Rules contested: PR #<pr>` (harness:rules, harness:ready) the rules'
 //       task settles, and fails while CONTEST.md is there: waiting while the
-//       issue is open, pointing to the decision once it is closed. Needs `gh`
-//       and GH_TOKEN.
+//       issue is open, pointing to the decision once it is closed. Measured
+//       against <base>, a CONTEST.md the change did not add or change — one
+//       it took from its base — is the base's: warned, and the gate passes,
+//       so one dispute never opens one issue per pull request. The harness
+//       deletes CONTEST.md itself once the contest is settled. Needs `gh` and
+//       GH_TOKEN.
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -132,10 +136,19 @@ function untouched(base) {
   return touched.length + runtime.length ? 1 : 0;
 }
 
-function contest(pr) {
+const warn = (line) => { process.stdout.write(`::warning::${line}\n`); };
+
+function contest(pr, base) {
   const path = join(root, 'CONTEST.md');
   if (!existsSync(path)) { say('no CONTEST.md: no rule contested'); return 0; }
   if (!/^[1-9][0-9]*$/.test(pr || '')) { fail('contest needs the pull request number'); return 1; }
+  if (base) {
+    const changed = execFileSync('git', ['diff', '--name-only', `${base}...HEAD`], { encoding: 'utf8' }).split('\n').filter(Boolean);
+    if (!changed.includes('CONTEST.md')) {
+      warn(`CONTEST.md is inherited from ${base}, not written by this change: its contest is the base's — the harness lifts it once settled`);
+      return 0;
+    }
+  }
   const title = `Rules contested: PR #${pr}`;
   const gh = (args) => execFileSync('gh', args, { encoding: 'utf8' });
   const found = JSON.parse(gh(['issue', 'list', '--state', 'all', '--label', 'harness:rules', '--search', `"${title}" in:title`, '--json', 'number,state,title']));
@@ -154,6 +167,6 @@ function contest(pr) {
 }
 
 const [mode, ...rest] = process.argv.slice(2);
-const run = { coverage: () => coverage(), status: () => status(rest), untouched: () => untouched(rest[0]), contest: () => contest(rest[0]) }[mode];
-if (!run) { say('usage: rules-gate.mjs coverage | status [--strict] [<status.jsonl>…] | untouched <base> | contest <pr>'); process.exit(2); }
+const run = { coverage: () => coverage(), status: () => status(rest), untouched: () => untouched(rest[0]), contest: () => contest(rest[0], rest[1]) }[mode];
+if (!run) { say('usage: rules-gate.mjs coverage | status [--strict] [<status.jsonl>…] | untouched <base> | contest <pr> [<base>]'); process.exit(2); }
 process.exit(run());

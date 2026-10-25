@@ -14,15 +14,15 @@
 //! judged by its own reader, who merges it. When the harness decided to
 //! merge it as it is while its checks still ran, that reader is gone and
 //! the decision is a review on the PR ([`review::decided_to_merge`]): the
-//! train takes it once green ([`rules_ready_to_merge`]) and closes the
-//! task — which is what frees the development the rules hold.
+//! train takes it once green ([`rules_prs`], [`RulesPr::Mergeable`]) and
+//! closes the task — which is what frees the development the rules hold.
 
 use harness_core::domain::{Issue, Outcome, Pr};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Logbook;
 
 use crate::common::branching::BaseHead;
-use crate::common::{catch_up, delivery, labels, review};
+use crate::common::{catch_up, contest, delivery, labels, review};
 use crate::dev_loop::data::tasks;
 
 /// The first task waiting on its PR, with that PR: the task is open and
@@ -69,6 +69,9 @@ pub fn candidates<'a>(board: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issue, &'a
 /// (PR #105, red on R4) stood first for three hours over #225 (PR #233,
 /// clean and green, the very change that makes R4 pass).
 ///
+/// The caller passes `open` without the PRs that wait
+/// (`contest::not_waiting`): a waiting PR is neither escalated nor merged.
+///
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
 /// or mergeability, or from the escalation's writes.
@@ -83,7 +86,7 @@ pub async fn ready_to_merge<'a>(
         match review::status(&comments) {
             review::Status::Clean => {}
             status if status.exhausted() => {
-                if escalate(gh, task, pr).await? {
+                if escalate(gh, task, pr, &comments).await? {
                     escalated.push((task.number, pr.reference()));
                 }
                 continue;
@@ -91,7 +94,9 @@ pub async fn ready_to_merge<'a>(
             _ => continue,
         }
         if gh.pr_mergeable(&pr.num).await? == Some(false) {
-            if review::repairs(&comments) >= review::MAX_FIXES && escalate(gh, task, pr).await? {
+            if review::repairs(&comments) >= review::MAX_FIXES
+                && escalate(gh, task, pr, &comments).await?
+            {
                 escalated.push((task.number, pr.reference()));
             }
             continue;
@@ -102,7 +107,7 @@ pub async fn ready_to_merge<'a>(
             // the repairs did not settle.
             if review::repairs(&comments) >= review::MAX_FIXES
                 && !gh.pr_failing_checks(&pr.num).await?.is_empty()
-                && escalate(gh, task, pr).await?
+                && escalate(gh, task, pr, &comments).await?
             {
                 escalated.push((task.number, pr.reference()));
             }
@@ -142,38 +147,76 @@ pub fn rules_candidates<'a>(rules: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issu
         .collect()
 }
 
-/// The rules' task whose PR the train merges into the integration branch.
+/// Where a rules' task's open PR stands with the train.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RulesPr {
+    /// Judged faithful (or decided merged), mergeable and green: the train
+    /// merges it.
+    Mergeable,
+    /// Judged faithful (or decided merged), no check failed, not green yet:
+    /// its checks still run. The task is neither tapped nor attempted again
+    /// meanwhile — a second attempt would judge the same PR faithful again.
+    Checking,
+    /// Judged faithful (or decided merged), and a check failed or its
+    /// branch conflicts with the base: attempted again, its write prompt
+    /// checks `rules/<n>` out and answers its review.
+    Red,
+    /// No verdict yet, or judged unfaithful: its own reader re-taps it.
+    Unjudged,
+}
+
+/// The open rules' PRs ([`rules_candidates`]), each with where it stands.
 ///
-/// The first of [`rules_candidates`] whose PR its fidelity reader judged
-/// faithful ([`review::judged_faithful`]) or the harness decided to merge
-/// as it is ([`review::decided_to_merge`]), which merges and is green now.
-/// A rules' PR is never agent-reviewed: its own reader judges it, and the
-/// harness merges it — a session merges no PR — so a clean review alone is
-/// not enough: the verdict or the decision is. One whose checks still run,
-/// or whose branch conflicts since, waits.
+/// The train merges the first [`RulesPr::Mergeable`]: its fidelity reader
+/// judged it faithful ([`review::judged_faithful`]) or the harness decided
+/// to merge it as it is ([`review::decided_to_merge`]), and it merges and
+/// is green now. A rules' PR is never agent-reviewed: its own reader judges
+/// it, and the harness merges it — a session merges no PR — so a clean
+/// review alone is not enough: the verdict or the decision is. One whose
+/// checks still run, or whose branch conflicts since, waits.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
 /// or mergeability.
-pub async fn rules_ready_to_merge<'a>(
+pub async fn rules_prs<'a>(
+    gh: &dyn GitHub,
+    rules: &'a [Issue],
+    open: &'a [Pr],
+) -> Outcome<Vec<(&'a Issue, &'a Pr, RulesPr)>> {
+    let mut found = Vec::new();
+    for (task, pr) in rules_candidates(rules, open) {
+        let comments = gh.pr_comments(&pr.num).await?;
+        let stands = if !(review::judged_faithful(&comments) || review::decided_to_merge(&comments))
+        {
+            RulesPr::Unjudged
+        } else if gh.pr_mergeable(&pr.num).await? == Some(false) {
+            RulesPr::Red
+        } else if gh.pr_checks_green(&pr.num).await? {
+            RulesPr::Mergeable
+        } else if gh.pr_failing_checks(&pr.num).await?.is_empty() {
+            RulesPr::Checking
+        } else {
+            RulesPr::Red
+        };
+        found.push((task, pr, stands));
+    }
+    Ok(found)
+}
+
+/// The rules' task whose PR the train merges — the first of [`rules_prs`]
+/// that is [`RulesPr::Mergeable`], as the launcher's train takes it; for
+/// the tests, which read the train's choice.
+#[cfg(test)]
+pub(crate) async fn rules_ready_to_merge<'a>(
     gh: &dyn GitHub,
     rules: &'a [Issue],
     open: &'a [Pr],
 ) -> Outcome<Option<(&'a Issue, &'a Pr)>> {
-    for (task, pr) in rules_candidates(rules, open) {
-        let comments = gh.pr_comments(&pr.num).await?;
-        if !(review::judged_faithful(&comments) || review::decided_to_merge(&comments)) {
-            continue;
-        }
-        if gh.pr_mergeable(&pr.num).await? == Some(false) {
-            continue;
-        }
-        if !gh.pr_checks_green(&pr.num).await? {
-            continue;
-        }
-        return Ok(Some((task, pr)));
-    }
-    Ok(None)
+    Ok(rules_prs(gh, rules, open)
+        .await?
+        .into_iter()
+        .find(|(_, _, stands)| *stands == RulesPr::Mergeable)
+        .map(|(task, pr, _)| (task, pr)))
 }
 
 /// What one merge attempt came to.
@@ -271,11 +314,18 @@ const REVIEW_DECISIONS: u32 = 2;
 /// Its PR's review stayed blocking, or its branch conflicting, after every
 /// repair it gets: `needs-decision` on the task, with the PR named — the
 /// `decide` workflow takes it at the next tick (merge as it is, repair once
-/// more, or cut the task) and tells the human what it decided.
+/// more, wait, or cut the task) and tells the human what it decided.
+///
+/// A decided `wait` is never a round: the question is asked again at the
+/// same round once the wait settles. Past `REVIEW_DECISIONS` rounds, or
+/// [`contest::MAX_WAITS`] decided waits on the PR (`comments`, its
+/// comments as read), the PR is a human's, told what was decided — the
+/// repairs and waits counted from the PR's own markers, and the last
+/// decision quoted.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from the label or the comment write.
-pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
+pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr, comments: &str) -> Outcome<bool> {
     if task.has(labels::NEEDS_DECISION) || task.has(labels::HUMAN) {
         return Ok(false);
     }
@@ -294,20 +344,36 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
     // the Session aggregate).
     let asked = crate::common::sections::parse(&task.body)
         .get(crate::common::sections::DECISION)
-        .and_then(|text| crate::common::decision::Question::parse(text));
-    let round = asked
-        .filter(|q| q.kind.as_deref() == Some("review"))
-        .map_or(1, |q| q.round.saturating_add(1));
+        .and_then(|text| crate::common::decision::Question::parse(text))
+        .filter(|q| q.kind.as_deref() == Some("review"));
+    let last_verdict = asked.as_ref().and_then(|q| q.verdict.clone());
+    // A wait decided is not a repair bought (ForgeDesMondes' #486,
+    // 2026-10-24: two "wait on #517" verdicts read as two rounds, and a
+    // human was told the harness "decided 2 times to repair").
+    let waited = last_verdict
+        .as_deref()
+        .is_some_and(|verdict| verdict.trim_start().starts_with("wait"));
+    let round = asked.as_ref().map_or(1, |q| {
+        if waited {
+            q.round
+        } else {
+            q.round.saturating_add(1)
+        }
+    });
+    let waits = contest::waits_decided(comments);
     // Each decision that says "repair" buys two more repairs: past
     // `REVIEW_DECISIONS` of them, the PR is a human's, not a third paid
-    // cycle (ForgeDesMondes' #312, 2026-10-20: repair, decide, repair, decide).
-    if round > REVIEW_DECISIONS {
+    // cycle (ForgeDesMondes' #312, 2026-10-20: repair, decide, repair,
+    // decide) — and so is one the harness keeps deciding to wait on.
+    if round > REVIEW_DECISIONS || waits >= contest::MAX_WAITS {
+        let repairs = comments.matches(review::DECIDED_MARKER).count();
         gh.post_issue_comment(
             task.number,
             &format!(
-                "{why} The harness already decided {REVIEW_DECISIONS} times to repair it; \
-                 it stops spending on it. A human decides: repair it by hand, merge it \
-                 as it is, or cut the task — then remove `{}`.",
+                "{why} The harness decided {repairs} repair(s) and {waits} wait(s) on it (last \
+                 decision: {}); it stops spending on it. A human decides: repair it by hand, \
+                 merge it as it is, or cut the task — then remove `{}`.",
+                last_verdict.as_deref().unwrap_or("none"),
                 labels::HUMAN
             ),
         )
@@ -330,7 +396,7 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr) -> Outcome<bool> {
         task.number,
         &format!(
             "{why} The harness decides at the next tick — repair it once more, merge it \
-             as it is, or cut the task — and says what it decided; answer under \
+             as it is, wait, or cut the task — and says what it decided; answer under \
              `## Decision` first to decide it yourself."
         ),
     )
@@ -413,7 +479,7 @@ mod tests {
         );
         let gh = FakeGitHub::default();
         assert!(
-            escalate(&gh, &stale, &pr("279", "feat/create-session"))
+            escalate(&gh, &stale, &pr("279", "feat/create-session"), "")
                 .await
                 .expect("escalates")
         );
@@ -445,7 +511,7 @@ mod tests {
         again.body = body;
         let gh = FakeGitHub::default();
         assert!(
-            escalate(&gh, &again, &pr("279", "feat/create-session"))
+            escalate(&gh, &again, &pr("279", "feat/create-session"), "")
                 .await
                 .expect("escalates")
         );
@@ -463,7 +529,7 @@ mod tests {
         third.body = body;
         let gh = FakeGitHub::default();
         assert!(
-            escalate(&gh, &third, &pr("279", "feat/create-session"))
+            escalate(&gh, &third, &pr("279", "feat/create-session"), "")
                 .await
                 .expect("hands over")
         );
@@ -475,11 +541,120 @@ mod tests {
         held.labels.push(labels::HUMAN.to_string());
         let gh = FakeGitHub::default();
         assert!(
-            !escalate(&gh, &held, &pr("279", "feat/create-session"))
+            !escalate(&gh, &held, &pr("279", "feat/create-session"), "")
                 .await
                 .expect("reads")
         );
         assert!(gh.writes().is_empty(), "gh.writes() should be empty");
+    }
+
+    /// Task #486's body once `decide` answered its review question.
+    fn decided(round: u32, verdict: &str) -> Issue {
+        let mut decided = task(486, &[labels::AGENT, labels::REVIEW_PENDING], "feat/scene");
+        decided.body = format!(
+            "{}\n## Decision\n\nkind: review\nblocks: PR #516 still does not merge\nround: \
+             {round}\ndecided-by: ai\nverdict: {verdict}\n",
+            decided.body
+        );
+        decided
+    }
+
+    /// The body `escalate` wrote, if it wrote one.
+    fn body_written(gh: &FakeGitHub) -> Option<String> {
+        gh.writes().iter().find_map(|w| match w {
+            Wrote::Body(486, body) => Some(body.clone()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_decided_wait_is_not_a_round() {
+        let gh = FakeGitHub::default();
+        let waited = decided(1, "wait — #517 settles the test first (4/5)");
+        let comments = contest::waits_on_marker(517);
+        assert!(
+            escalate(&gh, &waited, &pr("516", "feat/scene"), &comments)
+                .await
+                .expect("asked")
+        );
+        let body = body_written(&gh).expect("the question asked again");
+        assert!(body.contains("round: 1"), "{body}");
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(486, labels::NEEDS_DECISION.to_string()))
+        );
+        assert!(
+            !gh.writes()
+                .contains(&Wrote::Label(486, labels::HUMAN.to_string()))
+        );
+        // Waited at round 2 too: still round 2, still a decision.
+        let gh = FakeGitHub::default();
+        let waited = decided(2, "wait — #520 first (3/5)");
+        assert!(
+            escalate(&gh, &waited, &pr("516", "feat/scene"), &comments)
+                .await
+                .expect("asked")
+        );
+        assert!(body_written(&gh).expect("asked").contains("round: 2"));
+        assert!(
+            !gh.writes()
+                .contains(&Wrote::Label(486, labels::HUMAN.to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_human_comment_counts_the_repairs_decided_not_the_rounds() {
+        // Two waits (one before the deploy wrote no marker), then two
+        // repairs decided: round 2 repaired, so a third round is a human's.
+        let gh = FakeGitHub::default();
+        let repaired = decided(2, "repair — fix the slug mapping (4/5)");
+        let comments = format!(
+            "{}\n{}\nrepair\n{}\nrepair\n",
+            contest::waits_on_marker(517),
+            review::DECIDED_MARKER,
+            review::DECIDED_MARKER
+        );
+        assert!(
+            escalate(&gh, &repaired, &pr("516", "feat/scene"), &comments)
+                .await
+                .expect("handed over")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(486, labels::HUMAN.to_string())));
+        let said = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Comment(486, said) => Some(said.clone()),
+                _ => None,
+            })
+            .expect("the human is told");
+        assert!(said.contains("decided 2 repair(s) and 1 wait(s)"), "{said}");
+        assert!(
+            said.contains("last decision: repair — fix the slug mapping (4/5)"),
+            "{said}"
+        );
+    }
+
+    #[tokio::test]
+    async fn waits_past_their_cap_are_a_human_s() {
+        let gh = FakeGitHub::default();
+        let waited = decided(1, "wait — #520 first (3/5)");
+        let comments = format!(
+            "{}\n{}",
+            contest::waits_on_marker(517),
+            contest::waits_on_marker(520)
+        );
+        assert!(
+            escalate(&gh, &waited, &pr("516", "feat/scene"), &comments)
+                .await
+                .expect("handed over")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(486, labels::HUMAN.to_string())));
+        assert!(!writes.contains(&Wrote::Label(486, labels::NEEDS_DECISION.to_string())));
+        assert!(writes.iter().any(
+            |w| matches!(w, Wrote::Comment(486, said) if said.contains("0 repair(s) and 2 wait(s)"))
+        ));
     }
 
     #[tokio::test]
@@ -618,7 +793,7 @@ mod tests {
     async fn a_review_its_repairs_did_not_clear_goes_to_a_human_once() {
         let gh = FakeGitHub::default();
         let stuck = task(64, &[labels::AGENT, labels::REVIEW_PENDING], "chore/rust");
-        escalate(&gh, &stuck, &pr("68", "chore/rust"))
+        escalate(&gh, &stuck, &pr("68", "chore/rust"), "")
             .await
             .expect("escalated");
         assert!(
@@ -627,7 +802,7 @@ mod tests {
         );
         let decided = task(64, &[labels::AGENT, labels::NEEDS_DECISION], "chore/rust");
         let again = FakeGitHub::default();
-        escalate(&again, &decided, &pr("68", "chore/rust"))
+        escalate(&again, &decided, &pr("68", "chore/rust"), "")
             .await
             .expect("nothing to do");
         assert_eq!(again.writes(), [] as [crate::common::fake_github::Wrote; 0]);
@@ -797,6 +972,7 @@ mod tests {
         let pending = FakeGitHub {
             pr_comment_bodies: vec![("501".to_string(), verdict("faithful"))],
             pr_checks: HashMap::from([("501".to_string(), false)]),
+            failing_checks: HashMap::from([("501".to_string(), Vec::new())]),
             ..FakeGitHub::default()
         };
         assert!(
@@ -805,6 +981,102 @@ mod tests {
                 .expect("read")
                 .is_none(),
             "faithful but its checks still run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_faithful_rules_pr_with_no_check_at_all_is_held_within_a_bound() {
+        // No check row at all (the workflow never triggered): not green,
+        // nothing failed — it reads as checking, which the watch holds
+        // within a bound (`routing::RULES_HELD_READS`), never forever.
+        let rules = vec![rules_task(9, "open")];
+        let open = [rules_pr("501", 9)];
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![(
+                "501".to_string(),
+                format!("{}faithful -->", review::FIDELITY),
+            )],
+            pr_checks: HashMap::from([("501".to_string(), false)]),
+            failing_checks: HashMap::from([("501".to_string(), Vec::new())]),
+            ..FakeGitHub::default()
+        };
+        let stands: Vec<(u64, RulesPr)> = rules_prs(&gh, &rules, &open)
+            .await
+            .expect("read")
+            .into_iter()
+            .map(|(task, _, stands)| (task.number, stands))
+            .collect();
+        assert_eq!(
+            stands,
+            [(9, RulesPr::Checking)],
+            "the bound is the watch's: routing::bound_rules_on_pr"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_faithful_rules_pr_with_checks_running_is_checking_and_one_red_is_red() {
+        let rules = vec![
+            rules_task(9, "open"),
+            rules_task(10, "open"),
+            rules_task(11, "open"),
+            rules_task(12, "open"),
+            rules_task(13, "open"),
+        ];
+        let open = [
+            rules_pr("501", 9),
+            rules_pr("502", 10),
+            rules_pr("503", 11),
+            rules_pr("504", 12),
+            rules_pr("505", 13),
+        ];
+        let faithful = format!("{}faithful -->", review::FIDELITY);
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![
+                ("501".to_string(), faithful.clone()),
+                ("502".to_string(), faithful.clone()),
+                ("503".to_string(), faithful.clone()),
+                ("504".to_string(), faithful),
+                (
+                    "505".to_string(),
+                    format!("{}unfaithful -->", review::FIDELITY),
+                ),
+            ],
+            pr_checks: HashMap::from([
+                ("501".to_string(), true),
+                ("502".to_string(), false),
+                ("503".to_string(), false),
+                ("504".to_string(), true),
+            ]),
+            failing_checks: HashMap::from([
+                ("502".to_string(), Vec::new()),
+                ("503".to_string(), vec!["rust — FAILURE".to_string()]),
+            ]),
+            pr_mergeable: HashMap::from([("504".to_string(), Some(false))]),
+            ..FakeGitHub::default()
+        };
+        let stands: Vec<(u64, RulesPr)> = rules_prs(&gh, &rules, &open)
+            .await
+            .expect("read")
+            .into_iter()
+            .map(|(task, _, stands)| (task.number, stands))
+            .collect();
+        assert_eq!(
+            stands,
+            [
+                (9, RulesPr::Mergeable),
+                (10, RulesPr::Checking),
+                (11, RulesPr::Red),
+                (12, RulesPr::Red),
+                (13, RulesPr::Unjudged),
+            ],
+            "faithful and conflicting is red: attempted again to rebase"
+        );
+        assert_eq!(
+            rules_ready_to_merge(&gh, &rules, &open)
+                .await
+                .expect("read")
+                .map(|(t, _)| t.number),
+            Some(9)
         );
     }
 
@@ -835,6 +1107,7 @@ mod tests {
         let pending = FakeGitHub {
             pr_comment_bodies: vec![("231".to_string(), decided.clone())],
             pr_checks: HashMap::from([("231".to_string(), false)]),
+            failing_checks: HashMap::from([("231".to_string(), Vec::new())]),
             ..FakeGitHub::default()
         };
         assert!(

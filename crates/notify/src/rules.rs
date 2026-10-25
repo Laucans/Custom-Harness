@@ -304,6 +304,7 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::HumanTaskOpened { .. }
         | Event::ContractChangeAsked { .. }
         | Event::ContractEvolved { .. } => progress(board, event, at),
+        Event::SettlingStalled { .. } | Event::Resumed { .. } => settling(board, event, at),
         Event::BaseRed { branch, sha } => base_red(board, branch, sha.as_deref(), at),
         Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
         Event::WorkKept { .. } => work_kept(board, event, at),
@@ -326,6 +327,28 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::GateChecked { .. }
         | Event::ChecksFailed { .. }
         | Event::TaskWaits { .. } => {}
+    }
+}
+
+/// A PR whose contest closed and that cannot resume: told once its wait
+/// stalls, cleared when it resumes. A contest followed through asks
+/// nothing of anyone otherwise: the PR resumes on its own.
+fn settling(board: &mut Board, event: &Event, at: &str) {
+    match event {
+        Event::SettlingStalled { contest, pr, reads } => board.add(Notification::once(
+            format!("settling:#{pr}"),
+            Level::Warning,
+            format!("PR #{pr} cannot resume after contest #{contest}"),
+            format!(
+                "the contest is settled, but after {reads} board reads its base still lacks the \
+                 settled rules — is its milestone's catch-up held? Catch the branch up, and the \
+                 PR resumes on its own"
+            ),
+            at,
+            pr.parse().ok().map(issue),
+        )),
+        Event::Resumed { pr: Some(pr), .. } => board.clear(&format!("settling:#{pr}")),
+        _ => {}
     }
 }
 
@@ -773,6 +796,63 @@ mod tests {
             ),
         ]);
         assert!(green.get("base-red:main_agent").is_none(), "taken back");
+    }
+
+    #[test]
+    fn a_stalled_settling_pr_is_told_until_it_resumes() {
+        let stalled = |minute| {
+            stored(
+                minute,
+                Event::SettlingStalled {
+                    contest: 517,
+                    pr: "516".to_string(),
+                    reads: 60,
+                },
+            )
+        };
+        let told = from_events(&[stalled(1)]);
+        let said = told.get("settling:#516").expect("told");
+        assert_eq!(said.level, Level::Warning);
+        assert_eq!(said.title, "PR #516 cannot resume after contest #517");
+        assert!(
+            said.detail.contains("60 board reads") && said.detail.contains("catch-up held"),
+            "{}",
+            said.detail
+        );
+        assert_eq!(said.link, Some(Link::Issue { number: 516 }));
+        let resumed = |pr: Option<&str>| {
+            stored(
+                2,
+                Event::Resumed {
+                    contest: 517,
+                    pr: pr.map(ToString::to_string),
+                    branch: None,
+                },
+            )
+        };
+        assert!(
+            from_events(&[stalled(1), resumed(Some("516"))])
+                .get("settling:#516")
+                .is_none(),
+            "taken back"
+        );
+        assert!(
+            from_events(&[stalled(1), resumed(Some("600"))])
+                .get("settling:#516")
+                .is_some(),
+            "another PR's resume takes nothing back"
+        );
+        assert!(
+            from_events(&[stalled(1), resumed(None)])
+                .get("settling:#516")
+                .is_some()
+        );
+        assert!(
+            from_events(&[resumed(Some("516"))])
+                .get("settling:#516")
+                .is_none(),
+            "a resume alone tells nothing"
+        );
     }
 
     #[test]

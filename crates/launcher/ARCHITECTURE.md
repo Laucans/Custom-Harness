@@ -235,8 +235,28 @@ until green — runs still in progress on the fix's push hold as the red did,
 while the issue is open — and green closes the issue and the jobs resume.
 The rules' task's PR, decided merged by the harness while its checks ran,
 sits on no board: the snapshot reads it on its own
-(`milestone_merge::rules_ready_to_merge`) and the train merges it into the
-integration branch once green. `--dry-run` reads and says, writes nothing.
+(`milestone_merge::rules_prs`, `rules_train`) and the train merges it into the
+integration branch once green; one judged faithful whose checks still run
+(`RulesPr::Checking`) is `rules_on_pr`, neither tapped nor attempted again —
+`routing::RULES_HELD_READS` full reads at most (`routing::bound_rules_on_pr`,
+before the taps), then released with a warning.
+**A PR waits when the board says it waits** (`repairs_due`,
+`workflows::common::contest::waiting`, the open and the closed rules' issues
+read first): its contest open, its latest contest closed and not resumed yet,
+or an issue a decided `wait` named still blocking — it is left out of the
+repairs and the merges, and its task's decision is not routed; each full read
+says `watch: pr #N waits on …`, and warns of an open contest naming no rule.
+A PR still waiting on a settled contest after `routing::SETTLING_TELL` (60)
+full reads is told once (`SettlingStalled`, a notification cleared by its
+`Resumed`): its base never took the rules — a catch-up held. A
+settled contest (`contest::settled`, one page of closed rules' issues) is
+`Route::Resume`, free, weight 1005 — after the catch-ups, before the merges,
+keyed on its PR (or on the milestone whose branch it lifts on, so that
+branch's catch-up goes first): `run_resume` deletes `CONTEST.md` with a
+contents API commit — or, with no lift of its own, merges a task PR's base
+into its head so its checks run again — and marks the PR resumed
+(`Resumed`), no checkout.
+`--dry-run` reads and says, writes nothing.
 
 Three rules, and they are not symmetric:
 

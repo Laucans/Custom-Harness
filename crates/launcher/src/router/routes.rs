@@ -111,6 +111,9 @@ pub(super) async fn dispatched(
             .await;
             None
         }
+        Route::Resume { contest, pr, lift } => {
+            run_resume(gh, contest, pr, lift, args.dry_run, log).await
+        }
         Route::DevLoop { milestone } | Route::DevTask { milestone, .. } => {
             run_dev_loop(here, gh, milestone, args, log)
                 .await
@@ -431,6 +434,7 @@ pub(super) fn lane_work(route: &Route) -> Option<(RouteKind, u64, String)> {
         Route::Arbiter { issue } => plain(RouteKind::Arbiter, *issue),
         Route::TestDebt { issue } => plain(RouteKind::TestDebt, *issue),
         Route::CatchUp { .. }
+        | Route::Resume { .. }
         | Route::MergeIntoMilestone { .. }
         | Route::MergeMainAgent { .. }
         | Route::DevLoop { .. }
@@ -610,6 +614,35 @@ pub(super) async fn run_milestone_merge(
         Err(halt) => {
             log.error(&format!("watch: milestone_merge -> {}", halt.reason()));
             Some(("milestone_merge", halt))
+        }
+    }
+}
+
+/// Follows a settled contest through (`common::contest::resume`): a few
+/// GitHub calls, no checkout. A dry run says what it would do.
+async fn run_resume(
+    gh: &dyn GitHub,
+    contest: u64,
+    pr: Option<String>,
+    lift: Option<String>,
+    dry_run: bool,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    let settled = harness_workflows::common::contest::Settled { contest, pr, lift };
+    if dry_run {
+        log.say(&format!(
+            "watch: resume -> dry run, nothing written: {settled:?}"
+        ));
+        return None;
+    }
+    match harness_workflows::common::contest::resume(gh, &settled, log).await {
+        Ok(()) => None,
+        Err(halt) => {
+            log.error(&format!(
+                "watch: resume -> contest #{contest}: {}",
+                halt.reason()
+            ));
+            Some(("resume", halt))
         }
     }
 }
@@ -948,6 +981,11 @@ mod lane_route_tests {
                 milestone: 3,
                 task: 4,
             },
+            Route::Resume {
+                contest: 517,
+                pr: Some("516".to_string()),
+                lift: None,
+            },
             Route::Nothing,
         ] {
             assert_eq!(lane_work(&free), None, "{free:?}");
@@ -1014,6 +1052,40 @@ mod merge_route_tests {
             residual[0].ends_with("a conflict no script solves, on a.rs"),
             "{residual:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_resume_is_said_on_a_dry_run_and_a_refused_one_is_the_route_s_failure() {
+        let lines = Rc::new(Lines::default());
+        let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+        let dry = run_resume(
+            &NoGitHub,
+            517,
+            Some("516".to_string()),
+            Some("feat/scene".to_string()),
+            true,
+            &log,
+        )
+        .await;
+        assert!(dry.is_none());
+        assert!(
+            lines.0.borrow()[0].starts_with("watch: resume -> dry run, nothing written"),
+            "{:?}",
+            lines.0.borrow()
+        );
+        let refused = run_resume(
+            &NoGitHub,
+            517,
+            None,
+            Some("feat/scene".to_string()),
+            false,
+            &Logbook::null(),
+        )
+        .await;
+        let Some((route, _)) = refused else {
+            panic!("a refused lift is the route's failure");
+        };
+        assert_eq!(route, "resume");
     }
 
     #[tokio::test]
