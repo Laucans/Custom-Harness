@@ -246,6 +246,68 @@ pub fn holes_left(disk: &dyn Disk, root: &Path, skeleton: &[String]) -> Vec<Stri
         .collect()
 }
 
+/// What a gate of the round says when it refuses the task's pull request.
+pub(crate) struct Refusal<'a> {
+    /// The journal's tag (`architecture`).
+    pub tag: &'a str,
+    /// The gate, as the review names it (`the architecture gate`).
+    pub gate: &'a str,
+    /// The sentence the findings are listed under.
+    pub lead: &'a str,
+}
+
+/// The findings become the PR's review, blocking, and its repair is
+/// asked: the round's session is gone, the PR is open with the drift on
+/// it, and nothing else would stop the train or pay for the fix. The
+/// task is marked `review-pending` like any delivered write side, so a
+/// retake does not pay `/code` again (#136 was, at 16:25Z and 16:51Z,
+/// and #244's PR #252 stood `to-review` with the mock-up's model eaten).
+pub(crate) async fn ask_repair(
+    gh: &dyn GitHub,
+    ctx: &Context<Loop>,
+    pr: &Pr,
+    refusal: &Refusal<'_>,
+    found: &[String],
+) -> Outcome<()> {
+    let number: u64 = pr
+        .num
+        .parse()
+        .map_err(|_| Halt::Failed(format!("PR {} has no number to label", pr.reference())))?;
+    let task: u64 = ctx.state.task.number.parse().map_err(|_| {
+        Halt::Failed(format!(
+            "unreadable task number: {:?}",
+            ctx.state.task.number
+        ))
+    })?;
+    gh.post_issue_comment(
+        number,
+        &format!(
+            "{}\n## 🤖 Review notes — {}\n\n{}\n- {}\n\n{} blocking — {} refuses the change \
+             as it stands\n{}",
+            review::MARKER,
+            refusal.gate,
+            refusal.lead,
+            found.join("\n- "),
+            review::VERDICT_LINE,
+            refusal.gate,
+            review::BLOCKING
+        ),
+    )
+    .await?;
+    if !pr.labels.iter().any(|label| label == labels::PR_FIX) {
+        gh.add_label(number, labels::PR_FIX).await?;
+    }
+    gh.add_label(task, labels::REVIEW_PENDING).await?;
+    ctx.traces.say(&format!(
+        "{}: PR {} reviewed as blocking and {} asked; #{task} marked {}",
+        refusal.tag,
+        pr.reference(),
+        labels::PR_FIX,
+        labels::REVIEW_PENDING
+    ));
+    Ok(())
+}
+
 /// The round kept the architecture: see the module.
 pub struct ArchitectureHolds {
     /// What reads the checkout.
@@ -275,51 +337,6 @@ impl ArchitectureHolds {
             files.len()
         ));
         Some((pr, files))
-    }
-
-    /// The findings become the PR's review, blocking, and its repair is
-    /// asked: the round's session is gone, the PR is open with the drift on
-    /// it, and nothing else would stop the train or pay for the fix. The
-    /// task is marked `review-pending` like any delivered write side, so a
-    /// retake does not pay `/code` again (#136 was, at 16:25Z and 16:51Z,
-    /// and #244's PR #252 stood `to-review` with the mock-up's model eaten).
-    async fn ask_repair(&self, ctx: &Context<Loop>, pr: &Pr, found: &[String]) -> Outcome<()> {
-        let number: u64 = pr
-            .num
-            .parse()
-            .map_err(|_| Halt::Failed(format!("PR {} has no number to label", pr.reference())))?;
-        let task: u64 = ctx.state.task.number.parse().map_err(|_| {
-            Halt::Failed(format!(
-                "unreadable task number: {:?}",
-                ctx.state.task.number
-            ))
-        })?;
-        self.gh
-            .post_issue_comment(
-                number,
-                &format!(
-                    "{}\n## 🤖 Review notes — the architecture gate\n\nThe architecture no \
-                     longer holds with this change (the repository's gates check the same \
-                     rules):\n- {}\n\n{} blocking — the architecture gate refuses the change \
-                     as it stands\n{}",
-                    review::MARKER,
-                    found.join("\n- "),
-                    review::VERDICT_LINE,
-                    review::BLOCKING
-                ),
-            )
-            .await?;
-        if !pr.labels.iter().any(|label| label == labels::PR_FIX) {
-            self.gh.add_label(number, labels::PR_FIX).await?;
-        }
-        self.gh.add_label(task, labels::REVIEW_PENDING).await?;
-        ctx.traces.say(&format!(
-            "architecture: PR {} reviewed as blocking and {} asked; #{task} marked {}",
-            pr.reference(),
-            labels::PR_FIX,
-            labels::REVIEW_PENDING
-        ));
-        Ok(())
     }
 
     /// The task's pull request, when it is still open on a branch this
@@ -452,7 +469,19 @@ impl Verification<Loop> for ArchitectureHolds {
             return Ok(Verdict::Continue);
         }
         if let Some(pr) = &pr {
-            self.ask_repair(ctx, pr, &found).await?;
+            ask_repair(
+                self.gh.as_ref(),
+                ctx,
+                pr,
+                &Refusal {
+                    tag: "architecture",
+                    gate: "the architecture gate",
+                    lead: "The architecture no longer holds with this change (the repository's \
+                           gates check the same rules):",
+                },
+                &found,
+            )
+            .await?;
         }
         Err(Halt::Halted(format!(
             "the architecture no longer holds after #{} — fix these before anything else builds \

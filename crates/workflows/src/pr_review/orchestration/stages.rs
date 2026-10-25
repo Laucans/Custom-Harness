@@ -65,6 +65,20 @@ are there: a task's PR that changes `rules.json`, `tests/rules/` or
 the issue's `## Rules` names whose test the `rules-hold` check still shows
 red.
 
+Then the acceptance criteria, one by one, as the harness numbered them —
+use these numbers, never renumber the issue:
+{criteria}
+Each ACk must be named by a test the diff adds — a comment `// ACk: …` on
+the test or just above it, a name an earlier task left in the file proves
+nothing — or be pointed to an existing test in the PR body on a line
+`ACk: covered by <path>[::<test>] — <why>` whose test does prove it (that
+test is never edited: an edit to it, or to a rule under `tests/rules/`, is
+a drift), or be declared there on a line
+`ACk: not testable here — <reason>` whose reason holds. A criterion with
+none of these, or whose test does not check what it claims, is uncovered:
+list it under **Gaps with the SPEC** as `ACk uncovered — <the criterion>`,
+and any uncovered criterion is blocking.
+
 When the change adds or changes a DataCapability or a Capability, read it
 against the deviations its neighbours are known to carry — hints for
 \"Worth checking first\", never blocking by themselves (the gates
@@ -121,8 +135,9 @@ End the comment with ONE last line, alone, that the loop reads to decide
 what happens next:
   VERDICT: blocking — <the defect, in a few words>
 when the batch must not be merged as it is: a correctness bug, a security
-hole, a gate or test that can pass without checking what it claims, or a
-spec requirement missing. A repair session will be sent with your notes.
+hole, a gate or test that can pass without checking what it claims, a
+spec requirement missing, or an acceptance criterion uncovered. A repair
+session will be sent with your notes.
   VERDICT: clean
 otherwise — style, naming, simplifications, nice-to-haves and open questions
 never block. When in doubt, it is clean: a blocking verdict costs a repair
@@ -235,6 +250,27 @@ mod tests {
             "data-capability-conventions",
         ] {
             assert!(flat.contains(part), "the brief names {part}");
+        }
+    }
+
+    #[test]
+    fn the_brief_blocks_on_an_acceptance_criterion_no_test_names() {
+        let flat = BRIEF_PROMPT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        for part in [
+            "{criteria}",
+            "never renumber the issue",
+            "`// ACk: …`",
+            "`ACk: covered by <path>[::<test>] — <why>`",
+            "that test is never edited",
+            "`ACk: not testable here — <reason>`",
+            "`ACk uncovered — <the criterion>`",
+            "any uncovered criterion is blocking",
+            "or an acceptance criterion uncovered",
+        ] {
+            assert!(flat.contains(part), "the brief says {part}");
         }
     }
 

@@ -425,7 +425,8 @@ fn agent_loop_line() -> Line {
                 Some(gate(
                     "code must keep the architecture",
                     "Static analysis of the checkout: the agent-native architecture still \
-                     holds, and every Concept a Capability implements is documented.",
+                     holds, every Concept a Capability implements is documented, and every \
+                     acceptance criterion is named by a test of the pull request.",
                 )),
             ),
             vec![scanner(gate(
@@ -725,7 +726,9 @@ fn pr_fix_line() -> Line {
                 "repair and push",
                 Kind::Builder,
                 "sonnet",
-                "Repairs the branch and pushes once — no second attempt without a human.",
+                "Repairs the branch and pushes once — no second attempt without a human. \
+                 Sonnet for two repairs, then opus; a data-layer PR still red after its first \
+                 gets the second on opus.",
                 Some(gate(
                     "fix requires",
                     "Something is really broken on the pull request: a red check, a blocking \

@@ -47,6 +47,7 @@ use crate::dev_loop::action::facts::{SayGatesLocal, WriteFacts};
 use crate::dev_loop::action::narrow::{Narrow, Widen};
 use crate::dev_loop::action::scaffold::Scaffold;
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
+use crate::dev_loop::checks::criteria::CriteriaTested;
 use crate::dev_loop::checks::gates;
 use crate::dev_loop::checks::preflight;
 use crate::dev_loop::config::Config;
@@ -537,7 +538,8 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
         }),
         // Delivery is the round's postcondition, not this gate's; what the
         // stage must leave behind is a checkout that still follows the
-        // architecture, and Concepts every Capability can be checked against.
+        // architecture, Concepts every Capability can be checked against,
+        // and a test naming each acceptance criterion.
         post: Some(Gate {
             name: "code must keep the architecture",
             checks: vec![
@@ -551,6 +553,9 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
                 Box::new(ConceptsDocumented {
                     disk: Rc::clone(&ports.disk),
                     root: config.root.clone(),
+                }),
+                Box::new(CriteriaTested {
+                    gh: Rc::clone(&ports.gh),
                 }),
             ],
         }),
@@ -715,6 +720,14 @@ mod tests {
         assert!(
             purposes.iter().any(|p| p.contains("Acceptance Criteria")),
             "the SPEC split wrote is required: {purposes:?}"
+        );
+        let post = built[0].post.as_ref().expect("checked after");
+        let after: Vec<String> = post.checks.iter().map(|c| c.purpose()).collect();
+        assert!(
+            after
+                .iter()
+                .any(|p| p.contains("every acceptance criterion AC1..ACn")),
+            "each criterion has its test: {after:?}"
         );
     }
 

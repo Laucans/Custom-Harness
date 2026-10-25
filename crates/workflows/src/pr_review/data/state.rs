@@ -10,6 +10,9 @@ pub struct ReviewState {
     /// The PR delivers a milestone's data layer (`harness:data-layer` on
     /// the task it closes): the review holds it to the write side's bar.
     pub data_layer: bool,
+    /// The acceptance criteria of the task the PR closes, in the order
+    /// `acceptance::criteria` reads them — empty when none were read.
+    pub criteria: Vec<String>,
 }
 
 impl ReviewState {
