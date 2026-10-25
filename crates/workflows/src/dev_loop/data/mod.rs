@@ -4,6 +4,7 @@
 //! Pure business logic or read-only — nothing here calls `gh` or writes
 //! anywhere. What writes lives in `action`, what judges in `checks`.
 
+pub mod acceptance;
 pub mod board;
 pub mod brief;
 pub mod dependencies;

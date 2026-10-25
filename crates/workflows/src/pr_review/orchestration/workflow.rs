@@ -18,13 +18,13 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Outcome, Verdict};
+use harness_core::domain::{Outcome, Pr, Verdict};
 use harness_core::execution::{Context, Executable, Gate, Lock, Round, Workflow};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
 
-use crate::common::labels;
-use crate::dev_loop::data::tasks;
+use crate::common::{delivery, labels};
+use crate::dev_loop::data::{acceptance, tasks};
 use crate::pr_review::data::skip_rules;
 use crate::pr_review::data::state::ReviewState;
 
@@ -48,6 +48,29 @@ pub struct ReviewRun {
     pub force: bool,
     /// The round, already mounted.
     pub round: Round<ReviewState>,
+}
+
+impl ReviewRun {
+    /// The acceptance criteria of the task the PR closes (its body's
+    /// `Closes #<n>`), as the code session saw them numbered — none when a
+    /// read fails: the brief then checks no criterion, and the loop's own
+    /// gate still has.
+    async fn criteria(&self, pr: &Pr) -> Vec<String> {
+        let Ok(number) = pr.num.parse::<u64>() else {
+            return Vec::new();
+        };
+        let Ok(body) = self.gh.issue(number).await.map(|issue| issue.body) else {
+            return Vec::new();
+        };
+        let Some(task) = delivery::closed_task(&body) else {
+            return Vec::new();
+        };
+        self.gh
+            .issue(task)
+            .await
+            .map(|task| acceptance::of_body(&task.body))
+            .unwrap_or_default()
+    }
 }
 
 #[async_trait(?Send)]
@@ -82,6 +105,7 @@ impl Workflow<ReviewState> for ReviewRun {
             pr.title,
             if data_layer { " — a data layer" } else { "" }
         ));
+        ctx.state.criteria = self.criteria(&pr).await;
         ctx.state.pr = Some(pr);
         ctx.state.data_layer = data_layer;
         Ok(None)
@@ -140,7 +164,7 @@ mod tests {
     use crate::pr_review::config::fake as config_fake;
     use crate::pr_review::ports::fake as ports_fake;
     use crate::pr_review::run;
-    use harness_core::domain::{Halt, Pr};
+    use harness_core::domain::{Halt, Issue};
     use harness_core::execution::{Guarded, Settings};
     use harness_core::traces::Logbook;
 
@@ -196,6 +220,40 @@ mod tests {
             .expect("a success, not an error");
         assert!(context.state.pr.is_none(), "the precheck set nothing");
         assert_eq!(built.remaining.get(), 1, "no round was started");
+    }
+
+    #[tokio::test]
+    async fn the_precheck_reads_the_criteria_of_the_task_the_pr_closes() {
+        let issue = |number, body: &str| Issue {
+            number,
+            body: body.to_string(),
+            ..Issue::default()
+        };
+        let task = issue(7, "## Acceptance Criteria\n\n- a\n- b\n  more of b\n");
+        let cases = [
+            (
+                vec![issue(32, "## Plan\n\nCloses #7"), task.clone()],
+                vec!["a", "b more of b"],
+            ),
+            (
+                vec![issue(32, "## Plan\n\nno closing line"), task],
+                Vec::new(),
+            ),
+            (vec![issue(32, "Closes #7")], Vec::new()),
+            (Vec::new(), Vec::new()),
+        ];
+        for (issues, expected) in cases {
+            let gh = Rc::new(FakeGitHub {
+                prs: vec![("32".to_string(), pr("32", "main_agent", false))],
+                issues,
+                ..FakeGitHub::default()
+            });
+            let built = review(&gh, "32");
+            let mut context = ctx();
+            let skip = built.precheck(&mut context).await.expect("read");
+            assert_eq!(skip, None);
+            assert_eq!(context.state.criteria, expected);
+        }
     }
 
     #[tokio::test]

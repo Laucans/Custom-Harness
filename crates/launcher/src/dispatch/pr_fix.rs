@@ -23,6 +23,7 @@ use harness_core::execution::{Context, Gate, Guarded, Settings};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Logbook, Sink, Verbosity};
 use harness_workflows::pr_fix::config::Config;
+use harness_workflows::pr_fix::data::ladder;
 use harness_workflows::pr_fix::data::state::FixState;
 use harness_workflows::pr_fix::ports::Ports;
 use harness_workflows::pr_fix::run;
@@ -91,21 +92,12 @@ pub async fn run(
     )
     .await;
 
-    // How many repairs the PR already had decides the model; an unreadable
-    // PR counts as a first repair (the precheck stops it anyway).
-    let repairs_before = built
-        .gh
-        .pr_comments(pr_ref.trim_start_matches('#'))
-        .await
-        .map_or(0, |comments| {
-            harness_workflows::common::review::repairs_in_all(&comments)
-        });
-    log.say(&format!(
-        "#{}: repair {} on this PR — {}",
-        pr_ref.trim_start_matches('#'),
-        repairs_before + 1,
-        harness_workflows::pr_fix::config::fix_spec(repairs_before).model
-    ));
+    // The PR's repairs so far, its task and its checks decide the model
+    // (`ladder`); an unreadable read counts as nothing (the precheck stops
+    // an unreadable PR anyway).
+    let situation = ladder::situation(built.gh.as_ref(), pr_ref).await;
+    let choice = ladder::choose(situation);
+    log.say(&ladder::line(pr_ref, situation, &choice));
     let ports = Ports {
         gh: Rc::clone(&built.gh),
         sessions: Rc::clone(&built.sessions),
@@ -119,8 +111,9 @@ pub async fn run(
         integration: integration.to_string(),
         // Sonnet for the first two repairs of a PR, opus once they failed
         // (the owner's rule, 2026-10-20): 65 repairs on opus, 55 % enough
-        // on their own; most are a conflict or tests for survivors.
-        fix: harness_workflows::pr_fix::config::fix_spec(repairs_before),
+        // on their own; most are a conflict or tests for survivors. A
+        // data-layer PR still red after its first gets the second on opus.
+        fix: choice.spec,
     };
 
     let workflow = run::build(

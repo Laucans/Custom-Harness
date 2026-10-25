@@ -25,42 +25,6 @@ pub struct Config {
     pub integration: String,
 }
 
-/// How many repairs a PR gets on the cheaper model before the stronger one
-/// takes over.
-pub const REPAIRS_ON_SONNET: usize = 2;
-
-/// The session a repair runs, given how many repairs the PR already had.
-///
-/// Sonnet for the first [`REPAIRS_ON_SONNET`], opus once they failed: most
-/// repairs are mechanical (a conflict, tests for survivors), and the harder
-/// ones show themselves by failing twice.
-#[must_use]
-pub fn fix_spec(repairs_before: usize) -> SessionSpec {
-    SessionSpec {
-        model: if repairs_before < REPAIRS_ON_SONNET {
-            "sonnet"
-        } else {
-            "opus"
-        }
-        .to_string(),
-        effort: "high".to_string(),
-    }
-}
-
-#[cfg(test)]
-mod spec_tests {
-    use super::*;
-
-    #[test]
-    fn two_repairs_on_sonnet_then_opus() {
-        assert_eq!(fix_spec(0).model, "sonnet");
-        assert_eq!(fix_spec(1).model, "sonnet");
-        assert_eq!(fix_spec(2).model, "opus");
-        assert_eq!(fix_spec(5).model, "opus");
-        assert_eq!(fix_spec(0).effort, "high");
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod fake {
     //! A test config, disposable folder.

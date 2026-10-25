@@ -27,7 +27,7 @@ use harness_core::traces::Event;
 use crate::common::{delivery, hierarchy, labels, sections};
 use crate::dev_loop::data::brief::{self, Cut};
 use crate::dev_loop::data::state::Loop;
-use crate::dev_loop::data::{board, dependency_api, signatures, tasks};
+use crate::dev_loop::data::{acceptance, board, dependency_api, signatures, tasks};
 use harness_architecture::rules;
 use harness_architecture::vocabulary::Declaration;
 
@@ -501,6 +501,10 @@ impl SessionAction<Loop> for Ask {
         };
         let mut scope = open.state.scope();
         scope.task.body = sections::without(&scope.task.body, self.cut.without());
+        // Numbered here as the gate after the session counts them: `AC3`
+        // is the same criterion at both ends.
+        scope.task.body = acceptance::numbered_body(&scope.task.body);
+        let criteria = acceptance::of_body(&scope.task.body).len();
         let scope = match self.cut {
             Cut::Executing(_) => brief::executing(scope, declaration.as_ref()),
             _ => scope,
@@ -521,6 +525,13 @@ impl SessionAction<Loop> for Ask {
         } else {
             with_skeleton = format!("{instructions}\n\n{}", skeleton_block(&open.state.skeleton));
             with_skeleton.as_str()
+        };
+        let with_criteria;
+        let instructions = if criteria == 0 {
+            instructions
+        } else {
+            with_criteria = format!("{instructions}\n\n{}", criteria_block(criteria));
+            with_criteria.as_str()
         };
         let extra = prompts::extra_for(
             instructions,
@@ -566,6 +577,30 @@ structure, and the test helpers are crates/platform/test-kit's \
 (platform_test_kit). Replace each `scaffold_*` test by the real tests of \
 the acceptance criteria.",
         files.join("\n- ")
+    )
+}
+
+/// What the prompt says of the task's acceptance criteria, numbered
+/// `AC1..AC<count>` in its SCOPE: one test names each, the PR body points
+/// to the existing test that already proves one, or says why none can —
+/// the harness checks after the session.
+fn criteria_block(count: usize) -> String {
+    format!(
+        "--- ACCEPTANCE CRITERIA ---\n\
+The SPEC's acceptance criteria are numbered AC1..AC{count} under SCOPE. Each \
+one is proved by a test, and the test that proves it carries a comment \
+naming it, on the test or just above: `// AC2: <the criterion, short>` (`#` \
+where the language comments so; one test may name several, `// AC2, AC3: \
+…`). Only a name your change adds counts: one an earlier task left in a \
+file proves nothing. A criterion an existing test already proves — or a \
+rule under `tests/rules/` — is pointed to in the PR body, one line each: \
+`AC4: {} <path>[::<test>] — <why>`; that test is never edited, nor \
+duplicated. A criterion no test can prove here is declared in the PR body, \
+one line each, with the reason: `AC3: {} — <why>`. After your session the \
+harness reads the pull request: a criterion none of these covers fails the \
+round and sends the PR to a repair.",
+        acceptance::COVERED,
+        acceptance::UNTESTABLE
     )
 }
 
@@ -1385,6 +1420,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_criteria_are_numbered_and_their_tests_asked_for_only_when_there_are_some() {
+        let state = with_body(
+            "## Business Goal\n\nthe why\n\n## Acceptance Criteria\n\n\
+             - given a, when b, then c\n- the count shows\n",
+        );
+        let run = ask_about(
+            state,
+            Cut::Executing(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        let prompt = &run.prompts[0];
+        assert!(
+            prompt.contains("- AC1: given a, when b, then c\n- AC2: the count shows"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("--- ACCEPTANCE CRITERIA ---"), "{prompt}");
+        assert!(prompt.contains("numbered AC1..AC2 under SCOPE"), "{prompt}");
+        assert!(
+            prompt.contains("`// AC2: <the criterion, short>`"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("`AC3: not testable here — <why>`"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("`AC4: covered by <path>[::<test>] — <why>`"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("that test is never edited"), "{prompt}");
+        assert!(
+            prompt.contains("Only a name your change adds counts"),
+            "{prompt}"
+        );
+        let bare = ask_about(
+            scoped_state(),
+            Cut::Executing(NOTHING),
+            Ok(answered("AGENT_LOOP_OK: ok")),
+            false,
+            String::new(),
+        )
+        .await;
+        assert!(!bare.prompts[0].contains("ACCEPTANCE CRITERIA"));
+        assert!(!bare.prompts[0].contains("AC1"));
+    }
+
+    #[tokio::test]
     async fn the_prompt_carries_the_command_the_preamble_and_the_scope() {
         let run = ask_with(
             Cut::Situated(NOTHING),
@@ -1422,7 +1507,7 @@ mod tests {
         .await;
         let prompt = &run.prompts[0];
         assert!(prompt.contains("the why"), "{prompt}");
-        assert!(prompt.contains("- it works"));
+        assert!(prompt.contains("- AC1: it works"));
         assert!(!prompt.contains("the design"), "{prompt}");
         assert!(!prompt.contains("1. do it"), "{prompt}");
         assert!(!prompt.contains("guessed"), "{prompt}");
@@ -1443,7 +1528,10 @@ mod tests {
         )
         .await;
         let prompt = &run.prompts[0];
-        assert!(prompt.contains("- it works"), "the criteria it asserts");
+        assert!(
+            prompt.contains("- AC1: it works"),
+            "the criteria it asserts"
+        );
         assert!(prompt.contains("1. do it"), "and the plan's bullets");
         assert!(!prompt.contains("the design"), "{prompt}");
         assert!(!prompt.contains("the why"), "{prompt}");

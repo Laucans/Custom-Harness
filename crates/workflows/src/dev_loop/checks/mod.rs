@@ -5,5 +5,6 @@
 //! doesn't write, and the borrow checker holds that — what writes lives there.
 
 pub mod architecture;
+pub mod criteria;
 pub mod gates;
 pub mod preflight;

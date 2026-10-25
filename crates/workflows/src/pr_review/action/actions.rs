@@ -17,6 +17,7 @@ use harness_core::domain::{Outcome, Verdict};
 use harness_core::execution::{Open, SessionAction, ask_and_record};
 use harness_core::ports::store::spending::Spending;
 
+use crate::dev_loop::data::acceptance;
 use crate::pr_review::data::findings;
 use crate::pr_review::data::state::ReviewState;
 
@@ -62,6 +63,16 @@ these are blocking too:
     }
 }
 
+/// The task's criteria as the brief lists them, numbered as the code
+/// session saw them — or why there is no list.
+fn criteria_list(criteria: &[String]) -> String {
+    if criteria.is_empty() {
+        "(the harness read no acceptance criteria for this task: nothing to check here)".to_string()
+    } else {
+        acceptance::numbered(criteria)
+    }
+}
+
 /// Composes and sends the "brief" pass prompt.
 pub struct AskBrief {
     /// The stage name, for the journal and the `stage` column of the registry.
@@ -91,6 +102,7 @@ impl SessionAction<ReviewState> for AskBrief {
                 ("base", &pr.base),
                 ("findings", &found),
                 ("strictness", data_layer_bar(open.state.data_layer)),
+                ("criteria", &criteria_list(&open.state.criteria)),
             ],
         );
         ask_and_record(
@@ -114,5 +126,15 @@ mod tests {
     fn the_data_layer_is_held_to_a_higher_bar_and_the_rest_to_the_common_one() {
         assert!(data_layer_bar(true).contains("invariant with no test"));
         assert_eq!(data_layer_bar(false), "");
+    }
+
+    #[test]
+    fn the_brief_lists_the_criteria_numbered_or_says_there_are_none() {
+        let criteria = vec!["given a, then b".to_string(), "the count".to_string()];
+        assert_eq!(
+            criteria_list(&criteria),
+            "- AC1: given a, then b\n- AC2: the count"
+        );
+        assert!(criteria_list(&[]).contains("no acceptance criteria"));
     }
 }

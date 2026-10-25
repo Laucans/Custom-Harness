@@ -86,6 +86,9 @@ pub struct FakeGitHub {
     /// a 404, not a refusal, since "the file is absent" is itself a valid
     /// test scenario.
     pub files: HashMap<(String, String), String>,
+    /// The paths whose `file_text` refuses, at any ref — a rate limit, a
+    /// 5xx — as opposed to a file absent from [`Self::files`].
+    pub unreadable_files: Vec<String>,
     /// Makes `protect_branch` refuse, as a free private repo does.
     pub protection_refused: bool,
     /// Makes `require_squash_merges` refuse, as a token without admin does.
@@ -438,6 +441,9 @@ impl GitHub for FakeGitHub {
 
     async fn file_text(&self, path: &str, git_ref: &str) -> Outcome<Option<String>> {
         self.ok()?;
+        if self.unreadable_files.iter().any(|p| p == path) {
+            return Err(Halt::Failed(format!("{path} at {git_ref}: rate limited")));
+        }
         Ok(self
             .files
             .get(&(path.to_string(), git_ref.to_string()))

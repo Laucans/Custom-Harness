@@ -341,6 +341,26 @@ its precheck, its lock and its trigger.
   start from the files `Loop::skeleton` lists and never copy a neighbour, and
   `ArchitectureHolds` refuses a round that left a `SCAFFOLD:` hole in one of
   them (`checks::architecture::holes_left`), as a blocking review on its PR.
+- `dev_loop`'s acceptance criteria are numbered once, read three times
+  (`data::acceptance`, pure, the parser proptested): `Ask` numbers the
+  task's `## Acceptance Criteria` in place, `- AC1: …` (bullets, `1.`,
+  a given/when/then over several lines read as one criterion), and adds a
+  block asking each test that proves one to name it (`// AC2: …`), the PR
+  body to point one an existing test proves to it
+  (`AC4: covered by <path>[::<test>] — …`, never editing it), or to
+  declare one with its reason (`AC3: not testable here — …`).
+  `checks::criteria::CriteriaTested`, the third check of `code`'s post
+  gate, reads the task's open PR (`pr_files`, `file_text` at its base and
+  head, the PR body through `issue`): a name counts only when a test file
+  holds it more often at the head than on the base (`acceptance::added`,
+  so an earlier task's `AC1` proves no later `AC1`), a pointer only when
+  its file is a test at the head. A criterion none of the three covers
+  fails the round, with the same blocking review and repair as a drift
+  (`checks::architecture::ask_repair`). A task without criteria, a PR not
+  opened yet or no longer open, or a read GitHub fails, is not judged.
+  `pr_review`'s precheck reads the same criteria off the task the PR
+  closes and its brief lists them numbered (`{criteria}`), checks the same
+  and lists an uncovered criterion as blocking.
 - `refinement` moves its seven templates into `prompts.rs`: same rule 5, just
   too much text to sit with the table.
 - `refinement` and `planner` prepend the two shared `explore` entries to their
@@ -379,6 +399,14 @@ its precheck, its lock and its trigger.
   its reset (#496: no marker, one commit ahead; `decide` halted on
   `router-lane-0` at 18:05); "repair pushed nothing" said when the head did
   not move.
+- `pr_fix`'s model is `pr_fix::data::ladder`: `situation` reads the PR's
+  repairs so far (`review::repairs_in_all`) and, only on the second
+  repair, whether it delivers an open `harness:data-layer` task (its
+  declared branch is the PR's head) and a check is red; `choose` is pure —
+  sonnet for the first `REPAIRS_ON_SONNET` (2) repairs, opus after, and a
+  data-layer PR still red after its first repair gets its second on opus
+  (the blind review of 2026-10-25). The launcher journals the choice and its
+  reason on the run's line: `#12: repair 2 on this PR — opus/high (…)`.
 - All of them are wired into the binary — `dev_loop` directly (`harness`) and every
   one of them through the router's dispatch (`harness watch`). `pr_review` was
   the last to get a launcher entry point: its documented trigger used to be a

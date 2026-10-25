@@ -149,6 +149,22 @@ foreground: `git diff origin/<base> > .git/change.diff && cargo mutants
 A mutant the CI finds costs a whole repair round; one you kill here costs
 a few minutes.
 
+**One test per acceptance criterion.** The SPEC's `## Acceptance Criteria`
+are numbered AC1..ACn in the prompt's SCOPE: use those numbers, never
+renumber the issue yourself (with no numbered list in the prompt, count as
+the harness does: in order, one per bullet, one per given/when/then block
+even over several lines, one per plain line after a blank; an indented
+sub-bullet belongs to the bullet above, a line ending in `:` counts none). The test that proves each one carries a
+comment naming it, on the test or just above: `// AC2: <the criterion,
+short>` (one test may name several). Only a name your change adds counts —
+one an earlier task left in the file proves nothing. A criterion an
+existing test already proves, or a rule under `tests/rules/`, is pointed to
+in the PR body, one line each: `AC4: covered by <path>[::<test>] — <why>`;
+that test is never edited, nor duplicated. A criterion no test can prove
+here is declared there too: `AC3: not testable here — <why>`. After the
+session the harness reads the PR: a criterion none of these covers fails
+the round and sends the PR to a repair; the review blocks on it too.
+
 Run **every** bullet in the SPEC's `Verification` section and show the
 real output. "Looks done" is not verification; a pass/fail signal is
 (`Human_guidelines.md` §1).
@@ -212,7 +228,10 @@ something to test.
 4. `gh pr create --base <the integration branch>` with **`Closes #<n>` on
    its own line in the body** — the issue number of the task. That line
    is what closes the task: no `Closes`, no closed issue, and the loop
-   stops rather than replay a task that still looks open.
+   stops rather than replay a task that still looks open. A criterion an
+   existing test proves gets its line there too, `AC4: covered by
+   <path>[::<test>] — <why>`, and one no test can prove
+   `AC3: not testable here — <why>`.
 5. Stop here, on either side: open the PR with `--label harness:to-review`,
    report its number and end your turn. The harness watches its CI from here — it
    reviews, repairs and merges the PR itself (`milestone_merge`) and closes
