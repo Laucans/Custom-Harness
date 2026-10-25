@@ -59,7 +59,7 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
 use crate::common::decision::Question;
-use crate::common::{contract_ask, labels, missing_task, sections};
+use crate::common::{contract_ask, labels, missing_task, native_milestone, sections};
 use crate::contract_manager::data::request as contract;
 use crate::dev_loop::data::missing::{self, Asked};
 use crate::dev_loop::data::state::Loop;
@@ -558,6 +558,7 @@ impl RaiseDecision {
             .await?;
         if let Ok(milestone) = ctx.state.milestone.number.parse::<u64>() {
             self.gh.create_sub_issue_link(milestone, human).await?;
+            native_milestone::place_or_warn(self.gh.as_ref(), milestone, human, &ctx.traces).await;
         }
         self.gh.add_blocked_by(number, human).await?;
         ctx.traces.event(&Event::HumanTaskOpened {
@@ -810,6 +811,7 @@ impl RaiseDecision {
             .await?;
         if let Ok(milestone) = ctx.state.milestone.number.parse::<u64>() {
             self.gh.create_sub_issue_link(milestone, human).await?;
+            native_milestone::place_or_warn(self.gh.as_ref(), milestone, human, &ctx.traces).await;
         }
         self.gh.add_blocked_by(number, human).await?;
         let whys: Vec<&str> = unwritable.iter().map(|(_, why)| why.as_str()).collect();
@@ -848,6 +850,7 @@ impl RaiseDecision {
             .await?;
         if let Ok(milestone) = ctx.state.milestone.number.parse::<u64>() {
             self.gh.create_sub_issue_link(milestone, human).await?;
+            native_milestone::place_or_warn(self.gh.as_ref(), milestone, human, &ctx.traces).await;
         }
         self.gh.add_blocked_by(number, human).await?;
         ctx.traces.event(&Event::HumanTaskOpened {
@@ -893,14 +896,33 @@ mod tests {
 
     fn gh(body: &str) -> Rc<FakeGitHub> {
         Rc::new(FakeGitHub {
-            issues: vec![Issue {
-                number: 11,
-                title: "Pay".to_string(),
-                state: "open".to_string(),
-                body: body.to_string(),
-                ..Issue::default()
-            }],
+            issues: vec![
+                Issue {
+                    number: 11,
+                    title: "Pay".to_string(),
+                    state: "open".to_string(),
+                    body: body.to_string(),
+                    ..Issue::default()
+                },
+                Issue {
+                    number: 4,
+                    title: "Payments".to_string(),
+                    state: "open".to_string(),
+                    labels: vec![labels::MILESTONE.to_string()],
+                    ..Issue::default()
+                },
+            ],
             ..FakeGitHub::default()
+        })
+    }
+
+    /// The opened task `task` put on milestone #4's native milestone (the
+    /// first the fake numbers), right after its sub-issue link.
+    fn placed(writes: &[Wrote], task: u64) -> bool {
+        writes.windows(3).any(|w| {
+            w[0] == Wrote::SubIssueLink(4, task)
+                && w[1] == Wrote::NativeMilestone(4, "Payments".to_string(), true)
+                && w[2] == Wrote::IssueMilestone(task, 1)
         })
     }
 
@@ -990,6 +1012,7 @@ mod tests {
             !writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())),
             "no third decision"
         );
+        assert!(placed(&writes, 1), "{writes:?}");
         assert!(context.state.handed_over);
     }
 
@@ -1098,6 +1121,7 @@ mod tests {
                     && labels == &[labels::HUMAN.to_string()]),
             "{writes:?}"
         );
+        assert!(placed(&writes, 1), "{writes:?}");
         assert!(
             writes
                 .iter()
@@ -1890,6 +1914,7 @@ mod tests {
             );
             assert!(writes.contains(&Wrote::SubIssueLink(4, 1)), "{writes:?}");
             assert!(writes.contains(&Wrote::BlockedByLink(11, 1)), "{writes:?}");
+            assert!(placed(&writes, 1), "{writes:?}");
             let kept = decision_of(&writes);
             assert_eq!(kept.kind.as_deref(), Some("wait"));
             assert_eq!(kept.verdict.as_deref(), Some("wait — until #1 lands"));
@@ -2011,6 +2036,7 @@ mod tests {
         assert!(writes.contains(&Wrote::SubIssueLink(4, 1)));
         assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
         assert!(!writes.iter().any(|w| matches!(w, Wrote::Body(..))));
+        assert!(placed(&writes, 1), "{writes:?}");
 
         // Without a human gate, nobody would come: a decision is asked, with
         // the milestone, the declaration and the stop whole.

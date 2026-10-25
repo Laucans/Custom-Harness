@@ -13,7 +13,7 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
-use crate::common::{contest, labels, missing_task, review, sections};
+use crate::common::{contest, labels, missing_task, native_milestone, review, sections};
 use crate::decide::data::decision::{self, Action as Act, Decided};
 use crate::decide::data::state::DecideState;
 
@@ -214,6 +214,7 @@ impl Apply {
                     )
                     .await?;
                 self.gh.close_issue(issue.number).await?;
+                native_milestone::close_if_milestone(self.gh.as_ref(), issue, &ctx.traces).await;
                 Ok(Act::Cut)
             }
             (Act::Answer, _) if issue.has(labels::RULES) => {
@@ -671,6 +672,38 @@ mod tests {
         let mut context = ctx(r#"{"action":"cut","summary":"out of scope"}"#, None, &[]);
         apply(&gh).run(&mut context).await.expect("applied");
         assert!(gh.writes().contains(&Wrote::Closed(15)));
+        assert!(
+            !gh.writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::NativeMilestone(..))),
+            "a task has no native milestone to close"
+        );
+        // A milestone cut: its native milestone closed with it.
+        let milestone = Issue {
+            labels: vec![labels::MILESTONE.to_string()],
+            ..fifteen()
+        };
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![milestone],
+            labels: vec![labels::AI_DECIDED.to_string()],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"cut","summary":"out of scope"}"#,
+            None,
+            &[labels::MILESTONE],
+        );
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        let closed = writes
+            .iter()
+            .position(|w| *w == Wrote::Closed(15))
+            .expect("closed");
+        assert_eq!(
+            writes.get(closed + 1),
+            Some(&Wrote::NativeMilestone(15, String::new(), false)),
+            "{writes:?}"
+        );
         let gh = Rc::new(FakeGitHub {
             issues: vec![fifteen()],
             labels: vec![labels::AI_DECIDED.to_string()],
@@ -989,12 +1022,29 @@ mod tests {
         // #219, 2026-10-25: four decisions approved the fixtures task in
         // words; none opened it.
         let gh = Rc::new(FakeGitHub {
-            issues: vec![fifteen()],
+            issues: vec![
+                fifteen(),
+                Issue {
+                    number: 28,
+                    title: "Scenes".to_string(),
+                    state: "open".to_string(),
+                    ..Issue::default()
+                },
+            ],
             ..FakeGitHub::default()
         });
         let (apply_it, mut context) = decided_on(&gh);
         apply_it.run(&mut context).await.expect("applied");
         let writes = gh.writes();
+        assert!(
+            writes.windows(3).any(|w| w
+                == [
+                    Wrote::SubIssueLink(28, 1),
+                    Wrote::NativeMilestone(28, "Scenes".to_string(), true),
+                    Wrote::IssueMilestone(1, 1),
+                ]),
+            "placed on #28's native milestone: {writes:?}"
+        );
         let created: Vec<&Wrote> = writes
             .iter()
             .filter(|w| matches!(w, Wrote::CreatedIssue(..)))

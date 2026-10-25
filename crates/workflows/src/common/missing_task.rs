@@ -12,7 +12,7 @@ use harness_core::domain::Outcome;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Logbook;
 
-use crate::common::labels;
+use crate::common::{labels, native_milestone};
 use crate::dev_loop::data::missing;
 use crate::split::action::publish::body_and_labels;
 use crate::split::data::plan::TaskItem;
@@ -71,7 +71,7 @@ pub async fn open_or_find(
             found.built.push((item.title.clone(), why));
             continue;
         } else {
-            let opened = open(gh, number, milestone, item).await?;
+            let opened = open(gh, number, milestone, item, log).await?;
             log.say(&format!(
                 "#{number}: opened #{opened} for the missing task ({}) under milestone \
                  #{milestone}",
@@ -101,8 +101,15 @@ pub async fn block_on(gh: &dyn GitHub, number: u64, on: &[u64]) -> Outcome<()> {
 }
 
 /// Opens one missing task: split's body and labels, its `id:`, and a line
-/// back to the task that waits on it.
-async fn open(gh: &dyn GitHub, number: u64, milestone: u64, item: &TaskItem) -> Outcome<u64> {
+/// back to the task that waits on it; linked under `milestone` and put on
+/// its native milestone (a refusal of the latter only journalled).
+async fn open(
+    gh: &dyn GitHub,
+    number: u64,
+    milestone: u64,
+    item: &TaskItem,
+    log: &Logbook,
+) -> Outcome<u64> {
     let mut item = item.clone();
     item.brief = format!(
         "{}\n\nOpened by the harness for #{number}, whose session stopped on it: #{number} \
@@ -118,5 +125,6 @@ async fn open(gh: &dyn GitHub, number: u64, milestone: u64, item: &TaskItem) -> 
     );
     let opened = gh.create_issue(&item.title, &body, &labels).await?;
     gh.create_sub_issue_link(milestone, opened).await?;
+    native_milestone::place_or_warn(gh, milestone, opened, log).await;
     Ok(opened)
 }

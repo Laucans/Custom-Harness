@@ -77,5 +77,8 @@ pub enum Outcome {
         roadmap: Option<u64>,
         /// The ids the landing built, now marked so in the plan's graph.
         built: Vec<String>,
+        /// Why the milestone's native GitHub milestone could not be closed
+        /// with it — a warning, the landing done all the same.
+        native: Option<String>,
     },
 }

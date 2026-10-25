@@ -792,6 +792,100 @@ fn writes(args: &[String]) -> bool {
     }
 }
 
+/// The longest milestone title GitHub takes, in characters.
+const MILESTONE_TITLE_MAX: usize = 255;
+
+/// The marker a native milestone's description carries: how the mirror of
+/// the milestone issue `issue` is found again, whatever its title became.
+fn native_marker(issue: u64) -> String {
+    format!("<!-- harness-milestone: #{issue} -->")
+}
+
+/// A native milestone's title: `#<issue> <title>`, cut to GitHub's limit.
+fn native_title(issue: u64, title: &str) -> String {
+    format!("#{issue} {title}")
+        .chars()
+        .take(MILESTONE_TITLE_MAX)
+        .collect()
+}
+
+/// A native milestone's description: the marker, then a line for a human.
+fn native_description(issue: u64) -> String {
+    format!(
+        "{}\nMirror of the milestone issue #{issue}, kept by the harness: its tasks carry \
+         this milestone.",
+        native_marker(issue)
+    )
+}
+
+/// GitHub's word for a milestone open or not.
+const fn native_state(open: bool) -> &'static str {
+    if open { "open" } else { "closed" }
+}
+
+/// The native milestone of `issue` among one page of milestones: its number
+/// and whether it is open.
+fn native_in(rows: &[Value], issue: u64, what: &str) -> Outcome<Option<(u64, bool)>> {
+    let marker = native_marker(issue);
+    let Some(row) = rows.iter().find(|row| {
+        row.get("description")
+            .and_then(Value::as_str)
+            .is_some_and(|description| description.contains(&marker))
+    }) else {
+        return Ok(None);
+    };
+    let number = row
+        .get("number")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| unreadable(what, "a milestone with the marker names no number"))?;
+    let open = row.get("state").and_then(Value::as_str) != Some("closed");
+    Ok(Some((number, open)))
+}
+
+/// The native milestone of `issue`, page after page of the milestones
+/// (`page` reads one): none once a page comes back short.
+async fn find_native<F, Fut>(issue: u64, what: &str, page: F) -> Outcome<Option<(u64, bool)>>
+where
+    F: Fn(u32) -> Fut,
+    Fut: std::future::Future<Output = Outcome<Value>>,
+{
+    for number in 1..=MAX_PAGES {
+        let payload = page(number).await?;
+        let rows = rows_of(&payload, what)?;
+        if let Some(found) = native_in(rows, issue, what)? {
+            return Ok(Some(found));
+        }
+        if u64::try_from(rows.len()).unwrap_or(u64::MAX) < u64::from(PER_PAGE) {
+            return Ok(None);
+        }
+    }
+    Err(unreadable(
+        what,
+        &format!("more than {} milestones", MAX_PAGES * PER_PAGE),
+    ))
+}
+
+/// What a native milestone needs: kept as it is, its state turned, or
+/// created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeStep {
+    /// There, in the state asked: this number.
+    Keep(u64),
+    /// There, in the other state: this number, to turn.
+    Turn(u64),
+    /// Not there.
+    Create,
+}
+
+/// What a native milestone found (number, open) needs to be `open` or not.
+const fn native_step(found: Option<(u64, bool)>, open: bool) -> NativeStep {
+    match found {
+        Some((number, was_open)) if was_open == open => NativeStep::Keep(number),
+        Some((number, _)) => NativeStep::Turn(number),
+        None => NativeStep::Create,
+    }
+}
+
 impl GhCli {
     /// The head commit the kept read of the open PRs saw for PR `number`,
     /// without reading anything again.
@@ -1022,6 +1116,30 @@ impl GhCli {
         path: &str,
         fields: &[(&str, String)],
     ) -> Outcome<()> {
+        self.send(what, method, path, fields, "-f").await
+    }
+
+    /// [`Self::write`] with `-F` fields: a typed value (a milestone's
+    /// number), where `-f` would send a JSON string.
+    async fn write_typed(
+        &self,
+        what: &str,
+        method: &str,
+        path: &str,
+        fields: &[(&str, String)],
+    ) -> Outcome<()> {
+        self.send(what, method, path, fields, "-F").await
+    }
+
+    /// An API write, its fields passed with `flag` (`-f` or `-F`).
+    async fn send(
+        &self,
+        what: &str,
+        method: &str,
+        path: &str,
+        fields: &[(&str, String)],
+        flag: &str,
+    ) -> Outcome<()> {
         let repo = self.repo().await?;
         let url = if path.is_empty() {
             format!("repos/{repo}")
@@ -1035,7 +1153,7 @@ impl GhCli {
             url.clone(),
         ];
         for (key, value) in fields {
-            args.push("-f".to_string());
+            args.push(flag.to_string());
             args.push(format!("{key}={value}"));
         }
         let mut ran = self.gh(&args).await?;
@@ -1837,6 +1955,73 @@ impl GitHub for GhCli {
             &format!("link #{child} as a sub-issue of #{parent}"),
             &format!("issues/{parent}/sub_issues"),
             &[("sub_issue_id", child_id.to_string())],
+        )
+        .await
+    }
+
+    async fn ensure_native_milestone(&self, issue: u64, title: &str, open: bool) -> Outcome<u64> {
+        // Read fresh, never kept: a state turned by hand must be seen.
+        let what = format!("the native milestones (for #{issue})");
+        let found = find_native(issue, &what, |page| {
+            let what = what.clone();
+            async move {
+                self.read_fresh(
+                    &what,
+                    "milestones",
+                    &[
+                        ("state", "all".to_string()),
+                        ("per_page", PER_PAGE.to_string()),
+                        ("page", page.to_string()),
+                    ],
+                )
+                .await
+            }
+        })
+        .await?;
+        let state = native_state(open).to_string();
+        match native_step(found, open) {
+            NativeStep::Keep(number) => Ok(number),
+            NativeStep::Turn(number) => {
+                self.write(
+                    &format!("set the native milestone of #{issue} {state}"),
+                    "PATCH",
+                    &format!("milestones/{number}"),
+                    &[("state", state)],
+                )
+                .await?;
+                Ok(number)
+            }
+            NativeStep::Create => {
+                let payload = self
+                    .create(
+                        &format!("create the native milestone of #{issue}"),
+                        "milestones",
+                        &[
+                            ("title", native_title(issue, title)),
+                            ("description", native_description(issue)),
+                            ("state", state),
+                        ],
+                    )
+                    .await?;
+                payload
+                    .get("number")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| {
+                        Halt::Halted(format!(
+                            "created the native milestone of #{issue} but the response named no \
+                         number"
+                        ))
+                    })
+            }
+        }
+    }
+
+    async fn set_issue_milestone(&self, issue: u64, milestone: u64) -> Outcome<()> {
+        self.write_typed(
+            &format!("put #{issue} on the native milestone {milestone}"),
+            "PATCH",
+            &format!("issues/{issue}"),
+            &[("milestone", milestone.to_string())],
         )
         .await
     }
@@ -2740,6 +2925,192 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_native_milestone_is_titled_after_its_issue_and_marked_for_it_alone() {
+        assert_eq!(super::native_title(28, "Media"), "#28 Media");
+        let long = super::native_title(28, &"é".repeat(400));
+        assert_eq!(long.chars().count(), super::MILESTONE_TITLE_MAX);
+        assert!(long.starts_with("#28 éé"));
+        assert_eq!(super::MILESTONE_TITLE_MAX, 255);
+        assert_eq!(super::native_marker(2), "<!-- harness-milestone: #2 -->");
+        let description = super::native_description(2);
+        assert!(description.starts_with("<!-- harness-milestone: #2 -->\n"));
+        assert!(description.contains("milestone issue #2,"));
+        assert!(!super::native_description(28).contains(&super::native_marker(2)));
+        assert_eq!(super::native_state(true), "open");
+        assert_eq!(super::native_state(false), "closed");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_native_title_is_its_issue_then_its_title_cut_to_github_s_limit(
+            issue in proptest::prelude::any::<u64>(),
+            title in "\\PC{0,400}",
+        ) {
+            let full = format!("#{issue} {title}");
+            let head = format!("#{issue} ");
+            let cut = super::native_title(issue, &title);
+            proptest::prop_assert!(full.starts_with(&cut));
+            proptest::prop_assert!(cut.starts_with(&head));
+            proptest::prop_assert_eq!(
+                cut.chars().count(),
+                full.chars().count().min(super::MILESTONE_TITLE_MAX)
+            );
+        }
+
+        #[test]
+        fn a_marker_never_appears_in_another_issue_s_description(
+            a in proptest::prelude::any::<u64>(),
+            b in proptest::prelude::any::<u64>(),
+        ) {
+            proptest::prop_assume!(a != b);
+            proptest::prop_assert!(
+                !super::native_description(b).contains(&super::native_marker(a))
+            );
+            proptest::prop_assert!(
+                super::native_description(a).contains(&super::native_marker(a))
+            );
+        }
+
+        #[test]
+        fn a_native_milestone_is_found_for_its_issue_alone_in_any_order(
+            issues in proptest::strategy::Strategy::prop_flat_map(
+                proptest::collection::btree_set(1u64..300, 0..24),
+                |set| proptest::strategy::Strategy::prop_shuffle(
+                    proptest::strategy::Just(set.into_iter().collect::<Vec<_>>()),
+                ),
+            ),
+            probe in 1u64..300,
+        ) {
+            let what = "the native milestones";
+            let rows: Vec<serde_json::Value> = issues
+                .iter()
+                .map(|&issue| serde_json::json!({
+                    "number": issue + 1000,
+                    "state": if issue % 2 == 0 { "open" } else { "closed" },
+                    "description": super::native_description(issue),
+                }))
+                .collect();
+            let expected = issues
+                .contains(&probe)
+                .then_some((probe + 1000, probe % 2 == 0));
+            proptest::prop_assert_eq!(
+                super::native_in(&rows, probe, what).expect("read"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn a_native_milestone_is_found_by_its_marker_with_its_state() {
+        let what = "the native milestones";
+        let rows = vec![
+            serde_json::json!({"number": 1, "state": "open", "description": "by hand"}),
+            serde_json::json!({"number": 2, "state": "closed", "description": null}),
+            serde_json::json!({"number": 3, "state": "closed",
+                "description": super::native_description(28)}),
+            serde_json::json!({"number": 4, "state": "open",
+                "description": super::native_description(2)}),
+        ];
+        assert_eq!(
+            super::native_in(&rows, 28, what).expect("read"),
+            Some((3, false))
+        );
+        assert_eq!(
+            super::native_in(&rows, 2, what).expect("read"),
+            Some((4, true))
+        );
+        assert_eq!(super::native_in(&rows, 8, what).expect("read"), None);
+        let numberless = [serde_json::json!({"description": super::native_marker(5)})];
+        assert!(super::native_in(&numberless, 5, what).is_err());
+    }
+
+    #[test]
+    fn a_native_milestone_is_kept_turned_or_created() {
+        use super::NativeStep::{Create, Keep, Turn};
+        assert_eq!(super::native_step(Some((3, true)), true), Keep(3));
+        assert_eq!(super::native_step(Some((3, false)), false), Keep(3));
+        assert_eq!(super::native_step(Some((3, true)), false), Turn(3));
+        assert_eq!(super::native_step(Some((3, false)), true), Turn(3));
+        assert_eq!(super::native_step(None, true), Create);
+    }
+
+    #[tokio::test]
+    async fn the_milestones_are_read_page_after_page_until_a_short_one() {
+        let what = "the native milestones";
+        let full = |from: u64| {
+            Value::Array(
+                (from..from + u64::from(super::PER_PAGE))
+                    .map(|n| serde_json::json!({"number": n, "description": "other"}))
+                    .collect(),
+            )
+        };
+        let asked = std::cell::RefCell::new(Vec::new());
+        // The mirror on the second page: found there, the third never read.
+        let found = super::find_native(7, what, |page| {
+            asked.borrow_mut().push(page);
+            let payload = if page == 2 {
+                let mut rows = full(100);
+                if let Value::Array(rows) = &mut rows {
+                    rows.push(serde_json::json!({"number": 900,
+                        "description": super::native_description(7)}));
+                }
+                rows
+            } else {
+                full(0)
+            };
+            async move { Ok(payload) }
+        })
+        .await;
+        assert_eq!(found.expect("read"), Some((900, true)));
+        assert_eq!(*asked.borrow(), vec![1, 2]);
+        // A short page ends the list: not there.
+        let short = super::find_native(7, what, |page| {
+            let payload = if page == 1 {
+                full(0)
+            } else {
+                serde_json::json!([{"number": 1}])
+            };
+            async move { Ok(payload) }
+        })
+        .await;
+        assert_eq!(short.expect("read"), None);
+        // Exactly one page minus one: short already.
+        let one_short = super::find_native(7, what, |_| {
+            let mut rows = full(0);
+            if let Value::Array(rows) = &mut rows {
+                rows.pop();
+            }
+            async move { Ok(rows) }
+        })
+        .await;
+        assert_eq!(one_short.expect("read"), None);
+        // Every page full: never read as "not there".
+        let pages = std::cell::Cell::new(0);
+        let endless = super::find_native(7, what, |_| {
+            pages.set(pages.get() + 1);
+            let rows = full(0);
+            async move { Ok(rows) }
+        })
+        .await;
+        assert!(endless.is_err());
+        assert_eq!(pages.get(), super::MAX_PAGES);
+        // A failed read is the error, never "not there".
+        let failed = super::find_native(7, what, |_| async {
+            Err(super::unreadable("milestones", "HTTP 401"))
+        })
+        .await;
+        assert!(failed.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_native_milestone_github_cannot_reach_is_an_error_not_a_number() {
+        use harness_core::ports::shell::github::GitHub as _;
+        let gh = super::GhCli::new(std::path::Path::new("/nonexistent"));
+        assert!(gh.ensure_native_milestone(28, "Media", true).await.is_err());
+        assert!(gh.set_issue_milestone(30, 3).await.is_err());
     }
 
     #[tokio::test]

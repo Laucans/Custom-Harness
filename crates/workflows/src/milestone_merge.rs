@@ -377,6 +377,9 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr, log: &Logbook) -> Outco
         "reviewed and every check green, merged by `milestone_merge`.",
     )
     .await?;
+    // A landing PR decided on its milestone: the milestone closed, its
+    // native milestone with it.
+    crate::common::native_milestone::close_if_milestone(gh, task, log).await;
     Ok(Attempt::Merged)
 }
 
@@ -967,6 +970,40 @@ mod tests {
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::REVIEW_PENDING.to_string())));
         assert!(writes.contains(&Wrote::Unlabelled(64, labels::NEEDS_DECISION.to_string())));
         assert!(writes.contains(&Wrote::Closed(64)));
+    }
+
+    #[tokio::test]
+    async fn a_landing_merged_on_a_decision_closes_its_native_milestone_and_a_task_s_does_not() {
+        let gh = FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), true)]),
+            ..FakeGitHub::default()
+        };
+        run(&gh, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
+            .await
+            .expect("merged");
+        assert!(
+            !gh.writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::NativeMilestone(..))),
+            "a task has no native milestone"
+        );
+        let mut milestone = task(6, &[labels::MILESTONE], "milestone/6-media");
+        milestone.title = "Media".to_string();
+        run(
+            &gh,
+            &milestone,
+            &pr("68", "milestone/6-media"),
+            &Logbook::null(),
+        )
+        .await
+        .expect("merged");
+        let writes = gh.writes();
+        assert_eq!(
+            writes.last(),
+            Some(&Wrote::NativeMilestone(6, "Media".to_string(), false)),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Closed(6)));
     }
 
     #[tokio::test]

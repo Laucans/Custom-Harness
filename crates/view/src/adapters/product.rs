@@ -9,7 +9,7 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use harness_core::domain::{Halt, Issue, Outcome};
 use harness_core::ports::shell::github::{GitHub, Kept};
-use harness_workflows::common::labels;
+use harness_workflows::common::{labels, native_milestone};
 use harness_workflows::data_snapshot::config::ARCHIVE_BRANCH;
 use harness_workflows::dev_loop::data::tasks::current_milestone;
 
@@ -98,6 +98,11 @@ impl Product for GhProduct {
     ) -> Outcome<String> {
         let number = self.gh.create_issue(title, body, labels).await?;
         self.gh.create_sub_issue_link(milestone, number).await?;
+        // The native Milestone field is for the humans: a refusal is told,
+        // the task stays opened and linked.
+        if let Err(why) = native_milestone::place(self.gh.as_ref(), milestone, number).await {
+            tracing::warn!("{why}");
+        }
         Ok(self.url_of(number))
     }
 
@@ -227,7 +232,7 @@ mod tests {
     /// A GitHub that answers the Ports pane's calls and writes each down;
     /// every other call is refused.
     #[derive(Default)]
-    struct Recorder(std::cell::RefCell<Vec<String>>);
+    struct Recorder(std::cell::RefCell<Vec<String>>, std::cell::Cell<bool>);
 
     impl Recorder {
         fn note(&self, line: String) {
@@ -246,8 +251,13 @@ mod tests {
         async fn labels(&self) -> Outcome<Vec<String>> {
             Err(refused())
         }
-        async fn issue(&self, _number: u64) -> Outcome<harness_core::domain::Issue> {
-            Err(refused())
+        async fn issue(&self, number: u64) -> Outcome<harness_core::domain::Issue> {
+            Ok(harness_core::domain::Issue {
+                number,
+                title: "Media".to_string(),
+                state: "open".to_string(),
+                ..harness_core::domain::Issue::default()
+            })
         }
         async fn issues_labelled(
             &self,
@@ -362,11 +372,29 @@ mod tests {
         async fn delete_file(&self, _path: &str, _branch: &str, _message: &str) -> Outcome<bool> {
             Err(refused())
         }
-        async fn create_issue(&self, _title: &str, _body: &str, _labels: &[&str]) -> Outcome<u64> {
-            Err(refused())
+        async fn create_issue(&self, title: &str, _body: &str, _labels: &[&str]) -> Outcome<u64> {
+            self.note(format!("open {title}"));
+            Ok(40)
         }
-        async fn create_sub_issue_link(&self, _parent: u64, _child: u64) -> Outcome<()> {
-            Err(refused())
+        async fn create_sub_issue_link(&self, parent: u64, child: u64) -> Outcome<()> {
+            self.note(format!("link #{child} under #{parent}"));
+            Ok(())
+        }
+        async fn ensure_native_milestone(
+            &self,
+            issue: u64,
+            title: &str,
+            open: bool,
+        ) -> Outcome<u64> {
+            self.note(format!("native #{issue} {title} {open}"));
+            if self.1.get() {
+                return Err(refused());
+            }
+            Ok(3)
+        }
+        async fn set_issue_milestone(&self, issue: u64, milestone: u64) -> Outcome<()> {
+            self.note(format!("milestone #{issue} {milestone}"));
+            Ok(())
         }
         async fn add_blocked_by(&self, _number: u64, _blocker: u64) -> Outcome<()> {
             Err(refused())
@@ -439,5 +467,39 @@ mod tests {
         );
         assert!(folder.close_issue(1, "x").await.is_err());
         assert!(folder.to_decide(1, "x").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_task_opened_from_the_view_carries_its_milestone_natively_or_is_opened_anyway() {
+        let gh = Rc::new(Recorder::default());
+        let product = GhProduct::new(Rc::clone(&gh) as Rc<dyn GitHub>, "me/alpha", "main_agent");
+        let url = product
+            .open_task(28, "Schema", "body", &[labels::AGENT])
+            .await
+            .expect("opened");
+        assert_eq!(url, "https://github.com/me/alpha/issues/40");
+        assert_eq!(
+            gh.0.borrow().clone(),
+            vec![
+                "open Schema".to_string(),
+                "link #40 under #28".to_string(),
+                "native #28 Media true".to_string(),
+                "milestone #40 3".to_string(),
+            ]
+        );
+        // GitHub refuses the native milestone: the task is opened all the same.
+        let refusing = Rc::new(Recorder::default());
+        refusing.1.set(true);
+        let product = GhProduct::new(Rc::clone(&refusing) as Rc<dyn GitHub>, "", "main_agent");
+        let url = product
+            .open_task(28, "Schema", "body", &[labels::AGENT])
+            .await
+            .expect("opened anyway");
+        assert_eq!(url, "#40");
+        assert_eq!(
+            refusing.0.borrow().len(),
+            3,
+            "no milestone set without a native"
+        );
     }
 }

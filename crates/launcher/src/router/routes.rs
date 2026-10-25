@@ -905,6 +905,37 @@ async fn refreshed_before_landing(
     }
 }
 
+/// A landing told: the native milestone's refusal warned, the landing and
+/// the roadmap it delivered journalled, the line its run keeps; `None` for
+/// any other outcome.
+fn milestone_landed(milestone: u64, outcome: &MergeReport, log: &Logbook) -> Option<String> {
+    let MergeReport::Merged {
+        pr,
+        roadmap,
+        built,
+        native,
+    } = outcome
+    else {
+        return None;
+    };
+    if let Some(why) = native {
+        log.warn(&format!("watch: main_agent_merge -> {why}"));
+    }
+    log.event(&Event::MilestoneLanded {
+        milestone,
+        pr: pr.clone(),
+    });
+    if let Some(roadmap) = roadmap {
+        log.event(&Event::RoadmapDelivered { roadmap: *roadmap });
+    }
+    Some(format!(
+        "milestone #{milestone}: CI green — merged into the integration branch, its tasks \
+         closed; {} id(s) marked built — the branches still building take it at the next tick \
+         its checks are green",
+        built.len()
+    ))
+}
+
 /// Merges one milestone, and says so. Its own function only because the
 /// dispatch table is long enough already.
 pub(super) async fn run_main_agent_merge(
@@ -931,21 +962,7 @@ pub(super) async fn run_main_agent_merge(
                 MergeReport::OpenedPr(url) => Some(format!(
                     "milestone #{milestone}: every task merged — opened {url} to the integration branch"
                 )),
-                MergeReport::Merged { pr, roadmap, built } => {
-                    log.event(&Event::MilestoneLanded {
-                        milestone,
-                        pr: pr.clone(),
-                    });
-                    if let Some(roadmap) = roadmap {
-                        log.event(&Event::RoadmapDelivered { roadmap: *roadmap });
-                    }
-                    Some(format!(
-                        "milestone #{milestone}: CI green — merged into the integration branch, its tasks \
-                         closed; {} id(s) marked built — the branches still building take it at the \
-                         next tick its checks are green",
-                        built.len()
-                    ))
-                }
+                MergeReport::Merged { .. } => milestone_landed(milestone, &outcome, log),
                 // Red is told every tick it holds: a milestone PR that
                 // failed does not turn green by waiting.
                 MergeReport::Red { pr, checks } => {
@@ -1251,6 +1268,42 @@ mod merge_route_tests {
         let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
         refreshed_before_landing(&NoGitHub, 64, "68", "milestone/6-media", caught, &log).await;
         lines.0.borrow().clone()
+    }
+
+    #[test]
+    fn a_landing_is_journalled_and_a_native_milestone_refused_is_warned() {
+        let lines = Rc::new(Lines::default());
+        let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+        let quiet = MergeReport::Merged {
+            pr: "#99".to_string(),
+            roadmap: None,
+            built: vec!["media.upload".to_string()],
+            native: None,
+        };
+        let said = milestone_landed(4, &quiet, &log).expect("told");
+        assert!(said.contains("milestone #4: CI green"), "{said}");
+        assert!(said.contains("1 id(s) marked built"), "{said}");
+        assert_eq!(lines.0.borrow().len(), 1, "{:?}", lines.0.borrow());
+        assert!(lines.0.borrow()[0].contains("#4 landed by PR #99"));
+        let refused = MergeReport::Merged {
+            pr: "#99".to_string(),
+            roadmap: Some(2),
+            built: Vec::new(),
+            native: Some("#4's native milestone could not be kept: 403".to_string()),
+        };
+        lines.0.borrow_mut().clear();
+        assert!(milestone_landed(4, &refused, &log).is_some());
+        let journal = lines.0.borrow().clone();
+        assert_eq!(journal.len(), 3, "{journal:?}");
+        assert_eq!(
+            journal[0],
+            "warning: watch: main_agent_merge -> #4's native milestone could not be kept: 403"
+        );
+        assert!(
+            journal[2].contains("#2 -> every milestone landed"),
+            "{journal:?}"
+        );
+        assert_eq!(milestone_landed(4, &MergeReport::NotReady, &log), None);
     }
 
     #[tokio::test]

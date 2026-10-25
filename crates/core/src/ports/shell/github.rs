@@ -351,6 +351,31 @@ pub trait GitHub {
     /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.
     async fn create_sub_issue_link(&self, parent: u64, child: u64) -> Outcome<()>;
 
+    /// The native GitHub milestone that mirrors the milestone issue
+    /// `issue`, made to exist and to be `open` or closed as asked: its
+    /// number.
+    ///
+    /// Found again by the marker its description carries
+    /// (`<!-- harness-milestone: #<issue> -->`), created when absent —
+    /// titled `#<issue> <title>`, cut to GitHub's 255 characters — and its
+    /// state fixed when it differs. The milestone issue and its sub-issues
+    /// stay the harness's own truth: this field is for the humans and
+    /// GitHub's own views.
+    ///
+    /// # Errors
+    /// [`Halt::Unreadable`](crate::domain::Halt::Unreadable) if the
+    /// milestones cannot be listed;
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses the
+    /// create or the state change.
+    async fn ensure_native_milestone(&self, issue: u64, title: &str, open: bool) -> Outcome<u64>;
+
+    /// Put `issue` on the native milestone numbered `milestone` (GitHub's
+    /// Milestone field).
+    ///
+    /// # Errors
+    /// [`Halt::Halted`](crate::domain::Halt::Halted) if GitHub refuses.
+    async fn set_issue_milestone(&self, issue: u64, milestone: u64) -> Outcome<()>;
+
     /// Mark `number` as blocked by `blocker`.
     ///
     /// Takes issue **numbers**, same node-id resolution as

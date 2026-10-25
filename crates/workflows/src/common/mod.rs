@@ -14,7 +14,9 @@
 //! every building milestone branch up to the integration branch; `contest`
 //! what a PR waits on and how a settled rules contest is followed through,
 //! for the router and `decide`; `missing_task` opens the tasks the plan
-//! lacks, for the loop's stop handler and `decide`'s approval; `dossier` reads what
+//! lacks, for the loop's stop handler and `decide`'s approval; `native_milestone`
+//! keeps GitHub's native Milestone field on every task a milestone issue
+//! holds, for every opener and the landing; `dossier` reads what
 //! the factory's creation decided, for the planner and split. The vocabulary of the
 //! agent-native architecture every target repo follows is not here: it is
 //! the `harness-architecture` crate.
@@ -34,6 +36,7 @@ pub mod hierarchy;
 pub mod json_reply;
 pub mod labels;
 pub mod missing_task;
+pub mod native_milestone;
 pub mod review;
 pub mod routing;
 pub mod rule_waits;

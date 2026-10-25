@@ -11,9 +11,9 @@ use harness_architecture::graph::{self, Kind, State};
 use harness_core::domain::{Halt, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
-use harness_core::traces::Event;
+use harness_core::traces::{Event, Logbook};
 
-use crate::common::labels;
+use crate::common::{labels, native_milestone};
 use crate::contract_manager::data::change::{self, Answer, Change};
 use crate::contract_manager::data::producer;
 use crate::contract_manager::data::state::ManagerState;
@@ -214,12 +214,14 @@ impl Apply {
     /// while it is open, else the requester's; its tap open. Written as split
     /// writes a slice (`producer::item`, `split::action::publish::
     /// body_and_labels`): a whole SPEC, `produces: <id>`, the labels its
-    /// unit's side carries.
+    /// unit's side carries. Put on the milestone's native milestone too,
+    /// a refusal journalled on `log`.
     async fn producer_task(
         &self,
         ctx: &ManagerState,
         change: &Change,
         duplicate: bool,
+        log: &Logbook,
     ) -> Outcome<u64> {
         let id = &change.id;
         let kind = ctx.known.map_or(Kind::Capability, |(kind, _)| kind);
@@ -254,6 +256,7 @@ impl Apply {
         };
         if let Some(milestone) = under {
             self.gh.create_sub_issue_link(milestone, task).await?;
+            native_milestone::place_or_warn(self.gh.as_ref(), milestone, task, log).await;
         }
         Ok(task)
     }
@@ -382,7 +385,9 @@ impl Action<ManagerState> for Apply {
             Answer::Duplicate(change) => (change, true),
         };
         self.write_contract(&ctx.state, &change, duplicate).await?;
-        let producer_task = self.producer_task(&ctx.state, &change, duplicate).await?;
+        let producer_task = self
+            .producer_task(&ctx.state, &change, duplicate, &ctx.traces)
+            .await?;
         if duplicate {
             self.switch_requester(&ctx.state, &change).await?;
             self.tell_duplicate(&ctx.state, &change, producer_task)
@@ -468,6 +473,32 @@ mod tests {
             evolve_stage: "evolve".to_string(),
             base_branch: "main_agent".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn the_producer_s_task_is_put_on_its_milestone_s_native_milestone() {
+        let gh = Rc::new(FakeGitHub {
+            next_issue_number: std::cell::Cell::new(100),
+            issues: vec![Issue {
+                number: 20,
+                title: "Sessions".to_string(),
+                state: "open".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(true, Some(REPLY));
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        assert!(
+            writes.windows(3).any(|w| w
+                == [
+                    Wrote::SubIssueLink(20, 101),
+                    Wrote::NativeMilestone(20, "Sessions".to_string(), true),
+                    Wrote::IssueMilestone(101, 1),
+                ]),
+            "the producer's task on #20's native milestone: {writes:?}"
+        );
     }
 
     #[tokio::test]

@@ -22,16 +22,16 @@
 use std::rc::Rc;
 
 use async_trait::async_trait;
-use harness_core::domain::{Halt, Outcome, Verdict};
+use harness_core::domain::{Halt, Issue, Outcome, Verdict};
 use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
-use harness_core::traces::Event;
+use harness_core::traces::{Event, Logbook};
 
 use harness_architecture::vocabulary::Unit;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
-use crate::common::{branching, labels, sections};
+use crate::common::{branching, labels, native_milestone, sections};
 use crate::split::data::plan;
 use crate::split::data::state::SplitState;
 use harness_architecture::vocabulary::{Declaration, Side};
@@ -286,9 +286,12 @@ impl Action<SplitState> for Write {
         })?;
 
         let milestone_number = ctx.state.milestone().number;
-        if !items.is_empty() {
+        let native = if items.is_empty() {
+            None
+        } else {
             self.ensure_milestone_branch(ctx.state.milestone()).await?;
-        }
+            self.native(ctx.state.milestone(), &ctx.traces).await
+        };
         // Who produces what, among the tasks this split opened: what a later
         // task that needs the id waits on.
         let mut producers: BTreeMap<String, u64> = BTreeMap::new();
@@ -307,8 +310,7 @@ impl Action<SplitState> for Write {
             let layer = declaration.unit.layer();
             let (body, labels) = body_and_labels(item, &declaration, kind, side);
             let number = self.gh.create_issue(&item.title, &body, &labels).await?;
-            self.gh
-                .create_sub_issue_link(milestone_number, number)
+            self.link(milestone_number, native, number, &ctx.traces)
                 .await?;
             let blockers = blockers_of(
                 number,
@@ -373,13 +375,43 @@ impl Action<SplitState> for Write {
 }
 
 impl Write {
+    /// GitHub's native milestone mirroring `milestone`, made once for every
+    /// task of the split: `None`, the refusal told, when GitHub will not —
+    /// the tasks open without the field.
+    async fn native(&self, milestone: &Issue, log: &Logbook) -> Option<u64> {
+        match native_milestone::ensure(self.gh.as_ref(), milestone).await {
+            Ok(number) => Some(number),
+            Err(why) => {
+                log.warn(&why);
+                None
+            }
+        }
+    }
+
+    /// Links `task` under `milestone`, then puts it on the milestone's
+    /// native milestone when there is one — a refusal of the latter told,
+    /// never a failed split.
+    async fn link(
+        &self,
+        milestone: u64,
+        native: Option<u64>,
+        task: u64,
+        log: &Logbook,
+    ) -> Outcome<()> {
+        self.gh.create_sub_issue_link(milestone, task).await?;
+        if let Some(native) = native
+            && let Err(why) =
+                native_milestone::assign(self.gh.as_ref(), native, milestone, task).await
+        {
+            log.warn(&why);
+        }
+        Ok(())
+    }
+
     /// Creates the milestone's own branch, off `base_branch`, if it does
     /// not exist yet — the first task's PR needs somewhere to land, and
     /// nothing else in the harness creates this branch.
-    async fn ensure_milestone_branch(
-        &self,
-        milestone: &harness_core::domain::Issue,
-    ) -> Outcome<()> {
+    async fn ensure_milestone_branch(&self, milestone: &Issue) -> Outcome<()> {
         let branch = branching::milestone_branch(milestone.number, &milestone.title);
         if self.gh.branch_sha(&branch).await?.is_some() {
             return Ok(());
@@ -530,6 +562,16 @@ mod tests {
         ctx
     }
 
+    /// The journal's lines, kept.
+    #[derive(Default)]
+    struct Capture(std::cell::RefCell<Vec<String>>);
+
+    impl harness_core::traces::Sink for Capture {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
     /// A fake with the milestone branch absent and `main_agent` at a known
     /// sha — the common setup for a test that creates tasks.
     fn gh_with_base() -> FakeGitHub {
@@ -678,6 +720,7 @@ mod tests {
                     "milestone/4-territory-tooling".to_string(),
                     "basesha".to_string()
                 ),
+                Wrote::NativeMilestone(4, "Territory tooling".to_string(), true),
                 Wrote::CreatedIssue(
                     "A".to_string(),
                     "## Scope\n\nbranch: feat/a\n\ndo A\n\n## Architecture\n\n\
@@ -690,6 +733,7 @@ mod tests {
                     ]
                 ),
                 Wrote::SubIssueLink(4, 1),
+                Wrote::IssueMilestone(1, 1),
                 Wrote::CreatedIssue(
                     "B".to_string(),
                     "## Scope\n\nbranch: feat/b\n\ndo B\n\n## Architecture\n\n\
@@ -698,10 +742,87 @@ mod tests {
                     vec![labels::HUMAN.to_string(), labels::READ_SIDE.to_string()]
                 ),
                 Wrote::SubIssueLink(4, 2),
+                Wrote::IssueMilestone(2, 1),
                 Wrote::BlockedByLink(2, 1),
                 Wrote::Unlabelled(4, labels::READY.to_string()),
                 Wrote::Label(4, labels::TRIGGERED.to_string()),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_milestone_github_refuses_is_told_once_and_the_tasks_open_all_the_same() {
+        let gh = Rc::new(FakeGitHub {
+            natives_broken: Some(Halt::Halted("HTTP 403".to_string())),
+            ..gh_with_base()
+        });
+        let mut context = ctx(
+            false,
+            r#"[{"title":"A","brief":"do A","branch":"feat/a","needs_human":false,"unit":"capability","system":"credit","concept":"Risk@3"},
+               {"title":"B","brief":"do B","branch":"feat/b","needs_human":false,"unit":"capability","system":"credit","concept":"Loan@3"}]"#,
+        );
+        let capture = Rc::new(Capture::default());
+        context.traces = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        Write {
+            gh: gh.clone(),
+            slice_stage: "slice".to_string(),
+            base_branch: "main_agent".to_string(),
+            profile: "mid".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("published all the same");
+        assert_eq!(links(&gh).len(), 0, "no blocker between A and B");
+        let linked: Vec<Wrote> = gh
+            .writes()
+            .into_iter()
+            .filter(|w| matches!(w, Wrote::SubIssueLink(..) | Wrote::IssueMilestone(..)))
+            .collect();
+        assert_eq!(
+            linked,
+            vec![Wrote::SubIssueLink(4, 1), Wrote::SubIssueLink(4, 2)]
+        );
+        let warned: Vec<String> = capture
+            .0
+            .borrow()
+            .iter()
+            .filter(|line| line.starts_with("warning:"))
+            .cloned()
+            .collect();
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0].contains("#4's native milestone could not be kept: HTTP 403"),
+            "{warned:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_whose_native_milestone_github_refuses_is_still_linked() {
+        let gh = FakeGitHub {
+            natives_broken: Some(Halt::Halted("HTTP 403".to_string())),
+            ..FakeGitHub::default()
+        };
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        let write = Write {
+            gh: Rc::new(gh),
+            slice_stage: "slice".to_string(),
+            base_branch: "main_agent".to_string(),
+            profile: "mid".to_string(),
+        };
+        write.link(4, Some(1), 7, &log).await.expect("linked");
+        write.link(4, None, 8, &log).await.expect("linked");
+        let said = capture.0.borrow().clone();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].contains("#7 is a sub-issue of #4 but not on its native"),
+            "{said:?}"
         );
     }
 

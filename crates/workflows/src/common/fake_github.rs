@@ -54,6 +54,10 @@ pub enum Wrote {
     PutFile(String, String, String),
     /// A file deleted on a branch: path, branch, message.
     DeletedFile(String, String, String),
+    /// A native milestone ensured: the milestone issue, its title, open.
+    NativeMilestone(u64, String, bool),
+    /// An issue put on a native milestone: the issue, the native's number.
+    IssueMilestone(u64, u64),
 }
 
 /// An in-memory GitHub.
@@ -152,6 +156,13 @@ pub struct FakeGitHub {
     /// The compares (`base...head`) `changed_files` fails on, as GitHub
     /// does for a ref it does not know.
     pub broken_compares: Vec<String>,
+    /// The milestone issues whose native milestone was ensured, in the
+    /// order first asked: the native's number is the position, from 1, as
+    /// GitHub numbers milestones.
+    pub natives: RefCell<Vec<u64>>,
+    /// When filled, both native milestone writes refuse with this halt — a
+    /// token without the right, a GitHub outage.
+    pub natives_broken: Option<Halt>,
 }
 
 impl FakeGitHub {
@@ -180,6 +191,14 @@ impl FakeGitHub {
     /// The writes, in order.
     pub fn writes(&self) -> Vec<Wrote> {
         self.wrote.borrow().clone()
+    }
+
+    /// Refuses a native milestone write when told to.
+    fn natives_ok(&self) -> Outcome<()> {
+        self.ok()?;
+        self.natives_broken
+            .as_ref()
+            .map_or(Ok(()), |halt| Err(halt.clone()))
     }
 }
 
@@ -494,6 +513,30 @@ impl GitHub for FakeGitHub {
         self.wrote
             .borrow_mut()
             .push(Wrote::SubIssueLink(parent, child));
+        Ok(())
+    }
+
+    async fn ensure_native_milestone(&self, issue: u64, title: &str, open: bool) -> Outcome<u64> {
+        self.natives_ok()?;
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::NativeMilestone(issue, title.to_string(), open));
+        let mut natives = self.natives.borrow_mut();
+        let at = natives
+            .iter()
+            .position(|known| *known == issue)
+            .unwrap_or_else(|| {
+                natives.push(issue);
+                natives.len() - 1
+            });
+        Ok(u64::try_from(at).unwrap_or(u64::MAX) + 1)
+    }
+
+    async fn set_issue_milestone(&self, issue: u64, milestone: u64) -> Outcome<()> {
+        self.natives_ok()?;
+        self.wrote
+            .borrow_mut()
+            .push(Wrote::IssueMilestone(issue, milestone));
         Ok(())
     }
 

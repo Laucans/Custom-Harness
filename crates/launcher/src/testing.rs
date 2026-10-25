@@ -136,6 +136,17 @@ impl GitHub for NoGitHub {
     async fn create_sub_issue_link(&self, _parent: u64, _child: u64) -> Outcome<()> {
         Err(refused())
     }
+    async fn ensure_native_milestone(
+        &self,
+        _issue: u64,
+        _title: &str,
+        _open: bool,
+    ) -> Outcome<u64> {
+        Err(refused())
+    }
+    async fn set_issue_milestone(&self, _issue: u64, _milestone: u64) -> Outcome<()> {
+        Err(refused())
+    }
     async fn add_blocked_by(&self, _number: u64, _blocker: u64) -> Outcome<()> {
         Err(refused())
     }

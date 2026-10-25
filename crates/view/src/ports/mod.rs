@@ -474,8 +474,9 @@ pub trait Product {
         Ok(None)
     }
 
-    /// Opens a task under a milestone — a sub-issue of it — and says where
-    /// it is.
+    /// Opens a task under a milestone — a sub-issue of it, put on its
+    /// native GitHub milestone too (a refusal of that only warned) — and
+    /// says where it is.
     ///
     /// # Errors
     ///

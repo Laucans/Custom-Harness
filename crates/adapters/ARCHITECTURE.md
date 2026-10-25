@@ -38,7 +38,15 @@ shell/    process      the only place in the crate that spawns a subprocess; `Pr
                        `push` and `pull_request` runs stay apart); `delete_file`
                        is a contents API DELETE against the blob's sha;
                        `commit_time` reads `commit.committer.date` (ISO 8601 read
-                       in a few lines, `epoch_of`, no date crate)
+                       in a few lines, `epoch_of`, no date crate);
+                       `ensure_native_milestone` reads `milestones?state=all`
+                       fresh, page by page (`find_native`, never past `MAX_PAGES`:
+                       more fails, never reads as absent), finds the mirror by the
+                       marker in its description (`native_in`), then keeps, turns
+                       (`PATCH milestones/{n} state`) or creates it (`POST
+                       milestones`, title `#<n> <title>` cut to 255 characters,
+                       `native_step`); `set_issue_milestone` is `PATCH issues/{n}
+                       -F milestone=<number>` (`write_typed`: a typed field)
           disk         RealDisk — a folder's size is its tree's blocks, links never followed
                        (what `du` counts)
           volume       Statvfs — `statvfs(3)` through rustix's safe wrapper (`f_bavail` ×

@@ -3,7 +3,7 @@
 use harness_architecture::graph::{self, Graph};
 use harness_core::domain::Outcome;
 
-use crate::common::{branching, contest, delivery, labels, review};
+use crate::common::{branching, contest, delivery, labels, native_milestone, review};
 use crate::main_agent_merge::config::Config;
 use crate::main_agent_merge::data::audit;
 use crate::main_agent_merge::data::merge_train;
@@ -87,6 +87,12 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
                 });
             }
             ports.gh.add_label(milestone, labels::WAITING_MERGE).await?;
+            // Landed on the integration branch, where `Closes #<n>` does not
+            // fire: the issue stays open, waiting-merge, until promotion;
+            // its native milestone reads closed from now on.
+            let native = native_milestone::close(ports.gh.as_ref(), &issue)
+                .await
+                .err();
             close_delivered(ports, &tasks, &pr.reference()).await?;
             let built = mark_built(ports, config, graph, milestone, &pr.num).await?;
             // The other milestones still building take the landing through
@@ -97,6 +103,7 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
                 pr: pr.reference(),
                 roadmap,
                 built,
+                native,
             })
         } else {
             // Checks that ran on an older base do not run again by
@@ -658,6 +665,7 @@ mod tests {
                 pr: "#99".to_string(),
                 roadmap: None,
                 built: Vec::new(),
+                native: None,
             }
         );
         let writes = gh.writes();
@@ -697,6 +705,7 @@ mod tests {
                 pr: "#99".to_string(),
                 roadmap: None,
                 built: Vec::new(),
+                native: None,
             }
         );
         assert_eq!(
@@ -704,7 +713,40 @@ mod tests {
             vec![
                 crate::common::fake_github::Wrote::MergedPr("99".to_string()),
                 crate::common::fake_github::Wrote::Label(4, labels::WAITING_MERGE.to_string()),
+                crate::common::fake_github::Wrote::NativeMilestone(
+                    4,
+                    "Territory tooling".to_string(),
+                    false
+                ),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_native_milestone_github_will_not_close_is_told_and_the_landing_stands() {
+        let gh = green_pr(|gh| FakeGitHub {
+            natives_broken: Some(harness_core::domain::Halt::Halted(
+                "Resource not accessible by integration".to_string(),
+            )),
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        let MergeOutcome::Merged { pr, native, .. } = outcome else {
+            panic!("merged: {outcome:?}");
+        };
+        assert_eq!(pr, "#99");
+        let why = native.expect("the refusal told");
+        assert!(
+            why.starts_with("#4's native milestone could not be kept"),
+            "{why}"
+        );
+        assert!(
+            gh.writes()
+                .contains(&crate::common::fake_github::Wrote::MergedPr(
+                    "99".to_string()
+                ))
         );
     }
 
@@ -916,6 +958,7 @@ mod tests {
                 pr: "#99".to_string(),
                 roadmap: Some(2),
                 built: Vec::new(),
+                native: None,
             }
         );
         let writes = gh.writes();
@@ -1035,6 +1078,7 @@ mod tests {
                 pr: "#99".to_string(),
                 roadmap: None,
                 built: vec!["territory.listZones".to_string()],
+                native: None,
             }
         );
         let writes = gh.writes();
