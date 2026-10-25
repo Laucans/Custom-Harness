@@ -16,6 +16,7 @@ use harness_core::traces::{Event, Logbook};
 use crate::common::{labels, native_milestone};
 use crate::contract_manager::data::change::{self, Answer, Change};
 use crate::contract_manager::data::producer;
+use crate::contract_manager::data::request::{self, Producer};
 use crate::contract_manager::data::state::ManagerState;
 use crate::dev_loop::data::missing;
 use crate::split::action::publish::body_and_labels;
@@ -215,14 +216,15 @@ impl Apply {
     /// writes a slice (`producer::item`, `split::action::publish::
     /// body_and_labels`): a whole SPEC, `produces: <id>`, the labels its
     /// unit's side carries. Put on the milestone's native milestone too,
-    /// a refusal journalled on `log`.
+    /// a refusal journalled on `log`. Answers the task and the milestone it
+    /// went under, which the request then records ([`Apply::record`]).
     async fn producer_task(
         &self,
         ctx: &ManagerState,
         change: &Change,
         duplicate: bool,
         log: &Logbook,
-    ) -> Outcome<u64> {
+    ) -> Outcome<Producer> {
         let id = &change.id;
         let kind = ctx.known.map_or(Kind::Capability, |(kind, _)| kind);
         let why = if duplicate {
@@ -258,7 +260,24 @@ impl Apply {
             self.gh.create_sub_issue_link(milestone, task).await?;
             native_milestone::place_or_warn(self.gh.as_ref(), milestone, task, log).await;
         }
-        Ok(task)
+        Ok(Producer {
+            task,
+            milestone: under,
+        })
+    }
+
+    /// The producer task written on the request (`producer: #<task> on
+    /// #<milestone>`), before it closes: a PR that waited on the change
+    /// resumes once that task landed on its base, not when the manifest
+    /// alone did (`common::contest::contract_landed`; `ForgeDesMondes`'
+    /// #580, 2026-10-25: resumed on #581's v2 manifest while #582, which
+    /// built it, had not landed — `rules-hold` stayed red and its repairs
+    /// burned).
+    async fn record(&self, ctx: &ManagerState, producer: Producer) -> Outcome<()> {
+        let issue = ctx.issue();
+        self.gh
+            .set_body(issue.number, &request::with_producer(&issue.body, producer))
+            .await
     }
 
     /// Every consumer told, the requester told, the request closed.
@@ -385,9 +404,11 @@ impl Action<ManagerState> for Apply {
             Answer::Duplicate(change) => (change, true),
         };
         self.write_contract(&ctx.state, &change, duplicate).await?;
-        let producer_task = self
+        let producer = self
             .producer_task(&ctx.state, &change, duplicate, &ctx.traces)
             .await?;
+        self.record(&ctx.state, producer).await?;
+        let producer_task = producer.task;
         if duplicate {
             self.switch_requester(&ctx.state, &change).await?;
             self.tell_duplicate(&ctx.state, &change, producer_task)
@@ -600,6 +621,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_request_records_its_producer_task_before_it_closes() {
+        // A PR that waited on it resumes once #101 landed, not on the
+        // manifest alone (ForgeDesMondes #580, #581, #582).
+        let gh = Rc::new(FakeGitHub {
+            next_issue_number: std::cell::Cell::new(100),
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(true, Some(REPLY));
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        let recorded = writes
+            .iter()
+            .position(|w| {
+                matches!(w, Wrote::Body(70, body) if request::producer(body)
+                    == Some(Producer { task: 101, milestone: Some(20) }))
+            })
+            .expect("the producer recorded on the request");
+        let closed = writes
+            .iter()
+            .position(|w| *w == Wrote::Closed(70))
+            .expect("closed");
+        assert!(recorded < closed, "{writes:?}");
+    }
+
+    #[tokio::test]
     async fn a_write_side_contract_opens_a_data_layer_task() {
         let gh = Rc::new(FakeGitHub::default());
         let mut context = ctx(
@@ -685,6 +731,11 @@ mod tests {
             "the original's other consumer is not told: {writes:?}"
         );
         assert!(writes.contains(&Wrote::Closed(70)));
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Body(70, body)
+                if request::producer(body).and_then(|p| p.milestone) == Some(19))),
+            "the duplicate's producer, under the requester's milestone: {writes:?}"
+        );
     }
 
     #[tokio::test]
@@ -741,7 +792,7 @@ mod tests {
         let mut context = ctx(true, Some(dup));
         apply(&gh).run(&mut context).await.expect("duplicated");
         assert!(
-            !gh.writes().iter().any(|w| matches!(w, Wrote::Body(..))),
+            !gh.writes().iter().any(|w| matches!(w, Wrote::Body(61, _))),
             "{:?}",
             gh.writes()
         );

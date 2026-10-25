@@ -69,7 +69,11 @@ Capability action, one per Micro-UI, the screen last — and two slices that
 share no id run in parallel. **One Micro-UI is one slice**, whatever
 components it realises — never two slices on the same Micro-UI, and every
 Micro-UI or screen slice names in `produces` the Micro-UI (or screen) it
-builds, as the mock-up names it. The mock-up already built it
+builds, as the mock-up names it. **A slice that evolves a unit already in
+the repository names that unit's id in `produces` too** — the loop narrows
+the session's checkout to what the task produces, and a slice with none
+cannot see its own unit's folder; only `infrastructure` and `tooling`
+slices may leave `produces` empty. The mock-up already built it
 (`mock/components/<MicroUi>.html`, `mock/src/`): its slice mostly takes it
 into `apps/<system>/<name>/` and connects it to the Capabilities and
 DataCapabilities it names. Never bundle "the data layer" into one slice:

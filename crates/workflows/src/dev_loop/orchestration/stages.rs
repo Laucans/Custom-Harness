@@ -529,7 +529,9 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
         restart: config.restart,
     }));
     pre.push(Box::new(gates::CodeHasASpec));
-    pre.push(Box::new(gates::TaskHasASpec));
+    pre.push(Box::new(gates::TaskHasASpec {
+        gh: Rc::clone(&ports.gh),
+    }));
     Stage {
         name: "code".to_string(),
         pre: Some(Gate {

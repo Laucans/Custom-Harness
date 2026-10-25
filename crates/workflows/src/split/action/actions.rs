@@ -449,8 +449,9 @@ impl SessionAction<SplitState> for AskForSlice {
                 format!(
                     "Your previous answer's slices are not whole SPECs: {}. Reply again with \
                      the whole JSON array, each agent slice carrying its `goal`, its \
-                     `acceptance` criteria and every rule it claims cited `(R<id>)` in one \
-                     of them — ONLY the JSON array, no prose.",
+                     `acceptance` criteria, every rule it claims cited `(R<id>)` in one of \
+                     them, and — for every unit but `infrastructure` and `tooling` — the id \
+                     it builds or evolves in `produces` — ONLY the JSON array, no prose.",
                     gaps.join("; ")
                 )
             }

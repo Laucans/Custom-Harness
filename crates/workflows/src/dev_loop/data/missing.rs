@@ -291,11 +291,7 @@ fn gaps(item: &TaskItem) -> Vec<String> {
     if item.system.trim().is_empty() {
         gaps.push("it names no `system`".to_string());
     }
-    // Plumbing and tooling ship no manifest id: their branch names them.
-    let named_by_branch = matches!(unit, Some(Unit::Infrastructure | Unit::Tooling));
-    if id(item).is_none() && !named_by_branch {
-        gaps.push("it names nothing it `produces`".to_string());
-    }
+    // What it `produces` is split's measure too: one message, from there.
     gaps.extend(plan::spec_gaps(std::slice::from_ref(item)));
     gaps
 }
@@ -662,6 +658,11 @@ mod tests {
         assert!(
             matches!(asked(&bare("aggregate")), Some(Asked::Refused { why, .. }) if why.contains("`produces`"))
         );
+        // Told once: split's measure says it, the opener does not repeat it.
+        let Some(Asked::Refused { why, .. }) = asked(&bare("aggregate")) else {
+            panic!("refused");
+        };
+        assert_eq!(why.matches("`produces`").count(), 1, "{why}");
     }
 
     #[test]

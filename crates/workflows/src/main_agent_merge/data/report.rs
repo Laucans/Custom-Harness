@@ -36,8 +36,11 @@ pub enum Outcome {
         /// The failing checks, one readable line each.
         checks: Vec<String>,
         /// Whether the decision was asked now (`false`: asked already, or a
-        /// human's, or the owner answered).
+        /// human's, or the owner answered, or a wait stands).
         asked: bool,
+        /// The issues its decided waits named, landed: the PR was resumed
+        /// on them now instead (`milestone_merge::Escalation::Resumed`).
+        resumed: Vec<u64>,
     },
     /// A PR's checks were green, but GitHub says it conflicts with the base,
     /// and the base could not be merged into the milestone branch: nothing

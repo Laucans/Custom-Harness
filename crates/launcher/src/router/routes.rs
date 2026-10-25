@@ -975,6 +975,44 @@ fn milestone_landed(milestone: u64, outcome: &MergeReport, log: &Logbook) -> Opt
     ))
 }
 
+/// Journals a landing PR past its repairs (`MergeReport::Escalated`):
+/// resumed on its settled waits, a decision asked (`RepairsExhausted`),
+/// or nothing new — anything else is no escalation and says nothing.
+fn escalated(milestone: u64, outcome: &MergeReport, log: &Logbook) {
+    let MergeReport::Escalated {
+        pr,
+        checks,
+        asked,
+        resumed,
+    } = outcome
+    else {
+        return;
+    };
+    if !resumed.is_empty() {
+        let named = resumed
+            .iter()
+            .map(|on| format!("#{on}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        log.say(&format!(
+            "watch: decided wait on {named} landed -> PR {pr} of #{milestone} resumed, its \
+             repairs counted anew"
+        ));
+    } else if *asked {
+        log.event(&Event::RepairsExhausted {
+            task: milestone,
+            pr: pr.clone(),
+            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES).unwrap_or(u64::MAX),
+        });
+    } else {
+        log.debug(&format!(
+            "watch: main_agent_merge -> PR {pr} of #{milestone} is red past its repairs ({}) — \
+             its decision is asked, a human's, or its repair still runs",
+            checks.join("; ")
+        ));
+    }
+}
+
 /// Merges one milestone, and says so. Its own function only because the
 /// dispatch table is long enough already.
 pub(super) async fn run_main_agent_merge(
@@ -1015,22 +1053,8 @@ pub(super) async fn run_main_agent_merge(
                 }
                 // Past its repairs: a decision asked on the milestone, once,
                 // never a third repair asked every tick.
-                MergeReport::Escalated { pr, checks, asked } => {
-                    if *asked {
-                        log.event(&Event::RepairsExhausted {
-                            task: milestone,
-                            pr: pr.clone(),
-                            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES)
-                                .unwrap_or(u64::MAX),
-                        });
-                    } else {
-                        log.debug(&format!(
-                            "watch: main_agent_merge -> PR {pr} of #{milestone} is red past its \
-                             repairs ({}) — its decision is asked, a human's, or its repair \
-                             still runs",
-                            checks.join("; ")
-                        ));
-                    }
+                MergeReport::Escalated { .. } => {
+                    escalated(milestone, &outcome, log);
                     None
                 }
                 // Neither stops the watch: a conflict waits for a catch-up
@@ -1313,6 +1337,44 @@ mod merge_route_tests {
         let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
         refreshed_before_landing(&NoGitHub, 64, "68", "milestone/6-media", caught, &log).await;
         lines.0.borrow().clone()
+    }
+
+    #[test]
+    fn a_landing_pr_resumed_on_its_waits_is_journalled_and_an_ask_is_an_event() {
+        let lines = Rc::new(Lines::default());
+        let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+        let report = |asked: bool, resumed: Vec<u64>| MergeReport::Escalated {
+            pr: "#590".to_string(),
+            checks: vec!["rules-hold".to_string()],
+            asked,
+            resumed,
+        };
+        escalated(30, &report(false, vec![27, 28]), &log);
+        assert_eq!(
+            lines.0.borrow().as_slice(),
+            [
+                "watch: decided wait on #27, #28 landed -> PR #590 of #30 resumed, its repairs \
+              counted anew"
+                    .to_string()
+            ]
+        );
+        lines.0.borrow_mut().clear();
+        escalated(30, &report(true, Vec::new()), &log);
+        assert_eq!(lines.0.borrow().len(), 1, "{:?}", lines.0.borrow());
+        assert!(
+            !lines.0.borrow()[0].contains("resumed"),
+            "{:?}",
+            lines.0.borrow()
+        );
+        lines.0.borrow_mut().clear();
+        escalated(30, &report(false, Vec::new()), &log);
+        escalated(30, &MergeReport::OpenedPr("u".to_string()), &log);
+        assert_eq!(lines.0.borrow().len(), 1, "{:?}", lines.0.borrow());
+        assert!(
+            lines.0.borrow()[0].contains("is red past its repairs (rules-hold)"),
+            "{:?}",
+            lines.0.borrow()
+        );
     }
 
     #[test]

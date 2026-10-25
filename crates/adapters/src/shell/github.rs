@@ -223,7 +223,24 @@ fn issue_from(payload: &Value) -> Outcome<Issue> {
         body: text_at(payload, "body"),
         blocked_by: Vec::new(),
         not_planned: text_at(payload, "state_reason") == "not_planned",
+        milestone: payload.get("milestone").and_then(milestone_issue),
     })
+}
+
+/// The milestone issue a native milestone mirrors: the number its marker
+/// names in the description ([`native_marker`]), else its title's `#<n>`
+/// ([`native_title`]). `None` for a native milestone the harness did not
+/// make.
+fn milestone_issue(native: &Value) -> Option<u64> {
+    let leading = |text: &str| -> Option<u64> {
+        let digits: String = text.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    };
+    let description = text_at(native, "description");
+    description
+        .split_once("<!-- harness-milestone: #")
+        .and_then(|(_, rest)| leading(rest))
+        .or_else(|| text_at(native, "title").strip_prefix('#').and_then(leading))
 }
 
 /// A text field, or empty. `null` and missing read the same.
@@ -3273,6 +3290,29 @@ mod tests {
         assert!(read(json!("not_planned")));
         assert!(!read(json!("completed")));
         assert!(!read(Value::Null));
+    }
+
+    #[test]
+    fn an_issue_names_the_milestone_issue_its_native_milestone_mirrors() {
+        let read = |milestone: Value| {
+            issue_from(&json!({ "number": 582, "milestone": milestone }))
+                .expect("parse")
+                .milestone
+        };
+        assert_eq!(
+            read(json!({ "title": "#30 Campaign home", "description": native_description(30) })),
+            Some(30)
+        );
+        assert_eq!(
+            read(json!({ "title": "#27 Renamed", "description": "a human's words" })),
+            Some(27),
+            "the title, when the marker is gone"
+        );
+        assert_eq!(
+            read(json!({ "title": "v1.0", "description": "<!-- harness-milestone: #x -->" })),
+            None
+        );
+        assert_eq!(read(Value::Null), None);
     }
 
     #[test]

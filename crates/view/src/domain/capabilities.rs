@@ -656,6 +656,7 @@ mod tests {
             body: body.to_string(),
             blocked_by: Vec::new(),
             not_planned: false,
+            milestone: None,
         }
     }
 

@@ -707,8 +707,9 @@ async fn snapshot(
         not_running(&to_review, running),
     );
     let rules = gh.issues_labelled(labels::RULES, "open").await?;
+    let lane = (running, branch);
     let (prs_waiting, prs_to_fix, closed_rules) =
-        repairs_due(gh, &task_prs, (&fixable, &reviewable), &rules, running, log).await?;
+        repairs_due(gh, &task_prs, (&fixable, &reviewable), &rules, lane, log).await?;
     let prs_to_review = prs_worth_reviewing(gh, &reviewable).await?;
     // The plan's graph, when the plan wrote one: what orders the milestones
     // and says which may build side by side.
@@ -745,7 +746,7 @@ async fn snapshot(
     let mut tasks_to_merge = Vec::new();
     let mergeable = contest::not_waiting(&to_review, &prs_waiting);
     for board in &boards {
-        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &mergeable, running, log).await?);
+        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &mergeable, lane, log).await?);
     }
     let (rules_merge, rules_on_pr) = rules_train(gh, &rules).await?;
     tasks_to_merge.extend(rules_merge);
@@ -817,7 +818,7 @@ async fn repairs_due(
     task_prs: &[Pr],
     (fixable, reviewable): (&[Pr], &[Pr]),
     rules: &[Issue],
-    running: &[u64],
+    (running, branch): (&[u64], &str),
     log: &Logbook,
 ) -> Outcome<(Vec<(Pr, contest::PrWait)>, Vec<Pr>, Vec<Issue>)> {
     let closed = gh.issues_labelled(labels::RULES, "closed").await?;
@@ -833,6 +834,7 @@ async fn repairs_due(
         &fixable,
         &reviewable,
         running,
+        branch,
         log,
     )
     .await?;
@@ -1034,11 +1036,13 @@ async fn green_task_pr(
     gh: &dyn GitHub,
     tasks: &[Issue],
     to_review: &[Pr],
-    running: &[u64],
+    (running, branch): (&[u64], &str),
     log: &Logbook,
 ) -> Outcome<Option<(u64, Pr)>> {
-    let (found, escalated) =
-        harness_workflows::milestone_merge::ready_to_merge(gh, tasks, to_review, running).await?;
+    let (found, escalated) = harness_workflows::milestone_merge::ready_to_merge(
+        gh, tasks, to_review, running, branch, log,
+    )
+    .await?;
     for (task, pr) in escalated {
         log.event(&Event::RepairsExhausted {
             task,
@@ -1471,9 +1475,16 @@ mod tests {
         );
         // The repairs read the closed rules' issues first.
         assert!(
-            repairs_due(&NoGitHub, &[], (&[], &[]), &[], &[], &Logbook::null())
-                .await
-                .is_err()
+            repairs_due(
+                &NoGitHub,
+                &[],
+                (&[], &[]),
+                &[],
+                (&[], "main_agent"),
+                &Logbook::null()
+            )
+            .await
+            .is_err()
         );
     }
 

@@ -64,6 +64,69 @@ impl Request {
     }
 }
 
+/// The task the contract manager opened to build a change, and the
+/// milestone it went under — what a PR waiting on the change waits on in
+/// truth (`common::contest::contract_landed`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Producer {
+    /// The producer task (`#582`).
+    pub task: u64,
+    /// The milestone it was opened under, when it went under one.
+    pub milestone: Option<u64>,
+}
+
+/// What opens the line the contract manager writes on a request it
+/// answered with a producer task: `producer: #582 on #30`.
+const PRODUCER: &str = "producer:";
+
+/// The request's header: its lines before the first blank one — the
+/// `key: value` lines [`Request::render`] writes, before the prose.
+fn header(body: &str) -> impl Iterator<Item = &str> {
+    body.lines().take_while(|line| !line.trim().is_empty())
+}
+
+/// `body` with its producer line at the end of the request's header.
+///
+/// The line is `producer: #<task> on #<milestone>` (or `on -`); the header
+/// is the request's `key: value` lines ([`header`]). One already in the
+/// header is replaced, and a line of the prose that happens to start with
+/// `producer:` is left as it is.
+#[must_use]
+pub fn with_producer(body: &str, producer: Producer) -> String {
+    let line = format!(
+        "{PRODUCER} #{} on {}",
+        producer.task,
+        producer
+            .milestone
+            .map_or_else(|| "-".to_string(), |m| format!("#{m}"))
+    );
+    let kept = header(body).count();
+    let mut lines: Vec<String> = header(body)
+        .filter(|kept| !kept.trim_start().starts_with(PRODUCER))
+        .map(ToString::to_string)
+        .collect();
+    lines.push(line);
+    lines.extend(body.lines().skip(kept).map(ToString::to_string));
+    lines.join("\n")
+}
+
+/// The producer task a request records in its header ([`with_producer`]);
+/// `None` for a request answered without one — handed back, the
+/// requester's own, or written before the line existed.
+#[must_use]
+pub fn producer(body: &str) -> Option<Producer> {
+    let rest = header(body)
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix(PRODUCER))?
+        .trim();
+    let (task, milestone) = rest.split_once(" on ").unwrap_or((rest, "-"));
+    let number = |text: &str| text.trim().trim_start_matches('#').parse::<u64>().ok();
+    Some(Producer {
+        task: number(task)?,
+        milestone: number(milestone),
+    })
+}
+
 /// The stop a consumer makes: `AGENT_LOOP_STOP: contract <id> — <need>`,
 /// read as the id and the need. `None` when the reason asks nothing of a
 /// contract.
@@ -88,6 +151,37 @@ pub fn asked(reason: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn a_producer_line_reads_back_leaves_the_request_whole_and_writes_once(
+            task in 1u64..1_000_000,
+            milestone in proptest::option::of(1u64..100_000),
+            asker in 1u64..1_000_000,
+            need in "[a-zA-Z0-9#:.,'()-]([a-zA-Z0-9#:.,'() -]{0,40}[a-zA-Z0-9#:.,'()-])?",
+            crlf in any::<bool>(),
+            prose in "(producer: #9 on #9 later in the prose)?",
+        ) {
+            let request = Request {
+                id: "campaign.listCampaigns".to_string(),
+                task: asker,
+                milestone,
+                need,
+            };
+            let mut body = format!("{}\n{prose}", request.render());
+            if crlf {
+                body = body.replace('\n', "\r\n");
+            }
+            let built = Producer { task, milestone };
+            let written = with_producer(&body, built);
+            prop_assert_eq!(producer(&written), Some(built));
+            prop_assert_eq!(Request::parse(&written), Request::parse(&body));
+            prop_assert_eq!(&with_producer(&written, built), &written);
+            // The prose is left as it was.
+            prop_assert_eq!(written.contains(&prose), true);
+        }
+    }
 
     #[test]
     fn a_stop_names_the_contract_and_what_it_needs() {
@@ -139,6 +233,68 @@ mod tests {
             Some(no_milestone.clone())
         );
         assert!(no_milestone.render().contains("milestone: -"));
+    }
+
+    #[test]
+    fn the_producer_line_reads_back_and_leaves_the_request_whole() {
+        // ForgeDesMondes #581: answered by producer #582 under milestone #30.
+        let request = Request {
+            id: "campaign.listCampaigns".to_string(),
+            task: 576,
+            milestone: Some(30),
+            need: "sessions counted from the session table".to_string(),
+        };
+        let body = request.render();
+        assert_eq!(producer(&body), None, "a request answered by nobody yet");
+        let built = Producer {
+            task: 582,
+            milestone: Some(30),
+        };
+        let written = with_producer(&body, built);
+        assert_eq!(producer(&written), Some(built));
+        assert_eq!(Request::parse(&written), Some(request));
+        assert!(
+            written.contains(
+                "need: sessions counted from the session table\nproducer: #582 on #30\n\n"
+            ),
+            "{written}"
+        );
+        // Written again, it replaces the line; a producer under no milestone.
+        let moved = with_producer(
+            &written,
+            Producer {
+                task: 590,
+                milestone: None,
+            },
+        );
+        assert_eq!(moved.matches("producer:").count(), 1, "{moved}");
+        assert_eq!(
+            producer(&moved),
+            Some(Producer {
+                task: 590,
+                milestone: None
+            })
+        );
+        // A body with no blank line takes it at its end; a line with no task
+        // number is none.
+        assert_eq!(
+            with_producer("id: a.b", built),
+            "id: a.b\nproducer: #582 on #30"
+        );
+        assert_eq!(producer("producer: someone"), None);
+        // Only the header says it: a prose line is neither read nor dropped.
+        assert_eq!(producer("id: a.b\n\nproducer: #5 on #6"), None);
+        assert_eq!(
+            with_producer("id: a.b\n\nproducer: #5 on #6", built),
+            "id: a.b\nproducer: #582 on #30\n\nproducer: #5 on #6"
+        );
+        assert_eq!(
+            producer("producer: #7"),
+            Some(Producer {
+                task: 7,
+                milestone: None
+            })
+        );
     }
 
     #[test]
