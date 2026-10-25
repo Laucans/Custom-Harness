@@ -134,6 +134,98 @@ fn said_before(before: &[String]) -> Option<String> {
     })
 }
 
+/// What the gate judges of a round, split by whose it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Judgement {
+    /// The findings this round answers for: the violations it caused and
+    /// the files it changed outside its unit's closure.
+    pub own: Vec<String>,
+    /// The violations that were there before it: said, never blamed.
+    pub before: Vec<String>,
+}
+
+/// The pure decision of [`ArchitectureHolds`].
+///
+/// The tree's violations, split into the round's own and those older than
+/// it, plus the files `changed` that the unit's closure does not hold. With
+/// no `changed` (the base is unknown), every violation is the round's and no
+/// diff is judged.
+///
+/// What `harness architecture-check` runs too, on a session's work before
+/// its pull request: one reading, in one binary, so the session's check and
+/// the loop's cannot drift. The paths a `missing` stop reopened in the
+/// sparse tree stay outside the judged closure: readable, not editable.
+#[must_use]
+pub fn judge(
+    tree: &Tree,
+    declaration: Option<&Declaration>,
+    changed: Option<&[String]>,
+) -> Judgement {
+    let found = violations(tree, declaration);
+    let Some(changed) = changed else {
+        return Judgement {
+            own: found,
+            before: Vec::new(),
+        };
+    };
+    // A violation that names nothing this round touched — nor the unit it
+    // builds — was there before it: said, not blamed. ForgeDesMondes'
+    // stale AiSettings bundle on `main_agent` parked every task of every
+    // milestone (#60, #110, #111, #114, #115).
+    let (mut own, before): (Vec<String>, Vec<String>) = found
+        .into_iter()
+        .partition(|violation| blamed(violation, changed, declaration));
+    for path in outside_closure(tree, declaration, changed) {
+        own.push(format!(
+            "{path}: changed by this round, outside the closure of the {} it builds — a \
+             unit touches its own folder, what it registers in, and nothing of its \
+             neighbours",
+            declaration.map_or("unit", |d| d.unit.key())
+        ));
+    }
+    Judgement { own, before }
+}
+
+/// The closure check of a session's work, before its pull request.
+///
+/// The tree at `tree_root` judged as [`ArchitectureHolds`] judges the round
+/// after it — [`judge`] on the files changed from `from` to `to` in `repo`,
+/// against the task's `## Architecture` section (`architecture`), a
+/// skeleton's holes left, a Concept undocumented. `None` when the tree is
+/// not under the architecture.
+///
+/// # Errors
+///
+/// When `git` cannot be run to list the changes.
+pub async fn closure_check(
+    disk: &dyn Disk,
+    tree_root: &Path,
+    repo: &dyn Repo,
+    architecture: &str,
+    skeleton: &[String],
+    from: Option<&str>,
+    to: &str,
+) -> Outcome<Option<Judgement>> {
+    let declaration = Declaration::parse(architecture);
+    let declaration = declaration.as_ref();
+    let tree = Tree::read(disk, tree_root);
+    if !tree.under_architecture {
+        return Ok(None);
+    }
+    let changed = match from {
+        Some(from) => Some(repo.changed_between(from, to).await?),
+        None => None,
+    };
+    let mut judged = judge(&tree, declaration, changed.as_deref());
+    judged.own.extend(holes_left(disk, tree_root, skeleton));
+    judged
+        .own
+        .extend(undocumented_concepts(&tree).into_iter().map(|concept| {
+            format!("{concept} — write concepts/<Concept>/v<n>/concept.json (contract A)")
+        }));
+    Ok(Some(judged))
+}
+
 /// The files of the unit's skeleton (`Scaffold`) that still hold a hole:
 /// the session fills every one. A file the round removed holds none.
 #[must_use]
@@ -316,7 +408,6 @@ impl Verification<Loop> for ArchitectureHolds {
             return Ok(Verdict::Continue);
         }
         let declaration = declaration_of(ctx);
-        let mut found = violations(&tree, declaration.as_ref());
         // The round's own changes, against the task's closure: what the
         // session touched that its unit does not hold. Read off the task's
         // pull request: a diff of the branch would carry what the other
@@ -324,7 +415,7 @@ impl Verification<Loop> for ArchitectureHolds {
         // Cargo.toml another task had changed).
         let own = self.pr_changes(ctx).await;
         let pr = own.as_ref().map(|(pr, _)| pr.clone());
-        if own.is_some() || !ctx.state.round_base.is_empty() {
+        let changed = if own.is_some() || !ctx.state.round_base.is_empty() {
             let mut changed = match own {
                 Some((_, files)) => files,
                 None => {
@@ -337,26 +428,15 @@ impl Verification<Loop> for ArchitectureHolds {
                 }
             };
             changed.extend(dirty_paths(&self.repo.dirty_files().await?));
-            // A violation that names nothing this round touched — nor the
-            // unit it builds — was there before it: said, not blamed.
-            // ForgeDesMondes' stale AiSettings bundle on `main_agent` parked
-            // every task of every milestone (#60, #110, #111, #114, #115).
-            let (own, before): (Vec<String>, Vec<String>) = found
-                .into_iter()
-                .partition(|violation| blamed(violation, &changed, declaration.as_ref()));
-            found = own;
-            if let Some(said) = said_before(&before) {
-                ctx.traces.warn(&said);
-            }
-            for path in outside_closure(&tree, declaration.as_ref(), &changed) {
-                found.push(format!(
-                    "{path}: changed by this round, outside the closure of the {} it builds — a \
-                     unit touches its own folder, what it registers in, and nothing of its \
-                     neighbours",
-                    declaration.as_ref().map_or("unit", |d| d.unit.key())
-                ));
-            }
+            Some(changed)
+        } else {
+            None
+        };
+        let judged = judge(&tree, declaration.as_ref(), changed.as_deref());
+        if let Some(said) = said_before(&judged.before) {
+            ctx.traces.warn(&said);
         }
+        let mut found = judged.own;
         found.extend(holes_left(
             self.disk.as_ref(),
             &self.root,
@@ -961,6 +1041,98 @@ mod tests {
             "the unit's system is named"
         );
         assert!(!blamed(stale, &[], Some(&unit)));
+    }
+
+    /// The healthy tree, plus a Micro-UI of another system that needs a
+    /// Capability nobody built: a violation no round of `credit` caused.
+    fn with_a_neighbour_s_violation() -> FakeDisk {
+        let mut held = disk();
+        held.existing.insert(
+            PathBuf::from("/ws/apps/ledger/balance/micro-ui.json"),
+            r#"{"microUi":"Balance","system":"ledger","needs":["ledger.readBalance"]}"#.to_string(),
+        );
+        held
+    }
+
+    #[test]
+    fn the_judgement_splits_the_round_s_findings_from_what_was_there() {
+        let tree = Tree::read(&with_a_neighbour_s_violation(), std::path::Path::new("/ws"));
+        let unit = declaration();
+        let mine = files(&["apps/credit/risk-badge/index.ts"]);
+        let judged = judge(&tree, Some(&unit), Some(&mine));
+        assert!(judged.own.is_empty(), "{judged:?}");
+        assert!(!judged.before.is_empty(), "{judged:?}");
+        assert!(
+            judged
+                .before
+                .iter()
+                .all(|v| v.contains("ledger") || v.contains("Balance")),
+            "{judged:?}"
+        );
+        let older = judged.before.len();
+
+        // Touching the neighbour makes it this round's, and the file lies
+        // outside the closure of the Micro-UI.
+        let theirs = files(&["apps/ledger/balance/micro-ui.json"]);
+        let judged = judge(&tree, Some(&unit), Some(&theirs));
+        assert!(
+            judged.own.iter().any(|f| f.contains("ledger.readBalance")),
+            "{judged:?}"
+        );
+        assert!(
+            judged
+                .own
+                .iter()
+                .any(|f| f.contains("outside the closure of the micro-ui")),
+            "{judged:?}"
+        );
+
+        // With no base, nothing is split and no diff judged.
+        let judged = judge(&tree, Some(&unit), None);
+        assert_eq!(judged.own.len(), older, "{judged:?}");
+        assert_eq!(judged.before, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn the_closure_check_reads_the_diff_it_is_given_and_the_holes_left() {
+        let mut held = disk();
+        held.existing.insert(
+            PathBuf::from("/ws/apps/credit/risk-badge/index.ts"),
+            "// SCAFFOLD: the view".to_string(),
+        );
+        let repos = FakeRepos::changing(&["crates/credit/capabilities/calculate-risk/src/lib.rs"]);
+        let repo = repos.at(std::path::Path::new("/repo"));
+        let judged = closure_check(
+            &held,
+            std::path::Path::new("/ws"),
+            repo.as_ref(),
+            sections::parse(MICRO_UI)
+                .get(sections::ARCHITECTURE)
+                .expect("declared"),
+            &files(&["apps/credit/risk-badge/index.ts"]),
+            Some("base"),
+            "snapshot",
+        )
+        .await
+        .expect("checked")
+        .expect("under the architecture");
+        assert!(repos.asked("diff base..snapshot"), "{:?}", repos.calls());
+        assert_eq!(judged.own.len(), 2, "{judged:?}");
+        assert!(judged.own[0].contains("outside the closure"), "{judged:?}");
+        assert!(judged.own[1].contains("hole"), "{judged:?}");
+
+        let none = closure_check(
+            &FakeDisk::default(),
+            std::path::Path::new("/ws"),
+            repo.as_ref(),
+            "",
+            &[],
+            None,
+            "HEAD",
+        )
+        .await
+        .expect("checked");
+        assert_eq!(none, None, "no contracts/: not under the architecture");
     }
 
     #[test]

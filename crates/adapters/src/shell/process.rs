@@ -222,11 +222,13 @@ pub async fn run_streaming_with_env(
     // probe compares the process group's CPU time between two checks.
     let root = child.id();
     let threshold = limits.idle.as_secs_f64() / BUSY_SHARE;
-    let mut last_cpu = cpu_seconds_of_tree(root);
+    // A build through sccache compiles in its server, a daemon outside the
+    // tree: a client waiting in the tree is a compilation under way.
+    let mut last_cpu = tree_activity(root).cpu;
     let mut busy = move || {
-        let now = cpu_seconds_of_tree(root);
-        let moved = now > last_cpu + threshold;
-        last_cpu = now;
+        let now = tree_activity(root);
+        let moved = now.cpu > last_cpu + threshold || now.compiling;
+        last_cpu = now.cpu;
         moved
     };
     let drained = tokio::time::timeout_at(
@@ -340,12 +342,22 @@ where
 /// for a session waiting on something outside.
 const BUSY_SHARE: f64 = 10.0;
 
-/// The CPU time, in seconds, of `root` and every process under it — `ps`
-/// summed over `pgrep -P` walked down; 0 when the tree cannot be read
-/// (then silence is idleness, as before).
-fn cpu_seconds_of_tree(root: Option<u32>) -> f64 {
+/// What a process tree is doing, read from `ps`.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Activity {
+    /// The CPU time of the tree, in seconds.
+    cpu: f64,
+    /// Whether an `sccache` client is in the tree: its compilation runs in
+    /// the sccache server, outside the tree, so its CPU time is not here.
+    compiling: bool,
+}
+
+/// What `root` and every process under it are doing — `ps` over `pgrep -P`
+/// walked down; nothing when the tree cannot be read (then silence is
+/// idleness, as before).
+fn tree_activity(root: Option<u32>) -> Activity {
     let Some(root) = root else {
-        return 0.0;
+        return Activity::default();
     };
     let mut pids = vec![root.to_string()];
     let mut frontier = vec![root.to_string()];
@@ -364,16 +376,29 @@ fn cpu_seconds_of_tree(root: Option<u32>) -> f64 {
             }
         }
     }
-    let Ok(times) = std::process::Command::new("ps")
-        .args(["-o", "time=", "-p", &pids.join(",")])
+    let Ok(listed) = std::process::Command::new("ps")
+        .args(["-o", "time=,comm=", "-p", &pids.join(",")])
         .output()
     else {
-        return 0.0;
+        return Activity::default();
     };
-    String::from_utf8_lossy(&times.stdout)
-        .lines()
-        .map(cpu_time_seconds)
-        .sum()
+    activity_of(&String::from_utf8_lossy(&listed.stdout))
+}
+
+/// `ps -o time=,comm=`'s lines as one [`Activity`]: the times summed, and
+/// whether a command is `sccache` (macOS names it by its path, Linux by its
+/// name).
+fn activity_of(listed: &str) -> Activity {
+    listed.lines().fold(Activity::default(), |seen, line| {
+        let line = line.trim();
+        let (time, command) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+        let command = command.trim();
+        let name = command.rsplit('/').next().unwrap_or(command);
+        Activity {
+            cpu: seen.cpu + cpu_time_seconds(time),
+            compiling: seen.compiling || name == "sccache",
+        }
+    })
 }
 
 /// `ps`'s `time` column as seconds: `MM:SS.ss`, `HH:MM:SS`, `D-HH:MM:SS`;
@@ -488,6 +513,62 @@ mod tests {
         assert!(
             told.iter()
                 .any(|l| l.contains("silent for 2s but its processes work on")),
+            "{told:?}"
+        );
+    }
+
+    #[test]
+    fn a_tree_s_activity_sums_its_times_and_sees_a_sccache_client() {
+        let listed = "  0:01.50 /bin/zsh\n 1:00.00 cargo\n  0:00.01 /opt/homebrew/bin/sccache\n";
+        let seen = activity_of(listed);
+        assert!((seen.cpu - 61.51).abs() < 1e-9, "{seen:?}");
+        assert!(seen.compiling);
+        let plain = activity_of("  0:02.00 /usr/bin/cargo\n  0:00.00 rustc\n");
+        assert!((plain.cpu - 2.0).abs() < 1e-9);
+        assert!(!plain.compiling, "rustc in the tree burns its own CPU");
+        assert!(!activity_of("  0:00.00 /x/sccache-dist\n").compiling);
+        assert_eq!(activity_of(""), Activity::default());
+    }
+
+    #[tokio::test]
+    async fn a_silent_run_waiting_on_sccache_is_waited_on() {
+        // A build through sccache: the client waits, the server (outside
+        // the tree) compiles. A `sleep` named `sccache` stands for it.
+        let stand_in = std::env::temp_dir().join(format!(
+            "harness-sccache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(&stand_in).expect("mkdir");
+        let sleep = ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|path| Path::new(path).exists())
+            .expect("a sleep");
+        std::os::unix::fs::symlink(sleep, stand_in.join("sccache")).expect("link");
+        let limits = Limits {
+            idle: Duration::from_millis(500),
+            cap: Duration::from_secs(30),
+        };
+        let mut told = Vec::new();
+        let ran = run_streaming(
+            "sh",
+            &sh(&format!("echo a; {}/sccache 2; echo b", stand_in.display())),
+            Path::new("."),
+            limits,
+            &mut |stream, line| {
+                if matches!(stream, Stream::Err) {
+                    told.push(line.to_string());
+                }
+            },
+        )
+        .await
+        .expect("a compiling run is not hung");
+        std::fs::remove_dir_all(&stand_in).expect("cleaned");
+        assert!(ran.ok(), "{ran:?}");
+        assert!(
+            told.iter().any(|l| l.contains("but its processes work on")),
             "{told:?}"
         );
     }

@@ -39,6 +39,9 @@ fn watch(board: &mut Board, event: &Event, at: &str) {
     match event {
         Event::WatchStarted { target, .. } => {
             board.clear("watch");
+            // A new watch starts unheld: its first tick raises the floor
+            // again if the disk is still short, and never clears it.
+            board.clear("disk-floor");
             watch_said(board, "The watch started", format!("polling {target}"), at);
         }
         Event::WatchDraining { lanes } => watch_said(
@@ -307,6 +310,8 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         Event::BaseGreen { branch } => board.clear(&format!("base-red:{branch}")),
         Event::WorkKept { .. } => work_kept(board, event, at),
         Event::ToolchainResolved { problems, .. } => toolchain(board, problems, at),
+        Event::DiskUnderFloor { free_gb, floor_gb } => disk_floor(board, *free_gb, *floor_gb, at),
+        Event::DiskAboveFloor { .. } => board.clear("disk-floor"),
         Event::DataSnapshotFailed { .. }
         | Event::DataSnapshotTaken { .. }
         | Event::DataModelDiverged { .. }
@@ -316,10 +321,12 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         // being repaired; the repair that gives up says so (`RepairsExhausted`).
         // A task waiting for a producer to land asks nothing of anyone: the
         // blocker on GitHub and the journal line say it. Nor does a sweep of
-        // stale scratch databases: housekeeping the journal tells. Nor a split
-        // pulled past the cap: the router's own way out of a starved milestone.
+        // stale scratch databases, nor a lane's build folder pruned:
+        // housekeeping the journal tells. Nor a split pulled past the cap: the
+        // router's own way out of a starved milestone.
         Event::SessionEnded { .. }
         | Event::ScratchDatabasesSwept { .. }
+        | Event::LaneTargetPruned { .. }
         | Event::PreparationTaken { .. }
         | Event::LaneTaken { .. }
         | Event::TapOpened { .. }
@@ -483,6 +490,22 @@ fn toolchain(board: &mut Board, problems: &[String], at: &str) {
         Level::Warning,
         "The toolchain is incomplete",
         problems.join("; "),
+        at,
+        Some(screen("journal", at)),
+    ));
+}
+
+/// The lanes' volume under the watch's floor: an error, since nothing paid
+/// starts until a human frees space, cleared when it is back above.
+fn disk_floor(board: &mut Board, free_gb: u64, floor_gb: u64, at: &str) {
+    board.add(Notification::once(
+        "disk-floor",
+        Level::Error,
+        "The disk is under its floor",
+        format!(
+            "{free_gb} GB free < {floor_gb} GB: the watch starts no lane — free space \
+             (old lane targets, docker images) or lower DISK_FLOOR_GB"
+        ),
         at,
         Some(screen("journal", at)),
     ));
@@ -738,6 +761,9 @@ mod tests {
                 minute,
                 Event::ToolchainResolved {
                     tools: vec!["bash 5.2.37 (/opt/homebrew/bin/bash)".to_string()],
+                    shell: String::new(),
+                    cache: String::new(),
+                    session: String::new(),
                     path: "/opt/homebrew/bin:/usr/bin".to_string(),
                     problems: problems.iter().map(ToString::to_string).collect(),
                 },
@@ -761,6 +787,80 @@ mod tests {
         let whole = from_events(&[resolved(1, &["node missing"]), resolved(2, &[])]);
         assert!(whole.get("toolchain").is_none(), "taken back");
         assert!(from_events(&[resolved(1, &[])]).get("toolchain").is_none());
+    }
+
+    #[test]
+    fn a_disk_under_its_floor_is_an_error_until_it_is_back_above() {
+        let under = |minute| {
+            stored(
+                minute,
+                Event::DiskUnderFloor {
+                    free_gb: 9,
+                    floor_gb: 12,
+                },
+            )
+        };
+        let told = from_events(&[under(1)]);
+        let floor = told.get("disk-floor").expect("told");
+        assert_eq!(floor.level, Level::Error);
+        assert_eq!(floor.title, "The disk is under its floor");
+        assert!(
+            floor
+                .detail
+                .starts_with("9 GB free < 12 GB: the watch starts no lane"),
+            "{}",
+            floor.detail
+        );
+        assert_eq!(floor.link, Some(screen("journal", &at(1))));
+        let back = from_events(&[
+            under(1),
+            stored(
+                2,
+                Event::DiskAboveFloor {
+                    free_gb: 30,
+                    floor_gb: 12,
+                },
+            ),
+        ]);
+        assert!(back.get("disk-floor").is_none(), "cleared");
+        // A restarted watch starts unheld: the old error goes with it.
+        let restarted = from_events(&[
+            under(1),
+            stored(
+                2,
+                Event::WatchStarted {
+                    interval: 30,
+                    target: "Laucans/dnd_helper2".to_string(),
+                    journal: "x".to_string(),
+                },
+            ),
+        ]);
+        assert!(restarted.get("disk-floor").is_none(), "cleared on restart");
+        let short_again = from_events(&[
+            under(1),
+            stored(
+                2,
+                Event::WatchStarted {
+                    interval: 30,
+                    target: "Laucans/dnd_helper2".to_string(),
+                    journal: "x".to_string(),
+                },
+            ),
+            under(3),
+        ]);
+        assert!(short_again.get("disk-floor").is_some(), "raised again");
+        // A pruned target is housekeeping: nothing to tell.
+        let pruned = from_events(&[stored(
+            1,
+            Event::LaneTargetPruned {
+                lane: 0,
+                target: "lane-0/target".to_string(),
+                before: 9,
+                after: 1,
+                what: "whole target".to_string(),
+            },
+        )]);
+        assert_eq!(pruned.into_sorted().len(), 0, "housekeeping tells no one");
     }
 
     #[test]

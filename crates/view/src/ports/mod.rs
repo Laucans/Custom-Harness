@@ -1102,6 +1102,18 @@ pub trait Mockups: Send + Sync {
     /// The repository cannot be read.
     fn file(&self, branch: &str, path: &str) -> Result<Option<Vec<u8>>, String>;
 
+    /// Every file of the product outside `mock/` that `pattern` names —
+    /// path segments from the product's root, a `*` one segment: one of
+    /// [`crate::domain::mockup::PRODUCT_READS`], or a path one of them
+    /// names — on `branch`, from its workspace when one exists, else as
+    /// committed: path and bytes, sorted by path. What a mock-up page reads
+    /// of the product, read-only; any other pattern reads nothing.
+    ///
+    /// # Errors
+    ///
+    /// The repository cannot be read.
+    fn product_files(&self, branch: &str, pattern: &str) -> Result<Vec<(String, Vec<u8>)>, String>;
+
     /// The folder a session edits `branch`'s mock-up in, made on first use:
     /// a checkout of the branch, detached, kept until it is saved or
     /// discarded.

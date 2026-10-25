@@ -25,5 +25,5 @@ was styled. Every new product would pay for the same scanner again.
 - [ ] A freshly drawn mock-up passes the gate (or its first failures are true
       violations, not the gate misreading a generated page).
 - [ ] Validating the design system opens no roadmap item.
-- [ ] The proof of concept's first milestone that builds the shell loads
-      `tokens.css` and `kit.css` once and styles through the variables.
+- [x] The proof of concept's first milestone that builds the shell loads
+      `tokens.css` and `kit.css` once and styles through the variables. (seen 2026-10-25 01:40 Paris: apps/shell/src/server/page.ts links /assets/tokens.css and /assets/kit.css once each; the design-system gate green on main_agent)

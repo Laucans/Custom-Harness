@@ -39,6 +39,6 @@ wrote 306 tokens. The block was 18.3k characters.
    cards. Check that their verdicts still cite the right rule.
 5. After a few runs, the query in `docs/SESSION-CARRIER.md` lists failing
    checks by name. A gate that fails often is a rule worth more detail in
-   its card.
+   its card. (seen 2026-10-25 01:40 Paris: 104 `checks_failed` events; grouped by name: rules-hold 68, rust 42, node-gates 26, rule-tests-untouched 7, pages-mocked 3)
 
 When every point above is checked, delete this file.

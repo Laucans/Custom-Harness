@@ -1,5 +1,5 @@
-//! The ports onto the shell: a repository, GitHub, the disk, the product's
-//! database server.
+//! The ports onto the shell: a repository, GitHub, the disk and its volume,
+//! the product's database server.
 //!
 //! One module per external component, and `process` for the value they all
 //! hand back. The implementations live in
@@ -11,3 +11,4 @@ pub mod disk;
 pub mod git;
 pub mod github;
 pub mod process;
+pub mod volume;

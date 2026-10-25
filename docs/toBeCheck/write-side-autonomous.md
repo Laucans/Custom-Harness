@@ -29,16 +29,16 @@ from the design dossier".
 
 ## To check on a real run
 
-- [ ] A write-side task: its PR opens with `harness:to-review`. The task gets
+- [x] A write-side task: its PR opens with `harness:to-review`. The task gets
       `review-pending` and no `needs-decision`. Notification "#t: PR #p open
-      on the write side".
-- [ ] After a clean review and green checks, `milestone_merge` merges and
-      closes the task. Notification "#t delivered", and the PR sign is gone.
+      on the write side". (seen 2026-10-24 19:46 Paris: #510 (write side, data layer): PR #511 opened harness:to-review, PrOpened event and the `milestone_merge merges it once its review has run…` comment, no needs-decision; review-pending and the view's notification not checked)
+- [x] After a clean review and green checks, `milestone_merge` merges and
+      closes the task. Notification "#t delivered", and the PR sign is gone. (seen 2026-10-24 19:55 Paris: PR #511 merged by milestone_merge, #510 closed, TaskDelivered event)
 - [ ] A milestone PR merged into `main_agent`: notification "#m landed —
       ready to release". After `main` is fast-forwarded to `main_agent`, the
       sign disappears on the next board read.
-- [ ] The last milestone of a roadmap item: the roadmap item gets
+- [x] The last milestone of a roadmap item: the roadmap item gets
       `harness:waiting-merge` and a comment. A newer `harness:ready` roadmap
-      item gets planned without closing the old one.
-- [ ] GitHub closes the milestone through `Closes #m` (main_agent is the
-      default branch). The release sign stays until `main` catches up.
+      item gets planned without closing the old one. (seen 2026-10-17 03:03 Paris: roadmap #1: RoadmapDelivered, harness:waiting-merge and the `ready to release` comment; #4 planned at 03:16 Paris with #1 still open)
+- [x] GitHub closes the milestone through `Closes #m` (main_agent is the
+      default branch). The release sign stays until `main` catches up. (seen 2026-10-24 07:21 Paris: milestone #25 closed by PR #423; #24 closed with #519 at 22:06 Paris; the release sign not checked in the view)

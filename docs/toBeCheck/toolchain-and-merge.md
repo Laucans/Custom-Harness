@@ -33,19 +33,19 @@ ForgeDesMondes, H1 (round A + T + L):
   kept. `assets/server/src/main.rs` uses the woken one.
 
 ## To check
-- [ ] The watch journal's first lines after a restart carry
+- [x] The watch journal's first lines after a restart carry
       `toolchain: bash 5.x (/opt/homebrew/bin/bash) · cargo 1.99.1
       (~/.rustup/toolchains/1.99.1-aarch64-apple-darwin/bin, pinned 1.99.1) ·
       sed GNU 4.9 (shim→/opt/homebrew/bin/gsed) · grep GNU 3.11 (shim→…) ·
       node v22.x (…) · PATH=…` and no `problems:`. Same line printed by
-      `harness toolchain` from the factory.
-- [ ] A lane's `run.log` (any route) carries the same line, right after its
-      mount; the pinned cargo, not Homebrew's 1.98.1.
+      `harness toolchain` from the factory. (seen 2026-10-24 20:39 Paris: `toolchain: bash 5.3.15 (shim→/opt/homebrew/bin/bash) · cargo 1.99.1 (… pinned 1.99.1) · sed GNU 4.9 · grep GNU 3.11 · node v26.0.0 · PATH=…`, no `problems:` anywhere in watch.log; `harness toolchain` from the factory not compared)
+- [x] A lane's `run.log` (any route) carries the same line, right after its
+      mount; the pinned cargo, not Homebrew's 1.98.1. (seen 2026-10-24 22:15 Paris: run 20261024-201500-521 carries the same line right after its mount, cargo 1.99.1 pinned)
 - [ ] A session's first Bash call runs under bash: in its `session.log`,
       `echo $BASH_VERSION` (or `ps -p $$`) answers bash 5, not zsh.
       (`CLAUDE_CODE_SHELL` is read by the installed CLI 2.1.292 — a path
       containing `bash` or `zsh`, executable.)
-- [ ] The composed `PATH` survives inside a session. Claude Code builds a
+- [x] The composed `PATH` survives inside a session. Claude Code builds a
       shell snapshot from the user's rc file (`~/.bashrc` here: Fig, Docker's
       `init-bash.sh` prepending `~/.docker/bin`); a login shell would also run
       `/etc/profile`'s `path_helper` (a scratch `bash -l` put `/usr/bin:/bin`
@@ -57,7 +57,7 @@ ForgeDesMondes, H1 (round A + T + L):
       `CLAUDE_CODE_SHELL_PREFIX` to put the composed folders back first.
       Note: a session's interactive `grep` is Claude Code's own shell
       function (its built-in ugrep), never the GNU shim, whatever the
-      `PATH`; scripts run as `bash scripts/x.sh` do get the shim.
+      `PATH`; scripts run as `bash scripts/x.sh` do get the shim. (seen 2026-10-24 15:19 Paris: #503's session ran `which sed; sed --version; which cargo` -> `.llocal/toolchain/bin/sed`, `sed (GNU sed) 4.9`, `~/.rustup/toolchains/1.99.1-…/bin/cargo`; the PATH head itself not printed)
 - [ ] The janitor (sweep strays on) never proposes `.llocal/toolchain`, and
       `harness doctor` does not call it a leftover.
 - [ ] An inline catch-up's `cargo metadata` (watch journal, `catch-up`

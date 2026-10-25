@@ -74,26 +74,26 @@ Commit `95dd36c` on `audit/code-ends-at-pr` (to merge locally into `main` once t
       after the PR line; the run's `run.log` ends on `[code] AGENT_LOOP_OK`
       (or no marker) then `#n: PR #p is open, merged once reviewed and green
       — marked harness:review-pending`, under ~15 min for a data-layer
-      task instead of 1h+ ending in `killed as hung`.
-- [ ] `harness.db` / `watch.log`: no `printed nothing for 1200s and was
+      task instead of 1h+ ending in `killed as hung`. (contradicted 2026-10-24 ~11:11 Paris: write-side #452 (data layer, 20261024-084334-452) ran `timeout 3000 gh pr checks 487 --watch` after its PR; #207 on 22 Oct `sleep 45; gh pr checks 387 --watch`; most write-side rounds do end at the PR (#520: 21 min), data-layer ones take 25–160 min)
+- [x] `harness.db` / `watch.log`: no `printed nothing for 1200s and was
       killed as hung` on a round whose PR was already open; if one occurs
       (a session that ignored the words), `run.log` carries `warning: #n:
       the session was killed while waiting on PR #p's checks … the PR
       stands`, the PR carries `harness:to-review`, the task
       `harness:review-pending`, the lane exits 0 (not 2), and the next tick
-      shows `pr_review=["p"]` with no `DevTask { task: n }` in `schedule:`.
-- [ ] While PR #p of task #n is open and labelled (`saw: … pr_review=[…]`
+      shows `pr_review=["p"]` with no `DevTask { task: n }` in `schedule:`. (seen 2026-10-25 01:40 Paris: since the merge (20 Oct 01:52) 109 rounds ended `marked harness:review-pending`, no dev-loop `killed as hung` — the 3 hung kills were pr_fix, the last 20 Oct 16:52; the fallback path not exercised)
+- [x] While PR #p of task #n is open and labelled (`saw: … pr_review=[…]`
       or `pr_fix=[…]` or `to_merge=[n]`), no tick's `schedule:` line lists
       `DevTask { milestone: m, task: n }`, lane or no lane on the PR — in
       particular during a `pr_fix` on a lane (its label consumed, the PR
-      still `to-review`).
-- [ ] The train still merges: `tick: MergeIntoMilestone { task: n, pr: "p" }`
+      still `to-review`). (seen 2026-10-25 01:40 Paris: 82 write-side PRs opened 20–24 Oct — no `schedule:` line offered `DevTask` for their task between PR open and merge or close)
+- [x] The train still merges: `tick: MergeIntoMilestone { task: n, pr: "p" }`
       → `#n delivered` and the task closed; the next tick no longer holds
-      it (closed, not on the board as open).
+      it (closed, not on the board as open). (seen 2026-10-24 20:44 Paris: `MergeIntoMilestone { task: 514, pr: "515" }` → `#514 delivered by PR #515 … — closed`; 102 such ticks)
 - [ ] A PR closed without merging (by hand): the next full read offers
       `DevTask { task: n }` again.
-- [ ] A read-side session (short CI) still merges itself: `gh pr checks <n>
+- [x] A read-side session (short CI) still merges itself: `gh pr checks <n>
       --watch` once in the foreground, `gh pr merge --squash`, `#n delivered
-      by PR #p … — closed` — no regression in the 225-run read-side flow.
-- [ ] `claude -p … --disallowedTools ScheduleWakeup,…,Monitor` accepted by
-      the installed CLI (no `! unknown tool` line in `session.log`).
+      by PR #p … — closed` — no regression in the 225-run read-side flow. (seen 2026-10-24 13:18 Paris: read-side #484 — foreground `gh pr checks 497 --watch`, `gh pr merge 497 --squash`, `#484 delivered by PR #497 — closed`; since d0a2a93 (24 Oct 15:52) the harness merges read-side PRs instead)
+- [x] `claude -p … --disallowedTools ScheduleWakeup,…,Monitor` accepted by
+      the installed CLI (no `! unknown tool` line in `session.log`). (seen 2026-10-24 22:15 Paris: 0 `unknown tool` in the session logs of 20–24 Oct; #520's session init lists no Monitor)

@@ -328,6 +328,9 @@ mod tests {
                     "Never change",
                     "rules-hold proves them",
                     "never stop on it",
+                    "rm -f target/rules-status.jsonl",
+                    "rules-gate.mjs status",
+                    "it says mis-mounted",
                 ][..],
             ),
             (
@@ -338,12 +341,15 @@ mod tests {
                     "rules-runtime.sh serve",
                     "CONTEST.md",
                     "Never change",
+                    "rm -f target/rules-status.jsonl",
+                    "rules-gate.mjs status",
+                    "it says mis-mounted",
                 ][..],
             ),
             (
                 "fix",
                 pr_fix::FIX_PROMPT,
-                &["rules-hold", "CONTEST.md", "tests/rules/"][..],
+                &["rules-hold", "CONTEST.md", "tests/rules/", "mis-mounted"][..],
             ),
             (
                 "acceptance",

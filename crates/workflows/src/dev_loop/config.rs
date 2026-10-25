@@ -47,6 +47,10 @@ pub struct Config {
     pub signatures: std::rc::Rc<crate::dev_loop::data::signatures::Index>,
     /// The checkout's root — what the architecture gates read after `code`.
     pub root: std::path::PathBuf,
+    /// Where the session facts are written before a session opens, the path
+    /// its environment names (`HARNESS_FACTS`) — see
+    /// [`crate::dev_loop::data::facts`]. Empty: nothing is written.
+    pub facts_path: std::path::PathBuf,
     /// Narrow the working tree to the task's closure around the stages that
     /// plan and build it (`--no-narrow` turns it off): the bound the
     /// architecture promises, made physical.
@@ -127,6 +131,7 @@ pub(crate) mod fake {
             stack: String::new(),
             signatures: std::rc::Rc::default(),
             root: std::path::PathBuf::from("/ws"),
+            facts_path: std::path::PathBuf::new(),
             narrow: false,
             scaffold: false,
             ignore_budget: false,

@@ -7,7 +7,10 @@
 pub mod board;
 pub mod brief;
 pub mod dependencies;
+pub mod dependency_api;
+pub mod facts;
 pub mod missing;
+pub mod rust_shape;
 pub mod signatures;
 pub mod stack;
 pub mod state;

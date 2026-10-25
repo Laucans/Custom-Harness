@@ -62,8 +62,8 @@ sops + age. Tests always run on fakes. New initializations only.
 - [ ] A task that adds `reqwest` to a Capability crate is refused by
       `externals-behind-ports`, naming the crate.
 - [ ] A Capability naming a stateful port is refused by `ports-declared`.
-- [ ] The first port built (`crates/ports/<port>/` with fake, contract tests
-      and adapter) passes `ports-declared` and `contracts`.
+- [x] The first port built (`crates/ports/<port>/` with fake, contract tests
+      and adapter) passes `ports-declared` and `contracts`. (seen 2026-10-17 23:29 Paris: `crates/ports/llm` (fake, contract tests, adapter) landed with milestone #17; ports-declared and contracts green on main_agent since)
 - [ ] `sops --encrypt` on `secrets/production.enc.yaml` with the human's age
       key passes `secrets-encrypted`. A plain `.env` is refused.
 - [ ] The server honours `PORTS=fake`, and the rules' tests reach no
@@ -80,7 +80,7 @@ sops + age. Tests always run on fakes. New initializations only.
 - [ ] The roadmap task's body and a planner's dossier show the ports.
 - [ ] A task that needs a new provider stops with `AGENT_LOOP_STOP: port …`
       rather than calling it. The approval task opens, blocks it, and a
-      notification shows.
+      notification shows. (contradicted 2026-10-18 22:26 Paris: #53 stopped `port archive-storage` -> `a decision is asked`; no `Approve the port …` issue on the board, no human_task_opened event)
 - [ ] Approval closed, the next session adds the port to ports.json and
       builds the crate, the fake and the contract tests before the adapter.
 - [ ] A refusal (comment + `harness:needs-decision`) is decided as "do

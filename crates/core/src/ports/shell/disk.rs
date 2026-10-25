@@ -60,6 +60,20 @@ pub trait Disk {
         Vec::new()
     }
 
+    /// The bytes `path` takes on disk — a file's blocks, a folder's whole
+    /// tree, links not followed. `0` when it is absent, and from a disk
+    /// that cannot measure: nothing to prune is the safe answer.
+    fn size_bytes(&self, _path: &Path) -> u64 {
+        0
+    }
+
+    /// When `path` was last modified, in seconds since the epoch, or `None`
+    /// when it is absent or the disk cannot say. The lanes' pruning keeps
+    /// the newest of a crate's test executables with it.
+    fn modified_secs(&self, _path: &Path) -> Option<u64> {
+        None
+    }
+
     /// The content of a text file, or `None` for any reason.
     ///
     /// `None`, never an error: refinement reads `CLAUDE.md` and repository
@@ -110,5 +124,8 @@ mod tests {
             "{refused:?}"
         );
         assert_eq!(Silent.file_names(Path::new("/ws")).len(), 0);
+        // A disk that cannot measure gives nothing to prune.
+        assert_eq!(Silent.size_bytes(Path::new("/ws")), 0);
+        assert_eq!(Silent.modified_secs(Path::new("/ws")), None);
     }
 }

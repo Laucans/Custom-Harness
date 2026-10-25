@@ -37,7 +37,7 @@ src/compare.rs      two data models side by side: tables, fields, links and view
 src/graph.rs        the plan's graph (contract R): what every milestone produces and consumes, derived from the dossier; the read-ahead errors; the critical path; `before`, the milestones earlier in plan order — what a task may wait on and a landing waits on without a cycle
 src/schema_sql.rs   pg_dump --schema-only read: a tokenizer and six statement shapes (views too), never a panic
 src/kit.rs          the design system (W3C tokens → CSS variables), the kit of visual components (contract O), the 16 base fragments under assets/kit/, the showcase page (assets/showcase.html), the static check a fragment is reused on
-src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates, CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep), the units' test kit (assets/test-kit, `platform-test-kit`: Bench plants a unit's real manifest beside its aggregate over memory or a Scratch database migrated by the product's `data::migrate`; submit/applied/plant/refused, planter, uuid, writes_only_touches, a Capability's guard checks in `read` — what 80%+ of the first product's units retyped), the unit-conventions gate (assets/unit-conventions-gate.mjs)
+src/assets.rs       the files init-repo installs: the document, CLAUDE.md rules, contracts A–R, ports.json and the sops scaffolding, gates and their local runner (gates-local.sh/.mjs), CI, scripts, the mutants configuration and rotation, the rules' kit, the tests' scratch-database guard (assets/scratch-db, `platform-scratch-db`: a database per test, dropped in `Drop` even when the test panics, named `scratch_<epoch>_<pid>_<seq>_<label>` for the watch's sweep), the units' test kit (assets/test-kit, `platform-test-kit`: Bench plants a unit's real manifest beside its aggregate over memory or a Scratch database migrated by the product's `data::migrate`; submit/applied/plant/refused, planter, uuid, writes_only_touches, a Capability's guard checks in `read` — what 80%+ of the first product's units retyped), the unit-conventions gate (assets/unit-conventions-gate.mjs)
 src/mock_handlers.rs the mock server's handlers, one file per unit (mock/handlers/<id>.js): the rule every prompt states (RULE); the split's vocabulary (LEGACY, HANDLERS, SPLITTER, SPLITTER_INPUTS taken from the split tree for a run, SPLIT_STAGED the only paths a split commit stages, SPLITTER_TOO_OLD, is_legacy, is_handler_file); and what a session merging a base that split does (on_conflict: the harness's own method — split the merge base apart, split its tree and commit the split alone, merge, each add/add handler three ways with git merge-file on the split merge base)
 src/skeleton.rs     the skeleton of the unit a task is about to build (a DataCapability or a Capability, hostless aside): target (the id's folder, package, library, query file), render (assets/skeleton/<kind>/ filled with what needs no judgement — Cargo.toml, the manifest's constants and what the declaration states, the lib.rs and test frames on the test kit, the query frame named after the folder — every judged part a `SCAFFOLD:` hole), the commands that register and check it (register.sh, queries.sh, cargo check --all-targets); the dev loop's Scaffold writes it
 src/generated.rs    the files of a product a script writes (GENERATED: Cargo.lock, the registry's Cargo.toml, queries/registry.json, mock/components/*.js, mock/pages.json's builtFrom digests), how a conflict in each is taken, their generators in run order (Regenerator), the digest-only resolution of mock/pages.json (digests_only, both marker styles), the repair prompt's lines (instructions)
@@ -46,13 +46,17 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
                     isolation_script.rs: the installed isolation.sh, on real workspaces — the healthy shape, each way a unit could reach another, a DataCapability on its target aggregate only, the registry crossed by the two servers only
                     gates_parity.rs: gates.yml's gates (each a step, found by its id) and tree::violations on the same fixture workspaces, one verdict for both
                     queries_script.rs: the installed queries.sh against a golden registry (tests/golden/) written by the GNU path — and on macOS, under PATH=/usr/bin:/bin with /bin/bash 3.2 and BSD sed, byte for byte
-                    mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise)
+                    mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise), an undeclared payload key warned in the engine's words (top-level keys, the target's key exempt, an empty payload unchecked, any version), never refused; the graph read beside the page (__product/) or at the repository's root
+                    journey_kit.rs: the installed rules' kit.ts on node (types stripped, Playwright stubbed) — a running journey fails once its body ran on the engine's undeclared-key warning in a POST /commands answer, "not a rule contest" in its first line, and on nothing else, an answer after the body, from a second context, or cut by a close included; the page's in-flight counter; a pending one stays on the plain test; the engine's warning, the kit's pattern and the mock's words checked against each other; the mounting on a throwaway product's manifests — a screen or a unit its needs do not cover is mis-mounted (annotated, never thrown), what a screen's Micro-UIs declare covered, a page's read off its input red, a link the shell does not serve (a mock-up file name, a 404) red and never a mis-mount; the status reporter writing mis-mounted whatever the outcome; red when CI has no node that strips TypeScript
+                    business_kit.rs: the installed business kit's mounting.rs compiled as it is — a unit reached its needs do not name (the version no part of a need, a short name no id), a variable off the input with what the manifest takes (dotted heads, a fixture id a value), only the engine's undeclared-key warning; lib.rs wires them and judges the mounting before the body's outcome
+                    rules_gate_status.rs: the installed rules-gate.mjs status on a throwaway repository — a mis-mounted test said apart after the other rules, winning over its rule's red (listed under it), failing always, a conform rule too; skips name the node that answered
                     split_handlers.rs: the installed split-handlers.mjs on a throwaway product — byte-for-byte split, idempotent, deterministic, every refusal with nothing written (guarded destructuring and for-of assignments, `this`), a file without semicolons, a handler file a merge already brought, the self-check catching a helper reached through eval; two trees split apart merging three ways on the split of their base with git merge-file (exit 0) where an empty base conflicts — the property the catch-up across the split relies on
                     compositions_gate.rs: the gate `compositions-resolve` from gates.yml on a throwaway tree — the three layout forms (an id, `{"microUi": …}`, keyed `{"PlayerStage": {}}`), a Micro-UI planned in plan/graph.json with a fragment in mock/pages.json passing on a pull request into milestone/* only, strict into main_agent and on every push
                     mock_handlers_gate.rs: the gate `mock-handlers` from gates.yml on a throwaway repository — ids twice, another id's key, a new legacy key on a pull request once mock/handlers/ holds a handler file (its README and _lib/ do not count)
                     skeleton_product.rs (ignored, on demand): the test kit and both skeletons rendered in a throwaway product — rustfmt-clean, `cargo check --all-targets`, the kit's clippy and tests (its Scratch with SCRATCH_DB_URL), the frames green, the holes red, the filled manifest planted through Bench
                     unit_conventions_gate.rs: the gates `data-capability-conventions` and `capability-conventions` on a throwaway repository — each rule on an added unit, the changed-unit rules on an edited old one, an old unit's past never judged
                     capability_sql_gate.rs: the part `queries-valid--capabilities` on a real PostgreSQL (GATES_PGPASSWORD) — a changed Capability's SQL prepared against the migrated schema, an untouched one unjudged
+                    gates_local.rs: the installed gates-local.mjs on node and git — every step of gates.yml read (the sync guard: the ids in order, none unreadable, no reason given on any) and every expression of it in the table, with its value under the local pull request; on throwaway products with a bare origin: the uncommitted work judged, merged with the base's tip, a conflict a finding, base-red only when the head's errors are the base's (one more is red), a sparse checkout's hidden files judged and its sparse list left as it was, two jobs side by side and a job's steps in order, an unknown step unreadable (exit 2), a job or workflow key it does not run (needs, env) or a job env it cannot give unreadable, continue-on-error and timeout-minutes run, the gates.yml of the merged tree (a step the base added), --failed (the red gates, a red closure, the merge after a conflict), a Postgres gate skipped without docker, the closure through a fake HARNESS_BIN with the facts (exit 2 when it cannot judge); red when CI has no node 22
                     assets_rustfmt.rs: every installed .rs asset passes `rustfmt --check --edition 2024` under default settings — a product's CI runs `cargo fmt --check`, and the assets are no member of this workspace, so `cargo fmt --all` here never sees them
 ```
 
@@ -84,6 +88,69 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   side, whose own build change stales the arriving digests. The catch-up
   then skips GitHub's merge, and the merge train refreshes a task PR
   before it lands. Pure, like the rest.
+- **A payload is judged against its manifest the way the engine judges
+  it, and only there.** The DataGuard engine accepts a payload key its
+  manifest does not declare with the warning `payload key(s) <keys> not
+  declared by <dataCapability>` in `Submitted.warnings` (`crates/dataguard`,
+  `undeclared_keys`: top-level keys, a dotted declaration `entity.id`
+  declaring `entity`, the target's key always declared, a manifest that
+  declares no payload checking nothing, the version ignored). Two nets read
+  that one rule, no grammar of their own (H3 v1): the rules' journey kit
+  (`assets/rules/journey/kit.ts`) fails a running journey, once its body
+  ran, when a `POST /commands` the **real** server answered carries the
+  warning — the journeys never run on the mock — with "fix the payload, this is not a rule contest" in the line the
+  rules' gate shows; the mock server mirrors the check exactly, as a loud
+  warning (the answer's `warnings`, `console.error`, `server.undeclared`),
+  never a refusal: the mock is never stricter than the engine (contract H,
+  `DATA-INTEGRITY.md`). The mock reads the manifests indexed by their
+  `dataCapability` field — never by a folder's name — from
+  `__product/data-capabilities.json` beside the page's folder, which the
+  factory view serves read-only; `plan/graph.json` the same way, else at the
+  repository's root two folders up. The kit answers each page's
+  `POST /commands` itself (`route.fetch`, then `route.fulfill`), in the
+  default context and in every one `browser.newContext()` opens, so the
+  answer is read before the page sees it; an init script counts each
+  page's commands in flight, and a page or a context the test closes, and
+  the kit's own teardown (it takes `page`, so it ends while the page is
+  open), wait for them — a command the body did not await, or one a close
+  would have cut, is read all the same. `tests/journey_kit.rs` pins the
+  engine's words, the kit's pattern and the mock's template together; it
+  runs the kit on node (22.6 or later, pinned in CI) and is red, not
+  skipped, when `CI` is set and no node strips TypeScript.
+  Generated command types and a CI typecheck of every Micro-UI are a later
+  lot.
+- **A rule's test is checked for its mounting at its first real run, in
+  the kits, and a fault there is the test's (H5 v1).** Once the units it
+  needs are built the manifests exist, so the kits judge what the test
+  reached against them, with no mock and no host of their own:
+  `assets/rules/business/src/mounting.rs` (std and serde_json only, wired
+  into `Server::read`/`command` of the business kit's `lib.rs`) refuses,
+  before sending, a unit the test's needs do not name and a read's variable
+  its `capability.json` `input` does not take (a dotted input declaring its
+  head), and reads the engine's undeclared-key warning back from the
+  command's answer — the engine stays the one grammar of a payload. The
+  journey kit (`kit.ts`) sees what the pages reach (it already answers
+  every `POST /commands`; it now looks at each `POST /capabilities/<id>`
+  and each screen route, then lets them go): a screen its needs do not
+  name, or a unit none of its needs covers — named, or in the
+  `needs`/`actions` of a Micro-UI it needs or one its screens lay out — is
+  the test's; a page's read off its input is the Micro-UI's, red with "fix
+  the read, this is not a rule contest", as H3's payload is. Values are
+  never typed: a fixture's id where a manifest says `uuid` is accepted. A
+  test's fault records the state `mis-mounted` and passes — never red,
+  never a contest: its outcome proves nothing. `scripts/rules-gate.mjs
+  status` says those rules apart, after the others, each with its rule's
+  red tests listed under it, and fails on every one, `conform` or not; a
+  screen counts as opened only by a valid name the shell answers (a link
+  like `/screens/x.html`, or a 404, is the product's, red); the rules' task fixes the
+  test before anything is contested (WRITE step 3, CONTEST's first step,
+  FIDELITY's check 3), and a development or a repair copies the line into
+  `CONTEST.md` — the one road from a development's PR to the rules' task.
+  The mock rehearsal of the design (an HTTP host for the mock, a CI step)
+  is not built: it waits for a measurement that contests survive this.
+  The business kit's `record` writes each line in one `write_all`, so the
+  suite's parallel tests no longer interleave their status lines, and it
+  indexes the manifests once per process, as `kit.ts` does.
 - **A unit's mock handlers are its own file.** The mock server
   (`assets/mock/src/server.js`) imports `mock/handlers/<id>.js` the first
   time `<id>` is read or commanded — never bundled, so a handler file is no
@@ -126,6 +193,24 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   `assets/showcase.html` is the same kind of thing: a page the harness
   codes once — a contact page of the kit's components (`kit::SHOWCASE`) —
   that the view shows to preview a product's design system at work.
+- **The gates run locally from the workflow itself.**
+  `assets/gates-local.mjs` (entry `gates-local.sh`, node 22, no dependency)
+  reads the product's `gates.yml` at run time — never a generated copy, which
+  goes stale on the product's first edit — with a parser for the YAML the
+  harness writes and an exact-string table of the expressions it uses
+  (`if:` and `${{ }}`); a step it cannot read is `unreadable`, never skipped
+  in silence, and `tests/gates_local.rs` keeps the table in step with
+  `assets/gates.yml`. It judges the pull request's tree: a snapshot of the
+  work (the real index copied, so a sparse checkout hides nothing) merged
+  with the base's tip, each job in a worktree of its own under
+  `.git/gates-local/`, jobs in parallel, a job's Postgres service a
+  container of its own removed on exit and reaped when a killed run left
+  it. A red gate is `base-red` only when the base is red there with every
+  error the head reports (`::error` lines), the base's verdict taken from
+  its last finished `gates` run at the same commit (gh), else from a rerun
+  of the jobs that build nothing. `rules-hold` is off unless `--rules`. The
+  closure check is not rewritten in JS: it is the harness binary's
+  (`HARNESS_BIN architecture-check`), the loop's own reading.
 - **The rules exist twice, knowingly.** `tree::violations` is the loop's own
   reading; `assets/gates.yml` runs the same rules in the target's CI. A change
   to one is a change to the other, and `tests/gates_parity.rs` runs both on

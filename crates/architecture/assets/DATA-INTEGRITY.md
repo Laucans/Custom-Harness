@@ -329,6 +329,30 @@ reviewId: null
 attachment: { archive: c_130.zip }  # optional: what the Prepare computed, once applied
 ```
 
+`POST /commands` answers H inside `Submitted` (202): `commandId`,
+`partition`, `replayed`, `warnings`, `result` (H), `then`. A payload key the
+manifest's `payload` does not declare is **accepted**, with the warning
+`payload key(s) <keys> not declared by <dataCapability>` in `warnings` (the
+keys sorted, comma-separated): top-level keys only (`entity.id` declared
+declares `entity`), the key naming the target (`target.id: "$sessionId"`)
+always declared, a manifest that declares no payload checks nothing, the
+`@version` ignored; a replay answers no warning.
+
+- **The journeys fail on it.** The rules' journey kit
+  (`tests/rules/journey/kit.ts`) reads every `POST /commands` the real
+  server answers during a running journey — in every browser context the
+  test opens, before the page sees the answer, waiting for the commands in
+  flight when a page or a context closes — and fails it on that warning:
+  a payload to fix in the screen, never a rule to contest.
+- **The mock mirrors it, never stricter.** `mock/src/server.js` runs the
+  same check with the same exemptions and answers the same warning — a
+  warning, not a rejection, said loudly in the console and kept in
+  `server.undeclared` — so a screen behaves alike on both. It reads the
+  manifests indexed by their `dataCapability` field from what the factory
+  view serves (`__product/data-capabilities.json`); with nothing serving
+  it, it checks nothing. Any check stricter than the engine's (types,
+  required fields) belongs in the engine first, then in the mock.
+
 ### J. Impact plan
 
 ```yaml

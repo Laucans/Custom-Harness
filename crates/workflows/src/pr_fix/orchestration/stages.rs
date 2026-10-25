@@ -48,7 +48,11 @@ Diagnose from the real output, never from the check's name alone:
   gh pr diff {num}
 
 Then fix the cause in this working tree, run the project's own gates
-locally until they pass, and push to `{head}`:
+locally until they pass — `bash scripts/gates-local.sh` when the repository
+has it (every gate of gates.yml on a full copy of your work, minutes long:
+a Bash `timeout` of 600000 ms; `--failed` for what was left red; a
+`base-red` gate is red on the base too, not this PR's)
+—, and push to `{head}`:
   git add <the files you changed, by name>
   git commit -m "fix(<scope>): <what the failure was>"
   git push
@@ -63,7 +67,9 @@ Hard rules, and they are the point of this run:
   name in your answer, not something you commit here.
 - **The rules' tests are not yours.** A red `rules-hold` is fixed in the
   product's code, never in `rules.json`, `tests/rules/` or
-  `scripts/rules-runtime.sh` (a gate refuses it). When
+  `scripts/rules-runtime.sh` (a gate refuses it). A rule it reports
+  mis-mounted is its test's mounting, never the product's: copy its line
+  into `CONTEST.md` as it is, and change nothing for it. When
   `rule-tests-untouched` says a contest was settled, read the decision on
   the issue it names, remove `CONTEST.md`, and conform to the test as it
   stands; one that still cannot hold is a finding to report.

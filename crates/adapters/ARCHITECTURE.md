@@ -39,7 +39,10 @@ shell/    process      the only place in the crate that spawns a subprocess; `Pr
                        is a contents API DELETE against the blob's sha;
                        `commit_time` reads `commit.committer.date` (ISO 8601 read
                        in a few lines, `epoch_of`, no date crate)
-          disk         RealDisk
+          disk         RealDisk — a folder's size is its tree's blocks, links never followed
+                       (what `du` counts)
+          volume       Statvfs — `statvfs(3)` through rustix's safe wrapper (`f_bavail` ×
+                       `f_frsize`), so no `unsafe`
           database     whether the product's database answers (a TCP connect), and
                        PgDatabases — the databases the factory's role owns and a plain
                        DROP DATABASE that keeps one in use, a sweep's drops on one

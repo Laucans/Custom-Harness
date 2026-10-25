@@ -22,7 +22,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use crate::adapters::git_units::{Mirror, run};
+use crate::adapters::git_units::{Mirror, parse_batch, run};
 use crate::domain::drafts::fingerprint;
 use crate::domain::mockup;
 use crate::ports::{MockFile, MockPage, MockState, Mockups, PRODUCT_FILES};
@@ -211,6 +211,59 @@ fn read_under(dir: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
+/// Whether `pattern` is one a mock-up page may read of the product: one of
+/// [`mockup::PRODUCT_READS`], or a path one of them names.
+fn readable(pattern: &str) -> bool {
+    mockup::PRODUCT_READS.contains(&pattern) || mockup::is_product_read(pattern)
+}
+
+/// Every file under `root` that `pattern` names, path and bytes, sorted by
+/// path: a `*` segment lists that folder's entries, never one whose name
+/// starts with a dot; a folder that is not there holds nothing.
+fn files_matching(root: &Path, pattern: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let mut paths = vec![String::new()];
+    for segment in pattern.split('/') {
+        let mut next = Vec::new();
+        for prefix in &paths {
+            let names: Vec<String> = if segment == "*" {
+                fs::read_dir(root.join(prefix))
+                    .map(|entries| {
+                        entries
+                            .filter_map(Result::ok)
+                            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                            .filter(|name| !name.starts_with('.'))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                vec![segment.to_string()]
+            };
+            for name in names {
+                next.push(if prefix.is_empty() {
+                    name
+                } else {
+                    format!("{prefix}/{name}")
+                });
+            }
+        }
+        paths = next;
+    }
+    let mut found = Vec::new();
+    for path in paths {
+        if !mockup::matches(pattern, &path) {
+            continue;
+        }
+        let full = root.join(&path);
+        match fs::read(&full) {
+            Ok(bytes) => found.push((path, bytes)),
+            Err(e) if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::IsADirectory) => {}
+            Err(e) => return Err(format!("{}: {e}", full.display())),
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
 /// The state of a mock-up held in a folder: the demo's, or a worktree.
 fn state_of_folder(branch: &str, folder: &Path) -> Result<MockState, String> {
     let manifest = fs::read_to_string(folder.join("mock/pages.json")).ok();
@@ -282,6 +335,63 @@ impl Mockups for GitMockups {
         }
         self.mirror.refresh()?;
         self.mirror.show(branch, &format!("mock/{path}"))
+    }
+
+    fn product_files(&self, branch: &str, pattern: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+        if !readable(pattern) {
+            return Ok(Vec::new());
+        }
+        if let Some(folder) = self.worktree(branch) {
+            return files_matching(&folder, pattern);
+        }
+        self.mirror.refresh()?;
+        if self.mirror.head_of(branch)?.is_none() {
+            return Ok(Vec::new());
+        }
+        // Listed under the pattern's literal head only (`crates`, `plan/graph.json`).
+        let head = pattern.split("/*").next().unwrap_or(pattern);
+        let out = self.mirror.git(
+            &[
+                "ls-tree",
+                "-r",
+                "--full-tree",
+                &format!("refs/heads/{branch}"),
+                "--",
+                head,
+            ],
+            None,
+        )?;
+        let listed: Vec<(String, String)> = String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|line| {
+                let (meta, path) = line.split_once('\t')?;
+                let blob = meta.split_whitespace().nth(2)?;
+                mockup::matches(pattern, path).then(|| (path.to_string(), blob.to_string()))
+            })
+            .collect();
+        if listed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut input = String::new();
+        for (_, blob) in &listed {
+            input.push_str(blob);
+            input.push('\n');
+        }
+        let texts = parse_batch(
+            &self
+                .mirror
+                .git(&["cat-file", "--batch"], Some(input.as_bytes()))?,
+        );
+        let mut found: Vec<(String, Vec<u8>)> = listed
+            .into_iter()
+            .filter_map(|(path, blob)| {
+                texts
+                    .get(&blob)
+                    .map(|text| (path, text.clone().into_bytes()))
+            })
+            .collect();
+        found.sort();
+        Ok(found)
     }
 
     fn workspace(&self, branch: &str) -> Result<PathBuf, String> {
@@ -751,6 +861,13 @@ impl Mockups for DirMockups {
         read_under(&self.folder(branch), path)
     }
 
+    fn product_files(&self, branch: &str, pattern: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+        if !readable(pattern) {
+            return Ok(Vec::new());
+        }
+        files_matching(&self.folder(branch), pattern)
+    }
+
     fn workspace(&self, branch: &str) -> Result<PathBuf, String> {
         let folder = self.folder(branch);
         if folder.is_dir() {
@@ -913,6 +1030,162 @@ mod tests {
             .expect("the page written is listed");
         assert!(page.at > 0, "a workspace's file has its time");
         assert!(edited.iter().any(|f| f.path == "pages.json"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A product committed in `dir/work`, detached: a mock-up, the plan's
+    /// graph, one `DataCapability`'s manifest and files no page may read.
+    fn product_repo(dir: &Path) -> PathBuf {
+        let _ = fs::remove_dir_all(dir);
+        let work = dir.join("work");
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&work)
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        for (path, text) in [
+            ("mock/pages.json", "{}"),
+            ("plan/graph.json", r#"{"ids":{}}"#),
+            (
+                "crates/table/data-capabilities/move-token/data-capability.json",
+                r#"{"dataCapability":"table.moveToken"}"#,
+            ),
+            ("crates/table/data-capabilities/move-token/notes.json", "{}"),
+            ("crates/table/capabilities/board/capability.json", "{}"),
+            ("Cargo.toml", "secret = 1"),
+        ] {
+            let full = work.join(path);
+            fs::create_dir_all(full.parent().expect("a parent")).expect("dir");
+            fs::write(full, text).expect("write");
+        }
+        git(&["init", "-q", "-b", "main_agent"]);
+        for (key, value) in [
+            ("user.name", "t"),
+            ("user.email", "t@t"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&["config", key, value]);
+        }
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", "base"]);
+        git(&["checkout", "-q", "--detach"]);
+        work
+    }
+
+    fn paths(found: Vec<(String, Vec<u8>)>) -> Vec<String> {
+        found.into_iter().map(|(path, _)| path).collect()
+    }
+
+    /// The real thing: a page reads the product's graph and manifests as
+    /// committed, then as the workspace has them, and nothing else of the
+    /// product — whatever pattern it asks.
+    #[test]
+    fn a_page_reads_the_product_s_manifests_committed_then_in_the_workspace() {
+        let dir =
+            std::env::temp_dir().join(format!("harness-view-product-reads-{}", std::process::id()));
+        let work = product_repo(&dir);
+        let mockups = GitMockups::new(Arc::new(Mirror::local(&work)), &dir.join("ws"));
+        let committed = mockups
+            .product_files("main_agent", mockup::DATA_CAPABILITY_MANIFESTS)
+            .expect("read");
+        assert_eq!(
+            committed,
+            vec![(
+                "crates/table/data-capabilities/move-token/data-capability.json".to_string(),
+                br#"{"dataCapability":"table.moveToken"}"#.to_vec()
+            )]
+        );
+        assert_eq!(
+            paths(
+                mockups
+                    .product_files("main_agent", "plan/graph.json")
+                    .expect("read")
+            ),
+            ["plan/graph.json"]
+        );
+        for refused in [
+            "Cargo.toml",
+            "*",
+            "crates/*/capabilities/*/capability.json",
+            "mock/pages.json",
+        ] {
+            let seen = mockups.product_files("main_agent", refused).expect("read");
+            assert!(seen.is_empty(), "{refused}: {seen:?}");
+        }
+        let seen = mockups
+            .product_files("nowhere", "plan/graph.json")
+            .expect("read");
+        assert!(seen.is_empty(), "{seen:?}");
+
+        // A workspace: what the session writes there is what the page reads.
+        let folder = mockups.workspace("main_agent").expect("workspace");
+        for (path, text) in [
+            (
+                "crates/live/data-capabilities/open-window/data-capability.json",
+                r#"{"dataCapability":"live.openWindow"}"#,
+            ),
+            (
+                "crates/.hidden/data-capabilities/x/data-capability.json",
+                "{}",
+            ),
+        ] {
+            let full = folder.join(path);
+            fs::create_dir_all(full.parent().expect("a parent")).expect("dir");
+            fs::write(full, text).expect("write");
+        }
+        assert_eq!(
+            paths(
+                mockups
+                    .product_files("main_agent", mockup::DATA_CAPABILITY_MANIFESTS)
+                    .expect("read")
+            ),
+            [
+                "crates/live/data-capabilities/open-window/data-capability.json",
+                "crates/table/data-capabilities/move-token/data-capability.json",
+            ]
+        );
+        let one = "crates/live/data-capabilities/open-window/data-capability.json";
+        assert_eq!(
+            paths(mockups.product_files("main_agent", one).expect("read")),
+            [one]
+        );
+        let seen = mockups
+            .product_files("main_agent", "Cargo.toml")
+            .expect("read");
+        assert!(seen.is_empty(), "{seen:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The demo's folders read the product the same way, one per branch.
+    #[test]
+    fn the_demo_reads_the_product_s_manifests_from_its_folders() {
+        let dir =
+            std::env::temp_dir().join(format!("harness-view-demo-product-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let manifest = dir.join("milestone__1/crates/a/data-capabilities/b/data-capability.json");
+        fs::create_dir_all(manifest.parent().expect("a parent")).expect("dir");
+        fs::write(&manifest, "{}").expect("write");
+        fs::write(dir.join("milestone__1/Cargo.toml"), "").expect("write");
+        let demo = DirMockups::new(&dir);
+        assert_eq!(
+            paths(
+                demo.product_files("milestone/1", mockup::DATA_CAPABILITY_MANIFESTS)
+                    .expect("read")
+            ),
+            ["crates/a/data-capabilities/b/data-capability.json"]
+        );
+        let seen = demo
+            .product_files("milestone/1", "Cargo.toml")
+            .expect("read");
+        assert!(seen.is_empty(), "{seen:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 

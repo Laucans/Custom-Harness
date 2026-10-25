@@ -167,6 +167,18 @@ real output. "Looks done" is not verification; a pass/fail signal is
 - Where the repository carries `scripts/test-scope.sh`, the Rust tests run
   through it — `bash scripts/test-scope.sh origin/<PR base>` — as its CI
   does: a change confined to Capability crates runs their tests alone.
+- Where the repository carries `scripts/gates-local.sh`, run
+  `bash scripts/gates-local.sh` last, before opening the PR, and fix what it
+  reports red: every gate of `.github/workflows/gates.yml` on a full copy
+  of your work merged with the PR's base (jobs in parallel, a few minutes),
+  plus — in a harness session — the closure check the loop runs after you.
+  It takes minutes, past the Bash tool's default 2 minutes: call it with a
+  `timeout` of 600000 ms, or with `run_in_background` and wait for it.
+  `--failed` reruns what the last run left red (its gates, the closure
+  check, the merge after a conflict), `--only a,b` the gates named. A
+  `base-red` gate is red on the base with the same errors: not yours, leave
+  it. `skip` and `unreadable` lines are said, not failed on. Never rebuild a
+  runner of the workflow by hand where the script exists.
 
 ## 6. Review
 

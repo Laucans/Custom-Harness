@@ -39,6 +39,7 @@
 //! it) or `router` (a poll found the conditions met).
 
 pub mod arbiter;
+pub mod architecture_check;
 pub mod backfill;
 pub mod catch_up;
 pub mod contract_manager;

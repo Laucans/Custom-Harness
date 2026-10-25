@@ -43,6 +43,7 @@ use harness_core::execution::{
 
 use crate::common::labels;
 use crate::dev_loop::action::actions::Ask;
+use crate::dev_loop::action::facts::{SayGatesLocal, WriteFacts};
 use crate::dev_loop::action::narrow::{Narrow, Widen};
 use crate::dev_loop::action::scaffold::Scaffold;
 use crate::dev_loop::checks::architecture::{ArchitectureHolds, ConceptsDocumented};
@@ -104,9 +105,14 @@ SPEC. Plan it as /tech-analyst: the pre-flight gate, the ordered checklist
 against the real code, the stop line, the risks. Then, in this same session,
 without waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
-Verification bullet with real output, /code-review, run the architecture
-gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then the mutants the CI will judge, in
+Verification bullet with real output, /code-review, run `bash
+scripts/gates-local.sh` and fix what fails (every gate of gates.yml on a
+full copy of your work merged with your base, jobs in parallel, plus the
+closure check the loop runs after you; minutes long, so give the Bash call a
+`timeout` of 600000 ms; `--failed` reruns what was left red;
+a `base-red` gate is red on your base with the same errors, not yours to
+fix) — or, in a repository without that script, the gates of
+`.github/workflows/gates.yml` by hand —, then the mutants the CI will judge, in
 the foreground: `git diff origin/<your base> > .git/change.diff && cargo
 mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
 one before the PR (a mutant the CI finds costs a whole repair round), then branch -> PR, and
@@ -170,15 +176,21 @@ not close the issue yourself.
 If the SPEC has a `## Rules` section, the tests of those rules, under
 tests/rules/ (contract P), are written already and are what this task
 turns green: start the product with `bash scripts/rules-runtime.sh serve`
-(export the KEY=value lines it prints), run `cargo test --manifest-path
+(export the KEY=value lines it prints), clear a past run's outcomes with
+`rm -f target/rules-status.jsonl`, run `cargo test --manifest-path
 tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
-test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
-rule stays pending while a unit its test needs is not built. A screen does
-not wait for those units: freeze it against the mock-up now —
-rules-hold proves them on every run once their units are built. Never change
-rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
-A rule's test you cannot meet is contested: write CONTEST.md at the root
-(the rule, the test, why it cannot hold) and say so in your reply. The
+test` in tests/rules/journey, then `node scripts/rules-gate.mjs status`
+(never commit the rules-status.json it writes), then
+`bash scripts/rules-runtime.sh stop`. A rule stays pending while a unit its
+test needs is not built. A screen does not wait for those units: freeze it
+against the mock-up now — rules-hold proves them on every run once their
+units are built. Never change rules.json, tests/rules/ or
+scripts/rules-runtime.sh — a gate refuses it. A rule's test you cannot
+meet is contested: write CONTEST.md at the root (the rule, the test, why
+it cannot hold) and say so in your reply. A passing test can be mounted
+wrong, and only status shows it: a rule it says mis-mounted is its test's
+mounting, never your code — copy its line into CONTEST.md as it is, and
+change nothing for it; the red tests listed under it are yours to fix. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
 Everything outside the product — a provider's API, payment, mail, storage,
@@ -246,9 +258,14 @@ Plan it as /tech-analyst: the pre-flight gate, the ordered checklist against
 the real code, the stop line, the risks. Then, in this same session, without
 waiting for a go-ahead and without /clear, carry out
 .claude/skills/code/SKILL.md against your own plan — build, run every
-Verification bullet with real output, /code-review, run the architecture
-gates of `.github/workflows/gates.yml` locally and fix what fails (the loop
-checks the same rules after you), then the mutants the CI will judge, in
+Verification bullet with real output, /code-review, run `bash
+scripts/gates-local.sh` and fix what fails (every gate of gates.yml on a
+full copy of your work merged with your base, jobs in parallel, plus the
+closure check the loop runs after you; minutes long, so give the Bash call a
+`timeout` of 600000 ms; `--failed` reruns what was left red;
+a `base-red` gate is red on your base with the same errors, not yours to
+fix) — or, in a repository without that script, the gates of
+`.github/workflows/gates.yml` by hand —, then the mutants the CI will judge, in
 the foreground: `git diff origin/<your base> > .git/change.diff && cargo
 mutants --in-diff .git/change.diff --in-place` and a test for every MISSED
 one before the PR (a mutant the CI finds costs a whole repair round); a Micro-UI or a screen ships with its
@@ -275,13 +292,19 @@ failure. Do not close the issue yourself.
 If the SPEC has a `## Rules` section, the tests of those rules, under
 tests/rules/ (contract P), are written already and are what this task
 turns green: start the product with `bash scripts/rules-runtime.sh serve`
-(export the KEY=value lines it prints), run `cargo test --manifest-path
+(export the KEY=value lines it prints), clear a past run's outcomes with
+`rm -f target/rules-status.jsonl`, run `cargo test --manifest-path
 tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
-test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
-rule stays pending while a unit its test needs is not built. Never change
-rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
-A rule's test you cannot meet is contested: write CONTEST.md at the root
-(the rule, the test, why it cannot hold) and say so in your reply. The
+test` in tests/rules/journey, then `node scripts/rules-gate.mjs status`
+(never commit the rules-status.json it writes), then
+`bash scripts/rules-runtime.sh stop`. A rule stays pending while a unit its
+test needs is not built. Never change rules.json, tests/rules/ or
+scripts/rules-runtime.sh — a gate refuses it. A rule's test you cannot
+meet is contested: write CONTEST.md at the root (the rule, the test, why
+it cannot hold) and say so in your reply. A passing test can be mounted
+wrong, and only status shows it: a rule it says mis-mounted is its test's
+mounting, never your code — copy its line into CONTEST.md as it is, and
+change nothing for it; the red tests listed under it are yours to fix. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
 Everything outside the product — a provider's API, payment, mail, storage,
@@ -419,6 +442,16 @@ impl Paid<'_> {
                 root: config.root.clone(),
             })));
         }
+        // After the skeleton, which the facts list; before narrowing, which
+        // the session's tools must not depend on.
+        actions.push(Box::new(Unpaid(WriteFacts {
+            disk: Rc::clone(&ports.disk),
+            path: config.facts_path.clone(),
+            integration_branch: config.integration_branch.clone(),
+            report: config
+                .root
+                .join(crate::dev_loop::action::facts::GATES_LOCAL_REPORT),
+        })));
         if narrowed {
             actions.push(Box::new(Unpaid(Narrow {
                 repo: Rc::clone(&ports.repo),
@@ -527,11 +560,16 @@ pub fn code(ports: &Ports, config: &Config, turn: u32) -> Stage<Loop> {
             rules: true,
             narrow: true,
             scaffold: true,
-            then: vec![Box::new(Unpaid(
-                crate::dev_loop::action::chain::LeaveRelay {
+            then: vec![
+                Box::new(Unpaid(crate::dev_loop::action::chain::LeaveRelay {
                     handoffs: Rc::clone(&ports.handoffs),
-                },
-            ))],
+                })),
+                Box::new(Unpaid(SayGatesLocal {
+                    disk: Rc::clone(&ports.disk),
+                    process: Rc::clone(&ports.process),
+                    root: config.root.clone(),
+                })),
+            ],
         }
         .body(ports, config, turn),
     }
@@ -584,6 +622,39 @@ mod tests {
             dry_run: false,
             stages: stages.to_string(),
         }
+    }
+
+    #[test]
+    fn the_rules_status_runs_on_fresh_outcomes_after_the_suites_before_the_stop() {
+        for text in [CODE, CODE_WRITE_SIDE] {
+            let at = |needle: &str| text.find(needle).expect(needle);
+            let clear = at("rm -f target/rules-status.jsonl");
+            let suite = at("cargo test --manifest-path");
+            let journey = at("npx playwright");
+            let status = at("node scripts/rules-gate.mjs status");
+            let stop = at("rules-runtime.sh stop");
+            assert!(clear < suite && suite < journey && journey < status && status < stop);
+        }
+    }
+
+    #[test]
+    fn code_runs_the_gates_through_gates_local_before_its_pr() {
+        for text in [CODE, CODE_WRITE_SIDE] {
+            let gates = text.find("scripts/gates-local.sh").expect("named");
+            assert!(
+                gates < text.find("gh pr create").expect("the PR"),
+                "before the PR"
+            );
+            assert!(text.contains("`--failed`"), "{text}");
+            assert!(text.contains("`base-red`"), "{text}");
+            assert!(
+                !text.contains("gates of `.github/workflows/gates.yml` locally"),
+                "the hand-made runner is the fallback only"
+            );
+        }
+        assert!(
+            crate::pr_fix::orchestration::stages::FIX_PROMPT.contains("scripts/gates-local.sh")
+        );
     }
 
     #[test]

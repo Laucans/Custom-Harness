@@ -331,7 +331,7 @@ pub fn run(command: &mut Command, input: Option<&[u8]>) -> Result<Vec<u8>, Strin
 
 /// `git cat-file --batch`: `<sha> blob <size>\n<bytes>\n`, or
 /// `<sha> missing\n`.
-fn parse_batch(out: &[u8]) -> BTreeMap<String, String> {
+pub fn parse_batch(out: &[u8]) -> BTreeMap<String, String> {
     let mut texts = BTreeMap::new();
     let mut at = 0;
     while at < out.len() {

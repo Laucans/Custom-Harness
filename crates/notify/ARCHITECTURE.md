@@ -44,6 +44,10 @@ src/feed.rs          both together: the watch gone without a word, the windows, 
 - **An incomplete toolchain, one warning.** `Event::ToolchainResolved`
   with problems is `toolchain`, its fixes the detail; the next start that
   finds every tool clears it.
+- **A disk under its floor, one error.** `Event::DiskUnderFloor` is
+  `disk-floor` — nothing paid starts until a human frees space —, cleared
+  by `DiskAboveFloor` or by `WatchStarted` (a new watch starts unheld and
+  raises it again on its first tick if the disk is still short). A lane's pruned `target` is housekeeping: not told.
 - **One warning per stop.** A lane that stops for a human ends with exit 1,
   is parked, and its dev loop halts: three events, one notification
   (`parked:#n`).

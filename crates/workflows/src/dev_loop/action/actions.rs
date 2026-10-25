@@ -27,7 +27,7 @@ use harness_core::traces::Event;
 use crate::common::{delivery, hierarchy, labels, sections};
 use crate::dev_loop::data::brief::{self, Cut};
 use crate::dev_loop::data::state::Loop;
-use crate::dev_loop::data::{board, signatures, tasks};
+use crate::dev_loop::data::{board, dependency_api, signatures, tasks};
 use harness_architecture::rules;
 use harness_architecture::vocabulary::Declaration;
 
@@ -471,8 +471,24 @@ impl SessionAction<Loop> for Ask {
         // The **whole** body decides the index slice, before the cut: a file
         // named only in a section this stage does not receive is still a file
         // the stage will touch, and its signature costs less than opening it.
-        let carried =
+        let files =
             signatures::carried(&self.signatures, &open.state.task.body, signatures::BUDGET);
+        // The engine's API, for the tasks that build on it: every write-side
+        // task, and every task that names it — in the same block, at the
+        // same place, cached with the rest.
+        let api = if dependency_api::carries(&open.state.task.body, open.state.write_side) {
+            dependency_api::carried_dependencies(
+                &self.signatures.dependencies,
+                dependency_api::DEPENDENCY_BUDGET,
+            )
+        } else {
+            String::new()
+        };
+        let carried = [files, api]
+            .into_iter()
+            .filter(|block| !block.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
         // The declaration is read before the cut, like the index slice: the
         // card and the related neighbours come from `## Architecture`, which
         // no cut drops, but the reduction below needs it whole.
@@ -1492,6 +1508,71 @@ mod tests {
             "cut: {prompt}"
         );
         assert!(prompt.contains("export declare function place"), "{prompt}");
+    }
+
+    /// The prompt an `Ask` sends for `body`, the engine's API in its index.
+    async fn prompt_with_the_engine(body: &str, write_side: bool) -> String {
+        let index = signatures::Index {
+            dependencies: vec![dependency_api::Dependency {
+                name: dependency_api::DATAGUARD.to_string(),
+                source: "dataguard-v5 @ 56cb6be".to_string(),
+                modules: vec![dependency_api::Module {
+                    name: "plugins".to_string(),
+                    path: "src/plugins.rs".to_string(),
+                    shape: "pub trait Prepare: Send + Sync {".to_string(),
+                }],
+            }],
+            ..signatures::Index::default()
+        };
+        let mut state = with_body(body);
+        state.write_side = write_side;
+        let mut context = Context::new(
+            Settings {
+                dry_run: false,
+                stages: String::new(),
+            },
+            state,
+            Logbook::null(),
+        );
+        let mut session = Scripted {
+            reply: Ok(answered("AGENT_LOOP_OK: ok")),
+            seen: RefCell::new(Vec::new()),
+        };
+        let ask = Ask {
+            stage: "code".to_string(),
+            lead: "/code".to_string(),
+            instructions: String::new(),
+            write_side_instructions: None,
+            cut: Cut::TaskOnly(&[]),
+            round: 1,
+            branch: "main_agent".to_string(),
+            stack: String::new(),
+            signatures: Rc::new(index),
+            injector: "test",
+            spending: Rc::new(Recorded::default()) as Rc<dyn Spending>,
+            rules: false,
+        };
+        {
+            let mut open = Open {
+                ctx: &mut context,
+                session: &mut session,
+            };
+            ask.run(&mut open).await.expect("asked");
+        }
+        session.seen.borrow()[0].clone()
+    }
+
+    #[tokio::test]
+    async fn the_engine_s_api_reaches_the_write_side_and_the_tasks_naming_it() {
+        let carried = "crate=\"harness-dataguard\" source=\"dataguard-v5 @ 56cb6be\"";
+        let write = prompt_with_the_engine("## Technical\n\na new aggregate\n", true).await;
+        assert!(write.contains(carried), "{write}");
+        assert!(write.contains("PUBLIC SIGNATURES"), "{write}");
+        let named = prompt_with_the_engine("## Technical\n\nthrough the DataGuard\n", false).await;
+        assert!(named.contains(carried), "{named}");
+        let screen = prompt_with_the_engine("## Technical\n\na screen\n", false).await;
+        assert!(!screen.contains("harness-dataguard"), "{screen}");
+        assert!(!screen.contains("PUBLIC SIGNATURES"), "{screen}");
     }
 
     #[tokio::test]

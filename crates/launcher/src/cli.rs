@@ -92,6 +92,42 @@ pub enum Command {
     /// whole `PATH`: the line a watch or a run says when it starts. Exits 1
     /// when one is missing or too old, its fix named.
     Toolchain(ToolchainArgs),
+    /// Judge a session's work as the loop judges its round after it: the
+    /// unit's closure, the tree's violations split by whose they are, a
+    /// skeleton's holes. What the product's `scripts/gates-local.sh` runs
+    /// through `HARNESS_BIN`; exits 1 on a finding of the round's own.
+    #[command(hide = true)]
+    ArchitectureCheck(ArchitectureCheckArgs),
+}
+
+/// `harness architecture-check`'s own arguments.
+#[derive(Debug, Args)]
+pub struct ArchitectureCheckArgs {
+    /// The session facts (`HARNESS_FACTS`): the task's declaration and
+    /// skeleton.
+    #[arg(long, default_value = "")]
+    pub facts: String,
+
+    /// The task whose `## Architecture` is read off GitHub, without facts.
+    #[arg(long)]
+    pub task: Option<u64>,
+
+    /// The tree judged: a full copy of the work.
+    #[arg(long)]
+    pub tree: std::path::PathBuf,
+
+    /// The repository the changes are listed in.
+    #[arg(long)]
+    pub repo: std::path::PathBuf,
+
+    /// Where the round's changes start (the merge base); absent, no diff is
+    /// judged.
+    #[arg(long)]
+    pub from: Option<String>,
+
+    /// Where they end: the snapshot of the work.
+    #[arg(long, default_value = "HEAD")]
+    pub to: String,
 }
 
 /// `harness toolchain`'s own arguments.
@@ -394,6 +430,18 @@ pub struct WatchArgs {
     /// those is ever runnable.
     #[arg(long, env = "PARALLEL", default_value_t = 1)]
     pub parallel: usize,
+
+    /// The free space, in GB, under which no lane starts: four cold product
+    /// builds at once took the disk to 1 GB. `0`: no floor. Empty: 12.
+    #[arg(long, env = "DISK_FLOOR_GB", default_value = "12", value_parser = disk_floor)]
+    pub disk_floor_gb: u64,
+
+    /// The size, in GB, above which a lane's product `target` is pruned
+    /// before the lane's next job: its incremental caches and stale test
+    /// executables, or the whole folder above twice this. `0`: never.
+    /// Empty: 6.
+    #[arg(long, env = "LANE_TARGET_CAP_GB", default_value = "6", value_parser = lane_target_cap)]
+    pub lane_target_cap_gb: u64,
 
     /// Let a dispatched `dev_loop` overwrite local work left in the workspace.
     ///
@@ -727,6 +775,34 @@ impl RunArgs {
     }
 }
 
+/// `DISK_FLOOR_GB`'s default, what an empty line in `.env.local` means.
+const DISK_FLOOR_GB: u64 = 12;
+
+/// `LANE_TARGET_CAP_GB`'s default: a warm product build with incremental
+/// off holds 3.4 GB, so twice a build's worth is a pile of stale ones.
+const LANE_TARGET_CAP_GB: u64 = 6;
+
+/// `DISK_FLOOR_GB`: whole gigabytes, empty for the default.
+fn disk_floor(text: &str) -> Result<u64, String> {
+    gigabytes(text, DISK_FLOOR_GB)
+}
+
+/// `LANE_TARGET_CAP_GB`: whole gigabytes, empty for the default.
+fn lane_target_cap(text: &str) -> Result<u64, String> {
+    gigabytes(text, LANE_TARGET_CAP_GB)
+}
+
+/// Whole gigabytes, `default` for an unfilled variable — a typo refused,
+/// never read as the default.
+fn gigabytes(text: &str, default: u64) -> Result<u64, String> {
+    match text.trim() {
+        "" => Ok(default),
+        number => number
+            .parse()
+            .map_err(|_| format!("{number:?} is not a whole number of gigabytes")),
+    }
+}
+
 /// An environment boolean, with usual spellings.
 ///
 /// `clap` requires the literal string `true`/`false` for any `bool` field
@@ -798,6 +874,17 @@ mod tests {
         ] {
             assert!(help.contains(variable), "{variable} missing from --help");
         }
+        // The watch's own, in its own help.
+        let watch = Cli::command()
+            .find_subcommand_mut("watch")
+            .map(|watch| watch.render_long_help().to_string())
+            .unwrap_or_default();
+        for variable in ["DISK_FLOOR_GB", "LANE_TARGET_CAP_GB", "PARALLEL"] {
+            assert!(
+                watch.contains(variable),
+                "{variable} missing from watch --help"
+            );
+        }
     }
 
     #[test]
@@ -852,6 +939,44 @@ mod tests {
     fn a_bool_flag_still_takes_no_value_on_the_command_line() {
         let cli = Cli::try_parse_from(["harness", "--allow-dirty"]).expect("a bare flag");
         assert!(cli.run.allow_dirty);
+    }
+
+    #[test]
+    fn the_disk_settings_read_whole_gigabytes_empty_for_their_default() {
+        assert_eq!(disk_floor(""), Ok(12));
+        assert_eq!(disk_floor(" 20 "), Ok(20));
+        assert_eq!(disk_floor("0"), Ok(0));
+        assert_eq!(lane_target_cap(""), Ok(6));
+        assert_eq!(lane_target_cap("8"), Ok(8));
+        let typo = lane_target_cap("6G");
+        assert!(
+            typo.as_ref().is_err_and(|why| why.contains("\"6G\"")),
+            "{typo:?}"
+        );
+        assert!(disk_floor("-1").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn a_watch_takes_the_disk_floor_and_the_lane_cap_by_default() {
+        let parsed = Cli::try_parse_from(["harness", "watch"]).expect("a watch");
+        let Some(Command::Watch(args)) = parsed.command else {
+            panic!("a watch command line");
+        };
+        assert_eq!((args.disk_floor_gb, args.lane_target_cap_gb), (12, 6));
+        let parsed = Cli::try_parse_from([
+            "harness",
+            "watch",
+            "--disk-floor-gb",
+            "30",
+            "--lane-target-cap-gb",
+            "0",
+        ])
+        .expect("a watch");
+        let Some(Command::Watch(args)) = parsed.command else {
+            panic!("a watch command line");
+        };
+        assert_eq!((args.disk_floor_gb, args.lane_target_cap_gb), (30, 0));
     }
 
     #[test]
@@ -1039,6 +1164,13 @@ mod tests {
         ("AGENTIC_WORKSPACES_DIR", ""),
         ("KEEP_WORKSPACE", ""),
         ("NO_HUMAN_GATE", ""),
+        ("DISK_FLOOR_GB", "12"),
+        ("LANE_TARGET_CAP_GB", "6"),
+        // Read by the toolchain at every start (`toolchain.rs`), not by a
+        // flag: the product's builds' compilation cache.
+        ("SCCACHE", ""),
+        ("SCCACHE_DIR", ""),
+        ("SCCACHE_CACHE_SIZE", ""),
         // Read by `harness-view`, not by this binary: the template is shared
         // by the two outer rings, and a variable the launcher ignores must
         // still parse as part of a fresh `.env.local`.
@@ -1067,6 +1199,34 @@ mod tests {
         let cli = Cli::try_parse_from_with_env(["harness"], ENV_EXAMPLE)
             .expect("a fresh .env.local must always parse");
         assert_eq!(cli.run.strategy(), Ok(Strategy::Permanent));
+        // The watch too, its disk settings left empty by an older template.
+        let unfilled = [("DISK_FLOOR_GB", ""), ("LANE_TARGET_CAP_GB", "")];
+        for vars in [ENV_EXAMPLE, &unfilled] {
+            let watch = Cli::try_parse_from_with_env(["harness", "watch"], vars)
+                .expect("a fresh .env.local must always parse for the watch");
+            let Some(Command::Watch(args)) = watch.command else {
+                panic!("a watch command line");
+            };
+            assert_eq!((args.disk_floor_gb, args.lane_target_cap_gb), (12, 6));
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_whole_number_of_gigabytes_reads_back_whatever_its_spaces(
+            number in proptest::num::u64::ANY,
+            before in "[ \t]{0,3}",
+            after in "[ \t]{0,3}",
+        ) {
+            proptest::prop_assert_eq!(gigabytes(&format!("{before}{number}{after}"), 7), Ok(number));
+        }
+
+        #[test]
+        fn text_that_is_not_a_number_is_refused_never_read_as_the_default(
+            text in " {0,2}[a-zA-Z_.,;:!?/*-][a-zA-Z0-9_.]{0,8} {0,2}",
+        ) {
+            proptest::prop_assert!(gigabytes(&text, 7).is_err(), "{:?}", text);
+        }
     }
 
     #[test]

@@ -60,33 +60,33 @@ their old base (`tools/catchup-prs.sh` by hand).
 
 ## To verify live
 
-- [ ] After the next landing, the journal shows `tick: CatchUp { milestone:
+- [x] After the next landing, the journal shows `tick: CatchUp { milestone:
       N, … }` for **every** building milestone within one tick of
       `main_agent`'s checks turning green **for the landed sha** — none
       before (right after the push, while GitHub has not created the new
       runs yet, nothing is due though the newest run is still the old green
-      head). Quiet ticks stay quiet while the head is pending.
-- [ ] The merge commit on each milestone branch (GitHub's `Merge <sha>
+      head). Quiet ticks stay quiet while the head is pending. (seen 2026-10-24 18:07–22:13 Paris: 4 heads — 22d39c4 green 18:06:29 → CatchUp 18:07:10, 19dfbe5 20:50:03 → 20:50:19, 19262b9 21:19:32 → 21:20:59, a3823e4 22:11:32 → 22:13:00; every building milestone listed, the `base=None` ticks before were quiet)
+- [x] The merge commit on each milestone branch (GitHub's `Merge <sha>
       into milestone/N-…`, or the local `chore: merge main_agent (<sha>)
-      …`) names the sha read, not a later tip.
-- [ ] A branch GitHub refuses is merged in the `catch-up` checkout:
+      …`) names the sha read, not a later tip. (seen 2026-10-24 22:14 Paris: the merges on milestone/24, 28, 29 name 22d39c4, 19dfbe5, 19262b9, a3823e4 — the head read each time)
+- [x] A branch GitHub refuses is merged in the `catch-up` checkout:
       `milestone/N-… holds main_agent: mock/components/X.js and …
       regenerated, never merged by hand` — no agent, no supervisor; its CI
       (`gates`, incl. `pages-mocked--bundles`, and `rust`) is green on the
       pushed merge. At most one such line per tick; the others say
-      `… its local catch-up waits for the next tick` and follow.
-- [ ] That checkout's `cargo metadata` ran with the pinned 1.99.1
-      (`run.log`/watch toolchain line), and CI accepts the `Cargo.lock`.
-- [ ] A residual conflict (`mock/src/commands.js`, a Rust source) is said
+      `… its local catch-up waits for the next tick` and follow. (seen 2026-10-24 18:07 Paris: GitHub 409 on milestone/28 → `holds main_agent: mock/pages.json regenerated` (125e426, every check green); 20:50–20:54 one local catch-up a tick, the others `waits for the next tick`)
+- [x] That checkout's `cargo metadata` ran with the pinned 1.99.1
+      (`run.log`/watch toolchain line), and CI accepts the `Cargo.lock`. (seen 2026-10-24 20:39 Paris: the watch's toolchain line says `cargo 1.99.1 … pinned 1.99.1`; `rust` green on every pushed catch-up merge (125e426, 45cef01, ee39bcc, a185a47, 312a635))
+- [x] A residual conflict (`mock/src/commands.js`, a Rust source) is said
       once per head: `… a conflict no script solves, on … — its landing PR
       #n is asked for a repair (harness:pr-fix)` then a `pr_fix` lane on
       #n; or `… has no landing PR open: left as it is …` once. No
-      `harness:human` issue. Its tasks start no session meanwhile.
+      `harness:human` issue. Its tasks start no session meanwhile. (seen 2026-10-24 18:09 and 22:13 Paris: milestone/24 then /28 — `has no landing PR open: left as it is` once per head, held with no task session, no harness:human issue)
 - [ ] Merge `main_agent` into such a branch by hand: within the hour (the
       retry), `milestone/N-… holds main_agent` and its tasks start again,
       `main_agent` unmoved. Without a landing PR, the hourly retry says
       `… still cannot take main_agent (…) … merge main_agent into it by
-      hand` — once an hour, not once a tick.
+      hand` — once an hour, not once a tick. (not seen: milestone/24, merged by hand at 18:17 Paris, stayed in catch_up_held until the watch was restarted at 18:35 to clear it, before the hourly retry; H1-B refinement logged in night/priorities-H.md)
 - [ ] A component deleted on `main_agent` while a branch rebuilt its
       `mock/components/X.js` (`UD`): the local catch-up removes it and
       `mock/build.sh` runs — no hourly `Failed` loop.
@@ -98,19 +98,19 @@ their old base (`tools/catchup-prs.sh` by hand).
       tick where N's CatchUp is due.
 - [ ] After a catch-up: `milestone/N-…: task PR(s) #a, #b hold it now` and
       those PRs' CI reruns; a PR on a lane is not touched, nor the PR of a
-      task whose `harness --task` lane still runs.
+      task whose `harness --task` lane still runs. (partly seen 2026-10-24 19:15 Paris: `task PR(s) #500, #509 hold it now`, merge commits 6f5e24c/b317ec7, their full CI reran; the skip of a lane's PR or a running task's PR not exercised — no lane ran then)
 - [ ] The view's journal shows a `catch up` row per catch-up, closed by its
       outcome (a residual or a failure in red), under `milestone-merge`.
 - [ ] A failing catch-up (npx offline, a red generator) is one warning,
       `… tried again in an hour, its tasks wait`, not one per tick.
-- [ ] A push to `main_agent` that moves no issue (an upgrade, a rules
+- [x] A push to `main_agent` that moves no issue (an upgrade, a rules
       contest settled) still reaches every building branch at the next green
-      tick.
-- [ ] After a `main_agent` push touching `mock/src/server.js` (or
+      tick. (seen 2026-10-24 20:50 and 21:20 Paris: the upgrade 19dfbe5 and the settled contest 19262b9 reached milestones 24, 28, 29 at the first green tick)
+- [x] After a `main_agent` push touching `mock/src/server.js` (or
       `screen.js`, `mock/build.mjs`, `mock/build.sh`): every building
       branch catches up locally, one a tick, each with a `chore: sh
       mock/build.sh after merging …` commit, and none through GitHub's
-      merge; its `pages-mocked--bundles` green after.
+      merge; its `pages-mocked--bundles` green after. (seen 2026-10-24 20:50–20:54 Paris: 19dfbe5 touched mock/src/server.js; #28, #24, #29 caught up locally one a tick, none through GitHub — #29 with `chore: sh mock/build.sh after merging…`, #28/#24 with the rebuilt bundles in their conflict merge; node-gates (pages-mocked--bundles) green on all three)
 - [ ] Cost: one compare call (`GitHub::changed_files`) per catch-up, two
       when the head brings bundles; one or two more per task PR refreshed
       and per merge attempt, on top of the reads below.

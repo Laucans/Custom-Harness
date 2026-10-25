@@ -36,10 +36,18 @@
 //! starts, the running lanes are waited for, then the watch exits. A hard
 //! stop is the caller's `SIGKILL` to the watch's process group.
 //!
-//! Three files: this one is the loop — a tick, its reads of the board, the
+//! **Under the disk floor no lane starts** (`floor`): the volume the lanes
+//! build on is measured every tick; below `DISK_FLOOR_GB` the free lanes'
+//! build folders are pruned and it is measured again, and if it is still
+//! short only the free work runs — said once when it falls, once when it
+//! is back.
+//!
+//! Four files: this one is the loop — a tick, its reads of the board, the
 //! rest after a `QUOTA` stop; `routes` runs what a tick decided in this
-//! process; `lanes` fills the lanes of a parallel watch with children.
+//! process; `lanes` fills the lanes of a parallel watch with children;
+//! `floor` holds them while the disk is short.
 
+mod floor;
 mod lanes;
 mod routes;
 
@@ -152,6 +160,11 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
     });
     let mut lanes = Lanes::new(args.parallel).closed_by(draining);
     let mut pulse = Pulse::default();
+    let mut floor = floor::Floor::new(
+        args.disk_floor_gb,
+        lanes_volume(args, here),
+        Rc::new(harness_adapters::shell::volume::Statvfs),
+    );
     // The tests' stale scratch databases: swept from the loop, not the
     // tick, which returns early on a quiet board or a quota rest — while
     // the lanes keep testing, and leaking.
@@ -160,7 +173,7 @@ pub async fn run(args: &WatchArgs, here: &Path) -> Outcome<()> {
         std::env::var("DATABASE_URL_READONLY").ok().as_deref(),
     );
     loop {
-        let went = tick(args, here, &log, &mut lanes, &mut pulse).await;
+        let went = tick(args, here, &log, &mut lanes, &mut pulse, &mut floor).await;
         // A dry run drops nothing; the sweep says its own failures.
         if !args.dry_run
             && let Some(sweeper) = &mut scratch
@@ -217,16 +230,45 @@ async fn catching_up(gh: &dyn GitHub, pulse: &mut Pulse, integration: &str) -> O
     catch_up::read_head(gh, &mut pulse.catch_ups, integration, now_seconds()).await
 }
 
-/// One pass: read the snapshot, decide, dispatch.
-async fn tick(
+/// The folder whose volume the floor measures: the lanes' workspaces when
+/// they exist — where the builds land — else the factory itself.
+fn lanes_volume(args: &WatchArgs, here: &Path) -> PathBuf {
+    let workspaces = Workspace::new(here).workspaces_in(&args.workspaces_dir);
+    if workspaces.exists() {
+        workspaces
+    } else {
+        here.to_path_buf()
+    }
+}
+
+/// What the disk lets this tick start. Under the floor the free lanes'
+/// build folders go first, so space the watch owns never holds it — a dry
+/// run removes nothing.
+fn room(
     args: &WatchArgs,
     here: &Path,
+    lanes: &Lanes,
+    floor: &mut floor::Floor,
     log: &Logbook,
-    lanes: &mut Lanes,
-    pulse: &mut Pulse,
-) -> Outcome<()> {
-    let gh = resolve_gh(args, here)?;
-    let freed = lanes.reap(log);
+) -> floor::Room {
+    floor.check(log, || {
+        if !args.dry_run {
+            for slot in lanes.idle() {
+                lanes::prune_slot(
+                    args,
+                    here,
+                    slot,
+                    &harness_adapters::shell::disk::RealDisk,
+                    log,
+                );
+            }
+        }
+    })
+}
+
+/// This tick's pace once the lanes' quota news is taken: a lane struck by
+/// the quota rests the watch, a session that went through ends the rest.
+fn quota_pace(args: &WatchArgs, lanes: &mut Lanes, pulse: &mut Pulse, log: &Logbook) -> Pace {
     if lanes.struck_by_quota() {
         rest(pulse, log);
     }
@@ -246,7 +288,26 @@ async fn tick(
             }
         ));
     }
-    if pace == Pace::Paused {
+    pace
+}
+
+/// One pass: read the snapshot, decide, dispatch.
+async fn tick(
+    args: &WatchArgs,
+    here: &Path,
+    log: &Logbook,
+    lanes: &mut Lanes,
+    pulse: &mut Pulse,
+    floor: &mut floor::Floor,
+) -> Outcome<()> {
+    let gh = resolve_gh(args, here)?;
+    // Room found again is a reason to read the board, like a freed lane:
+    // the jobs the floor held back moved nothing on it.
+    let room = room(args, here, lanes, floor, log);
+    let freed = lanes.reap(log) + usize::from(room == floor::Room::Back);
+    let pace = quota_pace(args, lanes, pulse, log);
+    // One route at a time builds in this process: under the floor, none.
+    if pace == Pace::Paused || (pace == Pace::OneRoute && room == floor::Room::Short) {
         return Ok(());
     }
     let activity = gh.activity(pulse.etag.as_deref()).await?;
@@ -313,13 +374,14 @@ async fn tick(
         }
         // A free job never meets the quota, and a lane's is told by its
         // exit: what the schedule came to is the doctor's, already recorded.
+        // Under the floor, the free work only: no lane starts.
         let _ = lanes::run_schedule(
             args,
             here,
             gh.as_ref(),
             &found,
             pulse,
-            pace == Pace::Lanes,
+            pace == Pace::Lanes && room != floor::Room::Short,
             lanes,
             log,
         )

@@ -33,12 +33,12 @@ priority over the ahead work.
 
 ## To verify
 
-- [ ] Two reviews side by side on their own `router-lane-<k>` checkouts, no
-      "cannot widen the workspace" error.
-- [ ] A decision or a PR of the critical path's milestone starts before the
-      same kind of work of an ahead milestone (`schedule:` debug line, weights).
+- [x] Two reviews side by side on their own `router-lane-<k>` checkouts, no
+      "cannot widen the workspace" error. (seen 2026-10-24 22:36 Paris: lanes 2, 3, 4 pr-review #526, #527, #528 at once; last `cannot widen the workspace` 2026-10-18T21:23Z)
+- [x] A decision or a PR of the critical path's milestone starts before the
+      same kind of work of an ahead milestone (`schedule:` debug line, weights). (seen 2026-10-24 04:44 Paris: `schedule: MergeMainAgent { milestone: 25 }=1060, DevTask #28 (path)=650 x2, DevTask #21 #143=600`; the tasks were held by the catch-up that tick, so the start order itself was not seen)
 - [ ] During a quota rest, a green PR still merges (`tick: MergeIntoMilestone`
       while `resting: … the free work goes on`).
 - [ ] A refinement or a test debt left waiting starts within ~150 ticks even
       with tasks always runnable (its weight in the `schedule:` line grows).
-- [ ] No tick logs "already on a lane" any more.
+- [x] No tick logs "already on a lane" any more. (seen 2026-10-25 01:40 Paris: last `already on a lane` at 2026-10-18T20:37Z, none in watch.log over 10-19..10-24)

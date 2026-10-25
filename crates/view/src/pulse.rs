@@ -63,6 +63,10 @@ impl Mockups for PulsingMockups {
         self.inner.file(branch, path)
     }
 
+    fn product_files(&self, branch: &str, pattern: &str) -> Result<Vec<(String, Vec<u8>)>, String> {
+        self.inner.product_files(branch, pattern)
+    }
+
     fn workspace(&self, branch: &str) -> Result<PathBuf, String> {
         self.inner.workspace(branch)
     }
@@ -136,6 +140,13 @@ mod tests {
         }
         fn file(&self, _branch: &str, _path: &str) -> Result<Option<Vec<u8>>, String> {
             Ok(None)
+        }
+        fn product_files(
+            &self,
+            _branch: &str,
+            _pattern: &str,
+        ) -> Result<Vec<(String, Vec<u8>)>, String> {
+            Ok(Vec::new())
         }
         fn workspace(&self, _branch: &str) -> Result<PathBuf, String> {
             Ok(PathBuf::from("/nowhere"))

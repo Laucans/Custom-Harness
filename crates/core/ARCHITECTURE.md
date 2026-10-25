@@ -71,10 +71,18 @@ nobody can see passing cannot be told from one that never ran — that is what
 the pass event is for.
 
 The tools a process runs with are an event too: `Event::ToolchainResolved`
-(each tool `name version (where)`, the whole `PATH`, the problems with their
-fixes; a warning when there is one). Core only carries it — resolving the
-tools reads the process's environment and disk, which is the launcher's
-(`harness-launcher`'s `toolchain.rs`).
+(each tool `name version (where)`, the build cache's variables — `cache`,
+`#[serde(default)]` so an older row reads back —, the whole `PATH`, the
+problems with their fixes; a warning when there is one). Core only carries
+it — resolving the tools reads the process's environment and disk, which is
+the launcher's (`harness-launcher`'s `toolchain.rs`).
+
+The disk budget of a parallel watch is three events: `DiskUnderFloor` (a
+warning, said once when the lanes' volume falls under `DISK_FLOOR_GB`: the
+line is `idle: disk under the floor (N GB < M GB) …`), `DiskAboveFloor`
+(once, when a measure finds it back; a new watch starts unheld) and `LaneTargetPruned` (a lane's product `target`
+pruned before its next job: both sizes in GB with one decimal, and what
+went).
 
 ## `ports/` — what the inside needs from the outside
 
@@ -85,7 +93,8 @@ traits exchange). **A port decides, an adapter calls.**
 agent         Session, SessionFactory (open, fork), SessionSpec, Reply, Base — a fork branches from a Base the round holds in `Context::base`
 shell/git     Repo, Repos — reads answer, setup verbs return `Ran`; the catch-up's verbs (merge, take_theirs, remove, merge_base, show, stage_paths, merge_file, push_head) refuse or read nothing by default
 shell/github  GitHub — a failed read is never an empty list; commit_time, a commit's date, what a wait on its checks counts from; files written (put_file) and deleted (delete_file) as one commit on GitHub, no checkout
-shell/disk    Disk — exists so deletion is testable (remove_file refused by default: a disk that does not say how never pretends it removed)
+shell/disk    Disk — exists so deletion is testable (remove_file refused by default: a disk that does not say how never pretends it removed); size_bytes and modified_secs, 0 and None by default, are what a lane's pruning measures — a disk that cannot measure prunes nothing
+shell/volume  Volume — the free bytes of the volume holding a path: the watch's disk floor
 shell/process Ran, last_line — what a shell port hands back
 shell/database Databases, OwnedDatabase, Dropping, Dropped — the databases the factory's role owns, and drops that never take one in use, bounded by a deadline
 store/spending    Spending, Entry — implemented in the launcher, not here

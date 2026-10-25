@@ -71,6 +71,18 @@ impl Disk for RealDisk {
         names
     }
 
+    fn size_bytes(&self, path: &Path) -> u64 {
+        size_of(path)
+    }
+
+    fn modified_secs(&self, path: &Path) -> Option<u64> {
+        let modified = std::fs::symlink_metadata(path).ok()?.modified().ok()?;
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|since| since.as_secs())
+    }
+
     fn read_to_string(&self, path: &Path) -> Option<String> {
         std::fs::read_to_string(path).ok()
     }
@@ -79,6 +91,26 @@ impl Disk for RealDisk {
         std::fs::write(path, content)
             .map_err(|e| Halt::Failed(format!("couldn't write {}: {e}", path.display())))
     }
+}
+
+/// The blocks `path` takes, its whole tree for a folder, links never
+/// followed — what `du` counts. What cannot be read counts nothing.
+fn size_of(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt as _;
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    // `st_blocks` counts 512-byte units whatever the volume's block size.
+    let own = meta.blocks().saturating_mul(512);
+    if !meta.is_dir() {
+        return own;
+    }
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return own;
+    };
+    entries.flatten().fold(own, |total, entry| {
+        total.saturating_add(size_of(&entry.path()))
+    })
 }
 
 #[cfg(test)]
@@ -133,5 +165,36 @@ mod tests {
             RealDisk.dir_names(Path::new("/tmp/not-a-directory-at-all")),
             [] as [String; 0]
         );
+    }
+
+    #[test]
+    fn a_folder_measures_its_whole_tree_without_following_links() {
+        let root = std::env::temp_dir().join(format!(
+            "harness-size-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let deep = root.join("debug/deps");
+        std::fs::create_dir_all(&deep).expect("mkdir");
+        std::fs::write(deep.join("big"), vec![7_u8; 256 * 1024]).expect("big");
+        std::fs::write(root.join("small"), "x").expect("small");
+        // A link to a folder far bigger than the tree: never counted.
+        std::os::unix::fs::symlink("/usr", root.join("usr")).expect("link");
+        let size = RealDisk.size_bytes(&root);
+        assert!(
+            (256 * 1024..2 * 1024 * 1024).contains(&size),
+            "the tree's blocks, the link's target left out: {size}"
+        );
+        assert!(RealDisk.size_bytes(&deep.join("big")) >= 256 * 1024);
+        assert_eq!(RealDisk.size_bytes(&root.join("absent")), 0);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let modified = RealDisk.modified_secs(&root.join("small")).expect("a time");
+        assert!(modified.abs_diff(now) < 600, "{modified} vs {now}");
+        assert_eq!(RealDisk.modified_secs(&root.join("absent")), None);
+        std::fs::remove_dir_all(&root).expect("cleaned");
     }
 }

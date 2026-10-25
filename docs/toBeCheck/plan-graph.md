@@ -30,8 +30,8 @@ and lanes that serve the critical path first.
 - [x] ForgeDesMondes' current plan (#18–#30) has its graph: `harness
       plan-graph 4` wrote it on `main_agent` (15 milestones, 123 ids, 5 reads
       ahead: #19 → #20 ×3, #20 → #25 ×2).
-- [ ] The gates validate `plan/graph.json` against contract R on the next
-      push of `main_agent`.
+- [x] The gates validate `plan/graph.json` against contract R on the next
+      push of `main_agent`. (seen 2026-10-24 22:06 Paris: `gates` green on main_agent a3823e4 `chore(plan): milestone #24 built 6`, which changes plan/graph.json; manifests-conform-to-contracts runs `validate r-plan-graph.schema.json plan/graph.json`)
 
 ## Next steps
 

@@ -72,10 +72,10 @@ A second run filled 0 and left the file byte for byte; every row's first
       ~/.harness/factories/forgedesmondes/.llocal/logs/agent-loop/costs.tsv`
       — expect about 508 filled (more if rows were added since), a
       `costs.tsv.bak` beside it, the same row count before and after.
-      Run it again: 0 filled.
+      Run it again: 0 filled. (partly seen 2026-10-24 17:31 Paris: watch stopped, the backfill filled 511, costs.tsv.bak beside it, 2418 lines before and after (old rows padded to 20 cells); the second run not made)
 - [ ] Restart the watch; the first dev-loop round writes a row whose last
       cell is `#<n> <milestone title>` (`tail -1 costs.tsv | cut -f20`).
-      Same for a refinement, a split and an arbitration.
+      Same for a refinement, a split and an arbitration. (partly seen 2026-10-24 18:01 Paris on: 17 code rows and 1 slice row name their milestone; no refinement nor arbitration ran since)
 - [ ] Before the backfill, the *Spending* screen, *By milestone*: the old
       dev-loop weight of closed milestones (about $960 minus what the `#N`
       fix placed) sits in `unknown`, not in `hors board`.

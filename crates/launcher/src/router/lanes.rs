@@ -9,6 +9,8 @@
 use std::path::Path;
 
 use harness_core::domain::Issue;
+use harness_core::domain::workspace::Workspace;
+use harness_core::ports::shell::disk::Disk;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::{Event, Logbook};
 use harness_workflows::common::branching;
@@ -18,9 +20,10 @@ use harness_workflows::dev_loop::data::tasks;
 use harness_workflows::main_agent_merge::data::merge_train;
 
 use crate::cli::WatchArgs;
-use crate::dispatch::lanes::Lanes;
+use crate::dispatch::lanes::{Lanes, prune_target};
 
 use super::Dispatched;
+use super::floor::GIB;
 use super::routes::{after, dispatched, lane_command, lane_work};
 
 /// How many jobs the debug line of a tick's schedule names.
@@ -85,6 +88,15 @@ pub(super) async fn run_schedule(
             left.push(job.route);
             continue;
         };
+        if !args.dry_run {
+            prune_slot(
+                args,
+                here,
+                slot,
+                &harness_adapters::shell::disk::RealDisk,
+                log,
+            );
+        }
         let started = match &job.route {
             Route::DevTask { milestone, task } => {
                 start_task(args, here, found, (*milestone, *task), slot, lanes, log)
@@ -168,6 +180,39 @@ fn say_rules_held(found: &Snapshot, log: &Logbook) {
                 harness_workflows::common::labels::READY,
                 unblocked.touched
             ));
+        }
+    }
+}
+
+/// Prunes the build folders of lane `slot`'s two checkouts — its tasks'
+/// (`lane-<k>`, under `AGENTIC_WORKSPACES_DIR`) and its routes'
+/// (`router-lane-<k>`) — before it takes its next job: the slot is free, so
+/// nothing builds in either ([`prune_target`]).
+pub(super) fn prune_slot(
+    args: &WatchArgs,
+    here: &Path,
+    slot: usize,
+    disk: &dyn Disk,
+    log: &Logbook,
+) {
+    let cap = args.lane_target_cap_gb.saturating_mul(GIB);
+    let source = Workspace::new(here);
+    let checkouts = [
+        source
+            .workspaces_in(&args.workspaces_dir)
+            .join(format!("lane-{slot}")),
+        source.workspaces().join(format!("router-lane-{slot}")),
+    ];
+    for checkout in checkouts {
+        let target = checkout.join("target");
+        if let Some(pruned) = prune_target(disk, &target, cap) {
+            log.event(&Event::LaneTargetPruned {
+                lane: u32::try_from(slot).unwrap_or(u32::MAX),
+                target: source.rel(&target),
+                before: pruned.before,
+                after: pruned.after,
+                what: pruned.what,
+            });
         }
     }
 }
@@ -401,6 +446,83 @@ fn start_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dispatch::lanes::tests::Builds;
+    use clap::Parser as _;
+
+    #[test]
+    fn a_free_lane_s_two_checkouts_are_pruned_and_said_before_its_next_job() {
+        let watch = |cap: &str| match crate::cli::Cli::try_parse_from([
+            "harness",
+            "watch",
+            "--parallel",
+            "3",
+            "--workspaces-dir",
+            "../ws",
+            "--lane-target-cap-gb",
+            cap,
+        ]) {
+            Ok(crate::cli::Cli {
+                command: Some(crate::cli::Command::Watch(args)),
+                ..
+            }) => args,
+            other => panic!("a watch command line: {other:?}"),
+        };
+        let here = Path::new("/f/factory");
+        let disk = Builds::with(&[
+            // The task checkout's target: over twice 1 GB.
+            (
+                "/f/factory/../ws/lane-1/target/debug/deps/a-0123456789abcdef",
+                3 * GIB,
+                Some(1),
+            ),
+            // The route checkout's: over 1 GB, under 2.
+            (
+                "/f/factory/.llocal/agentic_workspaces/router-lane-1/target/debug/incremental/x",
+                GIB + 1,
+                Some(1),
+            ),
+            // Another lane's, far over: not this slot's.
+            ("/f/factory/../ws/lane-2/target/x", 9 * GIB, Some(1)),
+        ]);
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        prune_slot(&watch("1"), here, 1, &disk, &log);
+        assert_eq!(
+            *disk.removed.borrow(),
+            [
+                std::path::PathBuf::from("/f/factory/../ws/lane-1/target/debug"),
+                std::path::PathBuf::from(
+                    "/f/factory/.llocal/agentic_workspaces/router-lane-1/target/debug/incremental"
+                ),
+            ]
+        );
+        let said = capture.0.borrow().join("\n");
+        assert!(
+            said.contains(
+                "lane 1: ../ws/lane-1/target pruned 3.0 GB -> 0.0 GB (the debug profile, above twice the cap)"
+            ),
+            "{said}"
+        );
+        assert!(
+            said.contains(
+                "lane 1: .llocal/agentic_workspaces/router-lane-1/target pruned 1.0 GB -> 0.0 GB \
+                 (incremental caches)"
+            ),
+            "{said}"
+        );
+        // A cap of 0 prunes nothing.
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        prune_slot(&watch("0"), here, 2, &disk, &log);
+        assert_eq!(disk.removed.borrow().len(), 2);
+        assert!(capture.0.borrow().is_empty());
+    }
     use harness_workflows::common::labels;
     use std::rc::Rc;
 

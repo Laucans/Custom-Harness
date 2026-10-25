@@ -1,4 +1,5 @@
-//! The binaries, wrapped: `git`, `gh`, the disk, and the launcher they share.
+//! The binaries, wrapped: `git`, `gh`, the disk and its volume, and the
+//! launcher they share.
 //!
 //! The implementations behind [`ports::shell`](harness_core::ports::shell).
 //! `process` is the only one that talks to the system; the others translate
@@ -9,3 +10,4 @@ pub mod disk;
 pub mod git;
 pub mod github;
 pub mod process;
+pub mod volume;

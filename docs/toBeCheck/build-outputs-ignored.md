@@ -17,10 +17,10 @@ carried no `target/` file.
 
 ## To verify
 
-- [ ] On ForgeDesMondes, the next dev-loop round that builds Rust passes
-      `ArchitectureHolds` with no `target/` line.
-- [ ] The lane clone's `.git/info/exclude` lists the three lines once each
-      after several rounds.
+- [x] On ForgeDesMondes, the next dev-loop round that builds Rust passes
+      `ArchitectureHolds` with no `target/` line. (seen 2026-10-17 04:26 Paris: ArchitectureHolds passed from run 20261017-021114 on — 193 passes to 24 Oct, none naming target/)
+- [x] The lane clone's `.git/info/exclude` lists the three lines once each
+      after several rounds. (seen 2026-10-25 01:40 Paris: lane-0..4, every router-lane-* and catch-up exclude holds /.claude/, target/, node_modules/ once each after hundreds of rounds)
 - [ ] A fresh `init-repo` on an empty product writes `.gitignore`; on a
       product with its own, keeps it.
 
@@ -31,7 +31,7 @@ ForgeDesMondes #32 (`needs: database`) halted before paying: `database` is
 places vocabulary ids (Capability, aggregate, Micro-UI, Concept, screen).
 Now an id a closed or `waiting-merge` sibling `produces` is held.
 
-- [ ] #32 narrows and runs its `code` stage with no `needs database` halt.
+- [x] #32 narrows and runs its `code` stage with no `needs database` halt. (seen 2026-10-17 04:41 Paris: run 20261017-024150 narrowed #32 to 16 patterns, its code stage ran, PR #65 delivered at 05:04)
 - [ ] A `needs` on an id no sibling delivered still halts before paying.
 
 ## Also: explicit members behind a comment that names them
@@ -42,4 +42,4 @@ in a comment above `[workspace]`; `explicit_members` took the first
 member joined the closure (#32 stopped on `crates/data`, `crates/dataguard/server`).
 
 - [ ] The next infrastructure/Rust task of milestone #16 narrows with
-      `crates/data/` and `crates/dataguard/server/` in its tree note, no stop.
+      `crates/data/` and `crates/dataguard/server/` in its tree note, no stop. (not seen: #32's tree got crates/data back by the found-missing widening, not by explicit members; narrowing is off since 17 Oct (NO_NARROW, narrowing-off-trial.md))

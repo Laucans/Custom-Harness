@@ -117,6 +117,36 @@ pub enum Event {
         /// Why.
         reason: String,
     },
+    /// The volume the lanes build on fell under the watch's floor: no lane
+    /// starts until it is back above. Said when it falls, not every tick.
+    DiskUnderFloor {
+        /// Whole gigabytes free (GiB, as `df -g` counts them).
+        free_gb: u64,
+        /// The floor, `DISK_FLOOR_GB`.
+        floor_gb: u64,
+    },
+    /// The volume is back above the floor: lanes start again.
+    DiskAboveFloor {
+        /// Whole gigabytes free.
+        free_gb: u64,
+        /// The floor.
+        floor_gb: u64,
+    },
+    /// A lane's product build folder outgrew its cap and was pruned before
+    /// the lane took its next job.
+    LaneTargetPruned {
+        /// The lane.
+        lane: u32,
+        /// The build folder, relative to the factory when it can be.
+        target: String,
+        /// Its size before, in bytes.
+        before: u64,
+        /// Its size after, in bytes.
+        after: u64,
+        /// What was removed, in words: the incremental caches and how many
+        /// stale executables, or the whole folder.
+        what: String,
+    },
     /// A lane's process ended.
     LaneEnded {
         /// The lane.
@@ -447,6 +477,24 @@ pub enum Event {
     ToolchainResolved {
         /// One per tool, `name version (where)`, in a fixed order.
         tools: Vec<String>,
+        /// The shell every spawned process gets, `SHELL=… CLAUDE_CODE_SHELL=…`
+        /// in full; empty when no bash 5 was found, or in a row written
+        /// before it was said.
+        #[serde(default)]
+        shell: String,
+        /// The compilation cache the product's builds get, in words: the
+        /// variables set, in full (`RUSTC_WRAPPER`, `SCCACHE_DIR`,
+        /// `SCCACHE_CACHE_SIZE`, `CARGO_INCREMENTAL`,
+        /// `SCCACHE_IGNORE_SERVER_IO_ERROR`), off, or absent — then the
+        /// inherited build variables that pass through. Empty in a row
+        /// written before it existed.
+        #[serde(default)]
+        cache: String,
+        /// What the harness adds to every session's environment, in full:
+        /// `HARNESS_BIN=…`. Empty when the binary was not found (a problem
+        /// then says it), or in a row written before it existed.
+        #[serde(default)]
+        session: String,
         /// The `PATH` every spawned process gets.
         path: String,
         /// What is missing or too old, each line naming its fix.
@@ -712,6 +760,9 @@ impl Event {
             }
             Self::ToolchainResolved {
                 tools,
+                shell,
+                cache,
+                session,
                 path,
                 problems,
             } => {
@@ -720,8 +771,41 @@ impl Event {
                 } else {
                     format!(" — problems: {}", problems.join("; "))
                 };
-                format!("toolchain: {} · PATH={path}{told}", tools.join(" · "))
+                let said = |part: &str| {
+                    if part.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {part}")
+                    }
+                };
+                format!(
+                    "toolchain: {}{}{}{} · PATH={path}{told}",
+                    tools.join(" · "),
+                    said(shell),
+                    said(cache),
+                    said(session)
+                )
             }
+            Self::DiskUnderFloor { free_gb, floor_gb } => format!(
+                "idle: disk under the floor ({free_gb} GB < {floor_gb} GB) — no lane starts \
+                 until space is freed"
+            ),
+            Self::DiskAboveFloor { free_gb, floor_gb } => {
+                format!(
+                    "disk: back above the floor ({free_gb} GB >= {floor_gb} GB) — lanes start again"
+                )
+            }
+            Self::LaneTargetPruned {
+                lane,
+                target,
+                before,
+                after,
+                what,
+            } => format!(
+                "lane {lane}: {target} pruned {} -> {} ({what})",
+                gigabytes(*before),
+                gigabytes(*after)
+            ),
             Self::SessionEnded { .. } | Self::BreakerRefused { .. } => return None,
         })
     }
@@ -740,6 +824,7 @@ impl Event {
             Self::LaneEnded { code: Some(0), .. } => Level::Info,
             Self::TickFailed { .. }
             | Self::QuotaRest { .. }
+            | Self::DiskUnderFloor { .. }
             | Self::DataSnapshotFailed { .. }
             | Self::DecisionTaken { .. }
             | Self::HumanTaskOpened { .. }
@@ -757,6 +842,14 @@ impl Event {
             _ => Level::Info,
         }
     }
+}
+
+/// `bytes` in gigabytes (GiB, as `df -g` and `du -h` count them), one
+/// decimal: `7.9 GB`.
+fn gigabytes(bytes: u64) -> String {
+    const GIB: u128 = 1 << 30;
+    let tenths = u128::from(bytes) * 10 / GIB;
+    format!("{}.{} GB", tenths / 10, tenths % 10)
 }
 
 #[cfg(test)]
@@ -813,6 +906,9 @@ mod tests {
                 "bash 5.2.37 (/opt/homebrew/bin/bash)".to_string(),
                 "node v22.14.0 (/opt/homebrew/bin/node)".to_string(),
             ],
+            shell: String::new(),
+            cache: String::new(),
+            session: String::new(),
             path: "/opt/homebrew/bin:/usr/bin".to_string(),
             problems: Vec::new(),
         };
@@ -826,6 +922,9 @@ mod tests {
         assert_eq!(fine.level(), Level::Info);
         let short = Event::ToolchainResolved {
             tools: vec!["cargo 1.98.1 (/opt/homebrew/bin/cargo)".to_string()],
+            shell: String::new(),
+            cache: String::new(),
+            session: String::new(),
             path: "/usr/bin".to_string(),
             problems: vec![
                 "cargo 1.99.1 missing: rustup toolchain install 1.99.1".to_string(),
@@ -846,6 +945,92 @@ mod tests {
             serde_json::from_str::<Event>(&json).expect("read back"),
             short
         );
+    }
+
+    #[test]
+    fn the_shell_and_the_build_cache_are_said_between_the_tools_and_the_path() {
+        let cached = Event::ToolchainResolved {
+            tools: vec!["bash 5.2.37 (/opt/homebrew/bin/bash)".to_string()],
+            shell: "SHELL=/opt/homebrew/bin/bash CLAUDE_CODE_SHELL=/opt/homebrew/bin/bash"
+                .to_string(),
+            cache: "build cache: sccache 0.18.0 — CARGO_INCREMENTAL=0".to_string(),
+            session: "HARNESS_BIN=/opt/harness/bin/harness".to_string(),
+            path: "/usr/bin".to_string(),
+            problems: Vec::new(),
+        };
+        assert_eq!(
+            cached.line().as_deref(),
+            Some(
+                "toolchain: bash 5.2.37 (/opt/homebrew/bin/bash) · SHELL=/opt/homebrew/bin/bash \
+                 CLAUDE_CODE_SHELL=/opt/homebrew/bin/bash · build cache: sccache 0.18.0 \
+                 — CARGO_INCREMENTAL=0 · HARNESS_BIN=/opt/harness/bin/harness · PATH=/usr/bin"
+            )
+        );
+        // A row written before the shell, the cache and the session's
+        // environment were said reads back with none.
+        let old = r#"{"event":"toolchain_resolved","tools":[],"path":"/bin","problems":[]}"#;
+        assert_eq!(
+            serde_json::from_str::<Event>(old).expect("an old row"),
+            Event::ToolchainResolved {
+                tools: Vec::new(),
+                shell: String::new(),
+                cache: String::new(),
+                session: String::new(),
+                path: "/bin".to_string(),
+                problems: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn the_disk_floor_is_a_warning_when_reached_and_news_when_left() {
+        let under = Event::DiskUnderFloor {
+            free_gb: 9,
+            floor_gb: 12,
+        };
+        assert_eq!(
+            under.line().as_deref(),
+            Some("idle: disk under the floor (9 GB < 12 GB) — no lane starts until space is freed")
+        );
+        assert_eq!(under.level(), Level::Warning);
+        let above = Event::DiskAboveFloor {
+            free_gb: 30,
+            floor_gb: 12,
+        };
+        assert_eq!(
+            above.line().as_deref(),
+            Some("disk: back above the floor (30 GB >= 12 GB) — lanes start again")
+        );
+        assert_eq!(above.level(), Level::Info);
+        for event in [under, above] {
+            let json = serde_json::to_string(&event).expect("json");
+            assert_eq!(serde_json::from_str::<Event>(&json).expect("back"), event);
+        }
+    }
+
+    #[test]
+    fn a_pruned_target_says_both_sizes_in_gigabytes_with_one_decimal() {
+        let pruned = Event::LaneTargetPruned {
+            lane: 2,
+            target: "../harness-workspaces/lane-2/target".to_string(),
+            before: 8_805_000_000,
+            after: 3_651_000_000,
+            what: "incremental caches, 3 stale executable(s)".to_string(),
+        };
+        assert_eq!(
+            pruned.line().as_deref(),
+            Some(
+                "lane 2: ../harness-workspaces/lane-2/target pruned 8.2 GB -> 3.4 GB \
+                 (incremental caches, 3 stale executable(s))"
+            )
+        );
+        assert_eq!(pruned.level(), Level::Info);
+        assert_eq!(gigabytes(0), "0.0 GB");
+        assert_eq!(gigabytes((1 << 30) - 1), "0.9 GB");
+        assert_eq!(gigabytes(1 << 30), "1.0 GB");
+        assert_eq!(gigabytes(u64::MAX), "17179869183.9 GB");
+        let json = serde_json::to_string(&pruned).expect("json");
+        assert_eq!(serde_json::from_str::<Event>(&json).expect("back"), pruned);
     }
 
     #[test]

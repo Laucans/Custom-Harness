@@ -55,29 +55,29 @@ Four commits, this file's own the last:
 
 ## To check on a real run
 
-- [ ] A session stopping with `AGENT_LOOP_STOP: … #20 …` (or naming
+- [x] A session stopping with `AGENT_LOOP_STOP: … #20 …` (or naming
       `crates/<system>/` of a milestone still building): the task gets
       `blocked_by #20` on GitHub, its `## Decision` reads `kind: wait`,
       `watch.log` shows `#t parked until #20 lands (wait): …`, **no**
-      `harness:needs-decision`, and the lane ends 0.
-- [ ] The next ticks: the task is listed as blocked, no code session and no
+      `harness:needs-decision`, and the lane ends 0. (seen 2026-10-20 11:14 Paris: #214 stop `missing crates/session/read/Cargo.toml` -> `#214 parked until #20 lands (wait)` (in the run's run.log, not watch.log), blocked_by #20 on GitHub, no needs-decision, lane 2 exit 0)
+- [x] The next ticks: the task is listed as blocked, no code session and no
       decide session is paid for it. Expected numbers for a #214-like task:
       1 code session (the stop) and 0 decide sessions until #20 lands,
-      against 23 + 23 before.
+      against 23 + 23 before. (seen 2026-10-24 04:51 Paris: #214 had 1 code session (0.33 $, 10-20 09:14Z) and 0 decide sessions until #20 landed (10-24 02:42Z); retaken 02:51Z)
 - [ ] #20 gets `harness:waiting-merge` (its PR merged into `main_agent`):
       within two ticks the task is startable again, its milestone branch
       takes `main_agent` first (`catch_up`), and the session finds
-      `crates/session/`.
-- [ ] A stop naming something the harness cannot attribute (no `#N`, no
+      `crates/session/`. (contradicted 2026-10-24 04:46 Paris: #20 landed 02:42Z, but milestone/28 could not take main_agent (conflict on mock bundles): `#214 held … merge it by hand`; caught up by hand, then #214 delivered PR #432 at 03:13Z. Again 2026-10-24 22:07 Paris: #219 started before milestone/28 took #24's landing and stopped on the missing OralBrief/ToCreateList)
+- [x] A stop naming something the harness cannot attribute (no `#N`, no
       branch, no graph id or system path): the needs-decision path as before.
       `decide`, offered `wait`, answers `{"action":"wait","on":N}` when the
       case is a producer not landed: the blocker appears, the comment says
       "Blocked by #N until it lands", `harness:ai-decided` is set,
-      `needs-decision` taken, and the task is not taken again before #N lands.
-- [ ] A day's decisions (`DecisionTaken` rows in `.llocal/harness.db`): the
+      `needs-decision` taken, and the task is not taken again before #N lands. (seen 2026-10-24 20:19 Paris: #486 stop -> decide `wait` on #514; blocked_by #514 added, needs-decision removed, not taken again until #514 landed (18:44Z -> 18:45Z). The comment reads `Decision: wait on #514`, not `Blocked by #N until it lands`; ai-decided not checked)
+- [x] A day's decisions (`DecisionTaken` rows in `.llocal/harness.db`): the
       share of "keep waiting" answers drops from 60/82 to about zero; the
       ones left should be `wait` actions on cases the stop handler could not
-      attribute.
+      attribute. (seen 2026-10-25 01:40 Paris: decision_taken 10-20..10-24: 45 decisions, no `keep waiting` answer left, 9 `wait` actions)
 - [ ] The cost of a reason the attribution reads wrong: a `#N` that is an
       open, unrelated issue (a human task mentioned in passing) would block
       the task on it. Watch for a `TaskWaits` on an issue that is not a
