@@ -18,7 +18,7 @@ only (fakes): no live split, stop or landing has run with it yet.
 
 ## What shipped
 
-- Not committed yet: core port, `GhCli`, `FakeGitHub`, the openers (split,
+- aa3aa2a: core port, `GhCli`, `FakeGitHub`, the openers (split,
   `missing_task`, the stop handler's human tasks, the contract manager's
   producer task, the view's `Product::open_task`), the landing close
   (`main_agent_merge`, `milestone_merge::run` on a milestone, `decide`'s
