@@ -316,7 +316,8 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         // being repaired; the repair that gives up says so (`RepairsExhausted`).
         // A task waiting for a producer to land asks nothing of anyone: the
         // blocker on GitHub and the journal line say it. Nor does a sweep of
-        // stale scratch databases: housekeeping the journal tells.
+        // stale scratch databases: housekeeping the journal tells. Nor a split
+        // pulled past the cap: the router's own way out of a starved milestone.
         Event::SessionEnded { .. }
         | Event::ScratchDatabasesSwept { .. }
         | Event::PreparationTaken { .. }
@@ -324,7 +325,8 @@ fn tell(board: &mut Board, event: &Event, at: &str) {
         | Event::TapOpened { .. }
         | Event::GateChecked { .. }
         | Event::ChecksFailed { .. }
-        | Event::TaskWaits { .. } => {}
+        | Event::TaskWaits { .. }
+        | Event::SplitPulled { .. } => {}
     }
 }
 

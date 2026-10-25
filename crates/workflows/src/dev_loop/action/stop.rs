@@ -1097,14 +1097,14 @@ mod tests {
         task.blocked_by = vec![gh.issues[1].clone()];
         assert!(!task.has(labels::NEEDS_DECISION));
         assert!(
-            tasks::startable_tasks(std::slice::from_ref(&task), &[], &|_| true).is_empty(),
+            tasks::startable_tasks(std::slice::from_ref(&task), &[], None, &|_| true).is_empty(),
             "parked"
         );
         task.blocked_by[0]
             .labels
             .push(labels::WAITING_MERGE.to_string());
         assert_eq!(
-            tasks::startable_tasks(std::slice::from_ref(&task), &[], &|_| true)
+            tasks::startable_tasks(std::slice::from_ref(&task), &[], None, &|_| true)
                 .iter()
                 .map(|t| t.number)
                 .collect::<Vec<_>>(),

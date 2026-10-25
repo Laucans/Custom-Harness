@@ -499,22 +499,44 @@ jobs:
           exit $failed
 
       # Contracts D, E — every Micro-UI a frozen screen lays out exists: its id
-      # is the `microUi` of a micro-ui.json.
+      # is the `microUi` of a micro-ui.json. A layout entry is the id itself,
+      # an object naming it in `microUi`, or an object keyed by it
+      # (`{"PlayerStage": {}}`, the form the screens are written in). On a pull
+      # request into a milestone branch, a Micro-UI no micro-ui.json declares
+      # yet passes when the plan's graph knows it as a micro-ui and the mock-up
+      # holds its fragment (`mock/pages.json`): the screen is frozen against the
+      # mock-up while another milestone builds the Micro-UI. Strict everywhere
+      # else — a pull request into the integration branch, where the milestone
+      # lands, and every push.
       # Every Micro-UI of a frozen screen exists.
       - id: compositions-resolve
         name: compositions-resolve
         if: ${{ !cancelled() }}
         shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
           shopt -s nullglob globstar
+          lenient=0
+          if [ "${EVENT:-}" = "pull_request" ] && [[ "${BASE_REF:-}" == milestone/* ]]; then
+            lenient=1
+          fi
           failed=0
           for screen in apps/screens/*.json; do
-            for id in $(jq -r '(.layout[]? | strings), (.layout | .. | objects | .microUi? // empty)' "$screen" | sort -u); do
+            for id in $(jq -r '(.layout[]? | strings), (.layout[]? | objects | select(has("microUi") | not) | keys[]), (.layout | .. | objects | .microUi? // empty)' "$screen" | sort -u); do
               found=0
               for ui in apps/**/micro-ui.json; do
                 if [ "$(jq -r '.microUi' "$ui")" = "$id" ]; then found=1; break; fi
               done
+              if [ "$found" = "0" ] && [ "$lenient" = "1" ] \
+                && [ -f plan/graph.json ] && [ -f mock/pages.json ] \
+                && [ "$(jq -r --arg id "$id" '.ids[$id].kind // empty' plan/graph.json)" = "micro-ui" ] \
+                && jq -e --arg id "$id" 'any(.components[]?; .name == $id)' mock/pages.json > /dev/null; then
+                echo "$screen lays out $id, mocked: it resolves where the milestone lands"
+                found=1
+              fi
               if [ "$found" = "0" ]; then
                 echo "::error file=$screen::lays out $id, which no micro-ui.json declares"
                 failed=1

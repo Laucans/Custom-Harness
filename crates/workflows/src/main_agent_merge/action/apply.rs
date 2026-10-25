@@ -31,10 +31,11 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
     let issue = ports.gh.issue(milestone).await?;
     let branch = branching::milestone_branch(milestone, &issue.title);
     // The train's order: a consumer lands after the producers of what it
-    // reads, whatever its number.
+    // reads, whatever its number — those the graph names and those its
+    // tasks need, closed tasks included.
     let graph = read_graph(ports, &config.base_branch).await;
     let open = ports.gh.issues_labelled(labels::MILESTONE, "open").await?;
-    let waiting = merge_train::producers_landed(graph.as_ref(), milestone, &open);
+    let waiting = merge_train::landing_waits(graph.as_ref(), milestone, &open, &tasks);
     if !waiting.is_empty() {
         return Ok(MergeOutcome::WaitingOnProducers(waiting));
     }
@@ -1041,5 +1042,52 @@ mod tests {
                     || matches!(w, Wrote::Comment(6..=8, _))),
             "a landing touches no other branch: {writes:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_landing_waits_on_the_producer_of_what_a_closed_task_needed_with_no_graph_edge() {
+        // #4 depends on #5 alone in the graph; its closed task #11 laid out
+        // #3's Micro-UI — the edge the plan forgot (#28 on #24).
+        const FORGOT: &str = r#"{"version":1,"milestones":[
+          {"number":3,"title":"Brief","systems":["session"],"produces":["OralBrief"],"consumes":[],"depends_on":[]},
+          {"number":5,"title":"Sessions","systems":["session"],"produces":["session.listScenes"],"consumes":[],"depends_on":[]},
+          {"number":4,"title":"Territory tooling","systems":["territory"],"produces":[],"consumes":["session.listScenes"],"depends_on":[5]}
+        ],"ids":{
+          "OralBrief":{"kind":"micro-ui","producer":3,"state":"planned","version":1},
+          "session.listScenes":{"kind":"capability","producer":5,"state":"mocked","version":1}
+        }}"#;
+        let screen = Issue {
+            body: "## Architecture\n\nunit: composition\nsystem: territory\nneeds: OralBrief"
+                .to_string(),
+            ..task(11, "closed")
+        };
+        let gh = Rc::new(FakeGitHub {
+            subs: vec![(4, vec![screen])],
+            issues: vec![
+                issue(
+                    4,
+                    "open",
+                    "Territory tooling",
+                    &[labels::MILESTONE, labels::TRIGGERED],
+                ),
+                issue(3, "open", "Brief", &[labels::MILESTONE, labels::TRIGGERED]),
+                issue(
+                    5,
+                    "open",
+                    "Sessions",
+                    &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+                ),
+            ],
+            files: HashMap::from([(
+                ("plan/graph.json".to_string(), "main_agent".to_string()),
+                FORGOT.to_string(),
+            )]),
+            ..FakeGitHub::default()
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(outcome, MergeOutcome::WaitingOnProducers(vec![3]));
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
     }
 }

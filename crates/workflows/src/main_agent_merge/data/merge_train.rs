@@ -26,13 +26,91 @@ pub fn producers_landed(graph: Option<&Graph>, milestone: u64, milestones: &[Iss
     graph
         .waits_on(milestone)
         .into_iter()
-        .filter(|producer| {
-            milestones
-                .iter()
-                .find(|m| m.number == *producer)
-                .is_some_and(|m| m.is_open() && !m.has(labels::WAITING_MERGE))
-        })
+        .filter(|producer| unlanded(*producer, milestones))
         .collect()
+}
+
+/// The milestones before `milestone` in plan order that have not landed:
+/// open and not `harness:waiting-merge`, in plan order.
+///
+/// What a task may wait on while it builds
+/// ([`crate::dev_loop::data::tasks::runs_ahead`]): every id a task needs is
+/// judged against its own producer, so a producer the graph's edges forgot
+/// still holds it — #28's #219 needed #24's `OralBrief` and #28 named no
+/// edge to #24. Later milestones never count: a read of one is a plan
+/// error, never a wait. Empty without a graph, or for a milestone the
+/// graph does not know.
+#[must_use]
+pub fn unlanded_before(graph: Option<&Graph>, milestone: u64, milestones: &[Issue]) -> Vec<u64> {
+    let Some(graph) = graph else {
+        return Vec::new();
+    };
+    graph
+        .before(milestone)
+        .into_iter()
+        .filter(|earlier| unlanded(*earlier, milestones))
+        .collect()
+}
+
+/// The producers of what `tasks` need that have not landed, before
+/// `milestone` in plan order, each once, in plan order.
+///
+/// The edges the graph forgot, read from the tasks themselves: #29's #465
+/// needed `SuggestionPill`, which #27 produces, and #29's `depends_on`
+/// named no #27. Every task counts, closed or not — what a landed task
+/// built on must have landed before its milestone does.
+#[must_use]
+pub fn need_producers(
+    graph: Option<&Graph>,
+    milestone: u64,
+    milestones: &[Issue],
+    tasks: &[Issue],
+) -> Vec<u64> {
+    let Some(graph) = graph else {
+        return Vec::new();
+    };
+    let needed: Vec<u64> = tasks
+        .iter()
+        .filter_map(crate::dev_loop::data::tasks::declaration)
+        .flat_map(|declaration| declaration.needs)
+        .filter_map(|id| graph.ids.get(&id).and_then(|interface| interface.producer))
+        .collect();
+    graph
+        .before(milestone)
+        .into_iter()
+        .filter(|earlier| needed.contains(earlier) && unlanded(*earlier, milestones))
+        .collect()
+}
+
+/// What a milestone's landing waits on: the producers the graph names
+/// ([`producers_landed`]) and those of what its tasks need
+/// ([`need_producers`]), each once, in plan order. Empty when it may land.
+#[must_use]
+pub fn landing_waits(
+    graph: Option<&Graph>,
+    milestone: u64,
+    milestones: &[Issue],
+    tasks: &[Issue],
+) -> Vec<u64> {
+    let named = producers_landed(graph, milestone, milestones);
+    let needed = need_producers(graph, milestone, milestones, tasks);
+    let Some(graph) = graph else {
+        return Vec::new();
+    };
+    graph
+        .before(milestone)
+        .into_iter()
+        .filter(|earlier| named.contains(earlier) || needed.contains(earlier))
+        .collect()
+}
+
+/// Whether `number` is an open milestone not landed yet: one gone from the
+/// open list is closed.
+fn unlanded(number: u64, milestones: &[Issue]) -> bool {
+    milestones
+        .iter()
+        .find(|m| m.number == number)
+        .is_some_and(|m| m.is_open() && !m.has(labels::WAITING_MERGE))
 }
 
 /// Whether a changed file is a manifest the graph may know an id of.
@@ -150,6 +228,112 @@ mod tests {
         assert!(
             producers_landed(Some(&ahead), 19, &open).is_empty(),
             "producers_landed(Some(&ahead), 19, &open) should be empty"
+        );
+    }
+
+    /// #28 needs #24's `OralBrief` and #27's `SuggestionPill` with no edge
+    /// to either; #29 comes after #28 and depends on it.
+    fn forgotten_edges() -> Graph {
+        Graph::parse(
+            r#"{"version":1,"milestones":[
+              {"number":24,"title":"brief","systems":["session"],"produces":["OralBrief"],"consumes":[],"depends_on":[]},
+              {"number":27,"title":"pill","systems":["ai"],"produces":["SuggestionPill"],"consumes":[],"depends_on":[]},
+              {"number":28,"title":"screens","systems":["session"],"produces":[],"consumes":[],"depends_on":[]},
+              {"number":29,"title":"later","systems":["ai"],"produces":["ai.late"],"consumes":["x"],"depends_on":[28]}
+            ],"ids":{
+              "OralBrief":{"kind":"micro-ui","producer":24,"state":"planned","version":1},
+              "SuggestionPill":{"kind":"micro-ui","producer":27,"state":"mocked","version":1},
+              "ai.late":{"kind":"capability","producer":29,"state":"planned","version":1},
+              "ai.there":{"kind":"capability","producer":null,"state":"built","version":1}
+            }}"#,
+        )
+        .expect("a graph")
+    }
+
+    fn needing(number: u64, needs: &str, state: &str) -> Issue {
+        Issue {
+            body: format!("## Architecture\n\nunit: composition\nsystem: session\nneeds: {needs}"),
+            ..issue(number, &[labels::AGENT], state)
+        }
+    }
+
+    #[test]
+    fn a_task_need_produced_earlier_holds_the_task_and_the_landing() {
+        let graph = forgotten_edges();
+        let open = [
+            issue(24, &[labels::MILESTONE, labels::TRIGGERED], "open"),
+            issue(
+                27,
+                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+                "open",
+            ),
+            issue(28, &[labels::MILESTONE, labels::TRIGGERED], "open"),
+            issue(29, &[labels::MILESTONE, labels::TRIGGERED], "open"),
+        ];
+        // What #28's tasks may wait on: every milestone before it not landed.
+        assert_eq!(unlanded_before(Some(&graph), 28, &open), [24]);
+        assert_eq!(unlanded_before(Some(&graph), 29, &open), [24, 28]);
+        assert!(unlanded_before(Some(&graph), 24, &open).is_empty(), "first");
+        assert!(unlanded_before(None, 28, &open).is_empty(), "no graph");
+        assert!(
+            unlanded_before(Some(&graph), 7, &open).is_empty(),
+            "unknown"
+        );
+        // #219, delivered and closed, still holds #28's landing on #24: the
+        // graph names no edge, the need does.
+        let screen = needing(219, "OralBrief, SuggestionPill, ai.there, wiring", "closed");
+        let tasks = [screen];
+        assert!(
+            producers_landed(Some(&graph), 28, &open).is_empty(),
+            "should be empty"
+        );
+        assert_eq!(need_producers(Some(&graph), 28, &open, &tasks), [24]);
+        assert_eq!(landing_waits(Some(&graph), 28, &open, &tasks), [24]);
+        assert!(
+            landing_waits(None, 28, &open, &tasks).is_empty(),
+            "should be empty"
+        );
+        // Every producer landed: nothing holds it.
+        let landed: Vec<Issue> = open.iter().filter(|m| m.number != 24).cloned().collect();
+        assert!(
+            landing_waits(Some(&graph), 28, &landed, &tasks).is_empty(),
+            "should be empty"
+        );
+        // A graph edge and a need meet in plan order, each once.
+        let later = [
+            needing(465, "OralBrief", "open"),
+            needing(466, "OralBrief", "open"),
+        ];
+        assert_eq!(landing_waits(Some(&graph), 29, &open, &later), [24, 28]);
+        assert_eq!(need_producers(Some(&graph), 29, &open, &later), [24]);
+        // A task that needs nothing adds nothing to the graph's edges.
+        let plain = [issue(470, &[labels::AGENT], "open")];
+        assert_eq!(landing_waits(Some(&graph), 29, &open, &plain), [28]);
+    }
+
+    #[test]
+    fn a_need_produced_later_in_plan_order_holds_nothing() {
+        let graph = forgotten_edges();
+        let open = [
+            issue(28, &[labels::MILESTONE, labels::TRIGGERED], "open"),
+            issue(29, &[labels::MILESTONE, labels::TRIGGERED], "open"),
+        ];
+        // #28 reading what #29 produces is a plan error, never a wait: two
+        // milestones reading each other would wait forever.
+        let reads_ahead = [needing(300, "ai.late", "open")];
+        assert!(
+            need_producers(Some(&graph), 28, &open, &reads_ahead).is_empty(),
+            "should be empty"
+        );
+        assert!(
+            landing_waits(Some(&graph), 28, &open, &reads_ahead).is_empty(),
+            "should be empty"
+        );
+        // Its own milestone's id holds nothing either.
+        let own = [needing(301, "ai.late", "open")];
+        assert!(
+            need_producers(Some(&graph), 29, &open, &own).is_empty(),
+            "should be empty"
         );
     }
 

@@ -326,6 +326,8 @@ mod tests {
                     "rules-runtime.sh serve",
                     "CONTEST.md",
                     "Never change",
+                    "rules-hold proves them",
+                    "never stop on it",
                 ][..],
             ),
             (

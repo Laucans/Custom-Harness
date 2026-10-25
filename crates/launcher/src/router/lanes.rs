@@ -46,6 +46,10 @@ pub(super) async fn run_schedule(
         // Said once per tick: what of the board waits on its producers.
         let _ = startable_now(board, &running, found, log);
     }
+    say_rules_held(found, log);
+    let pulls = routing::pulls(found, &running);
+    say_unpulled(&pulls, pulse, log);
+    let pulled = routing::pulled(found, &running);
     let jobs = routing::schedule(found, &running, &|route| pulse.waited(route));
     log.say(&format!(
         "tick: {:?}",
@@ -89,12 +93,93 @@ pub(super) async fn run_schedule(
         };
         if !started {
             left.push(job.route);
+        } else if let Route::Split { milestone } = job.route
+            && let Some(event) = pulled_event(pulled.as_ref(), milestone)
+        {
+            // Said when the split starts, not each tick it waits.
+            log.event(&event);
         }
     }
     pulse.age(&left);
     // A paid job's success is its lane's (`Lanes::went_through`): only a
     // failed free one is this tick's to report.
     after(args, here, failed, false, log).await
+}
+
+/// The event of a split pulled past the cap, when `milestone` is the one
+/// this tick pulled (`routing::pulled`: the first splittable pull the cap
+/// holds back).
+fn pulled_event(pulled: Option<&routing::Pull>, milestone: u64) -> Option<Event> {
+    pulled
+        .filter(|pull| pull.producer == milestone)
+        .map(|pull| Event::SplitPulled {
+            milestone: pull.producer,
+            by_milestone: pull.milestone,
+            by_task: pull.task,
+            need: pull.need.clone(),
+            why: pull.why.said().to_string(),
+            through: pull.through,
+        })
+}
+
+/// Says the producers a starved or held milestone would pull but may not
+/// split, nor pull through ([`routing::stuck_pulls`]): once per change.
+fn say_unpulled(pulls: &[routing::Pull], pulse: &mut Pulse, log: &Logbook) {
+    let said = unpulled_lines(pulls);
+    for line in routing::unpulled_news(pulse, said) {
+        log.say(&line);
+    }
+}
+
+/// What [`say_unpulled`] says of `pulls`, one line per stuck pull.
+fn unpulled_lines(pulls: &[routing::Pull]) -> Vec<String> {
+    routing::stuck_pulls(pulls)
+        .into_iter()
+        .map(|pull| {
+            format!(
+                "watch: #{} would be split past the cap for #{} of #{} ({}, {}), but its own \
+                 producers are not split and none can be yet",
+                pull.producer,
+                pull.task,
+                pull.milestone,
+                pull.need,
+                pull.why.said()
+            )
+        })
+        .collect()
+}
+
+/// Says once per tick the tasks a human holds (no `harness:ready`) that
+/// hold many pending rules ([`routing::RULES_SAID`] or more): what never
+/// leaves them stuck in silence.
+fn say_rules_held(found: &Snapshot, log: &Logbook) {
+    for (task, unblocked) in routing::rule_unblockers(found) {
+        if unblocked.touched < routing::RULES_SAID {
+            break;
+        }
+        let held = found
+            .boards
+            .iter()
+            .flat_map(|board| board.tasks.iter())
+            .any(|issue| issue.number == task && !tasks::is_ready(issue));
+        if held {
+            log.say(&format!(
+                "watch: #{task} has no {}, holds {} rules",
+                harness_workflows::common::labels::READY,
+                unblocked.touched
+            ));
+        }
+    }
+}
+
+/// How many pending rules `task` unblocks, when it is enough to say
+/// ([`routing::RULES_SAID`]).
+fn rules_held(found: &Snapshot, task: u64) -> Option<u32> {
+    routing::rule_unblockers(found)
+        .into_iter()
+        .find(|(number, _)| *number == task)
+        .map(|(_, unblocked)| unblocked.touched)
+        .filter(|touched| *touched >= routing::RULES_SAID)
 }
 
 /// Starts `route` on lane `slot` as `harness route <kind> <n>`: whether it
@@ -167,10 +252,11 @@ fn issue_version(issue: &Issue) -> String {
 /// What may start of the milestone's tasks — [`routing::startable`].
 ///
 /// Runnable, not on a lane, not held by its own pull request's cycle, and —
-/// while the producers of what the milestone reads still build — nothing it
-/// needs is a table, a Concept or a Micro-UI one of them owns. The aggregate
-/// hold is taken among those only: a task held by its producers holds no
-/// aggregate. What is held is said once per tick.
+/// while a milestone before it in plan order has not landed — nothing it
+/// needs is a table, a Concept or a Micro-UI (one a screen does not lay
+/// out) one of them owns. The aggregate hold is taken among those only: a
+/// task held by its producers holds no aggregate. What is held, and by
+/// which producer, is said once per tick.
 fn startable_now<'a>(
     board: &'a harness_workflows::dev_loop::data::board::Board,
     running: &[u64],
@@ -179,34 +265,30 @@ fn startable_now<'a>(
 ) -> Vec<&'a Issue> {
     let milestone = board.milestone.number;
     let waiting_on =
-        merge_train::producers_landed(found.graph.as_ref(), milestone, &found.milestones);
-    let ahead = |task: &Issue| {
-        waiting_on.is_empty()
-            || tasks::runs_ahead(task, milestone, found.graph.as_ref(), &waiting_on)
-    };
-    say_held(&board.tasks, running, milestone, &waiting_on, &ahead, log);
+        merge_train::unlanded_before(found.graph.as_ref(), milestone, &found.milestones);
+    say_held(
+        &board.tasks,
+        running,
+        milestone,
+        found.graph.as_ref(),
+        &waiting_on,
+        log,
+    );
     routing::startable(found, board, running)
 }
 
-/// Says once per tick which runnable tasks of the milestone wait on its
-/// producers: those `ahead` refuses among the runnable not on a lane.
+/// Says once per tick which runnable tasks of the milestone wait on a
+/// producer still building, and on which: those [`tasks::held_by`] names
+/// among the runnable not on a lane.
 fn say_held(
     issues: &[Issue],
     running: &[u64],
     milestone: u64,
+    graph: Option<&routing::Graph>,
     waiting_on: &[u64],
-    ahead: &dyn Fn(&Issue) -> bool,
     log: &Logbook,
 ) {
     if waiting_on.is_empty() {
-        return;
-    }
-    let held: Vec<u64> = tasks::runnable_tasks(issues)
-        .into_iter()
-        .filter(|task| !running.contains(&task.number) && !ahead(task))
-        .map(|task| task.number)
-        .collect();
-    if held.is_empty() {
         return;
     }
     let list = |numbers: &[u64]| {
@@ -216,10 +298,20 @@ fn say_held(
             .collect::<Vec<_>>()
             .join(", ")
     };
+    let held: Vec<String> = tasks::runnable_tasks(issues, graph)
+        .into_iter()
+        .filter(|task| !running.contains(&task.number))
+        .filter_map(|task| {
+            let on = tasks::held_by(task, milestone, graph, waiting_on);
+            (!on.is_empty()).then(|| format!("#{} on {}", task.number, list(&on)))
+        })
+        .collect();
+    if held.is_empty() {
+        return;
+    }
     log.say(&format!(
-        "watch: lanes -> #{milestone}'s tasks reading tables, Concepts or Micro-UIs still building ({}) wait on {} to land — ahead work is what the mock-up stands in for",
-        list(&held),
-        list(waiting_on)
+        "watch: lanes -> #{milestone}'s tasks reading tables, Concepts or Micro-UIs still building wait for them to land ({}) — ahead work is what the mock-up stands in for",
+        held.join("; ")
     ));
 }
 
@@ -252,8 +344,10 @@ fn start_task(
     let version = issue_version(task);
     if lanes.is_parked(number, &version) {
         // Said, not debugged: a parked top task is why lanes sit idle.
+        let holds = rules_held(found, number)
+            .map_or_else(String::new, |rules| format!(", holds {rules} rules"));
         log.say(&format!(
-            "watch: lanes -> #{number} parked until its issue changes or an hour passes"
+            "watch: lanes -> #{number} parked until its issue changes or an hour passes{holds}"
         ));
         return false;
     }
@@ -384,6 +478,7 @@ mod tests {
             tasks_merged: Vec::new(),
             contracts_landed: Vec::new(),
             debt_landings: Vec::new(),
+            rule_waits: harness_workflows::common::rule_waits::Waits::default(),
         }
     }
 
@@ -469,7 +564,7 @@ mod tests {
         assert_eq!(started, [60]);
         let said = capture.0.borrow().join("\n");
         assert!(
-            said.contains("#19's tasks reading tables, Concepts or Micro-UIs still building (#62) wait on #20 to land"),
+            said.contains("#19's tasks reading tables, Concepts or Micro-UIs still building wait for them to land (#62 on #20)"),
             "{said}"
         );
         assert!(
@@ -508,9 +603,10 @@ mod tests {
     }
 
     #[test]
-    fn ahead_of_its_producers_a_milestone_starts_what_reads_contracts_only() {
+    fn ahead_of_its_producers_a_milestone_starts_what_the_mock_up_stands_in_for() {
         // #60 reads a contract of #20 (mocked); #61 composes a Micro-UI #20
-        // builds; #62 reads #20's table — the last two wait for #20.
+        // builds, against the mock-up's fragment; #62 reads #20's table and
+        // alone waits for #20.
         let ui = needing(
             60,
             &[labels::AGENT, labels::READY],
@@ -531,21 +627,133 @@ mod tests {
         let graph = graph();
         let issues = [ui, screen, crate_task];
         let taken = |graph: Option<&routing::Graph>, milestone: u64| {
-            let waiting_on = merge_train::producers_landed(graph, milestone, &milestones);
+            let waiting_on = merge_train::unlanded_before(graph, milestone, &milestones);
             let ahead = |task: &Issue| {
                 waiting_on.is_empty() || tasks::runs_ahead(task, milestone, graph, &waiting_on)
             };
-            tasks::startable_tasks(&issues, &[], &ahead)
+            tasks::startable_tasks(&issues, &[], graph, &ahead)
                 .iter()
                 .map(|t| t.number)
                 .collect::<Vec<_>>()
         };
-        assert_eq!(taken(Some(&graph), 19), [60]);
+        assert_eq!(taken(Some(&graph), 19), [60, 61]);
         assert_eq!(
             taken(Some(&graph), 20),
             [60, 61, 62],
             "no producer: everything"
         );
         assert_eq!(taken(None, 19), [60, 61, 62], "no graph: everything");
+    }
+
+    #[test]
+    fn a_split_pulled_past_the_cap_is_told_for_the_pulled_one_only() {
+        let pull = |producer: u64, splittable: bool| routing::Pull {
+            producer,
+            milestone: 28,
+            task: 219,
+            need: "Brief".to_string(),
+            why: routing::Starving::Starved,
+            splittable,
+            through: None,
+        };
+        let pulled = pull(24, true);
+        assert_eq!(
+            pulled_event(Some(&pulled), 24),
+            Some(Event::SplitPulled {
+                milestone: 24,
+                by_milestone: 28,
+                by_task: 219,
+                need: "Brief".to_string(),
+                why: "starved".to_string(),
+                through: None,
+            })
+        );
+        assert_eq!(pulled_event(Some(&pulled), 27), None, "one pulled a tick");
+        assert_eq!(
+            pulled_event(None, 24),
+            None,
+            "a split under the cap is no pull"
+        );
+        // A stuck pull is said with why it pulls; one pulled through is not stuck.
+        let stuck = routing::Pull {
+            why: routing::Starving::HeldAtLanding,
+            ..pull(18, false)
+        };
+        let lines = unpulled_lines(&[stuck.clone(), pull(24, true)]);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with(
+                "watch: #18 would be split past the cap for #219 of #28 (Brief, held at landing)"
+            ),
+            "{}",
+            lines[0]
+        );
+        let deeper = routing::Pull {
+            through: Some(18),
+            ..pull(10, true)
+        };
+        assert!(
+            unpulled_lines(&[stuck, deeper]).is_empty(),
+            "pulled through: not stuck"
+        );
+    }
+
+    #[test]
+    fn a_task_a_human_holds_that_holds_many_rules_is_said() {
+        use harness_workflows::common::rule_waits::Waits;
+        let task = |number: u64, labels: &[&str]| Issue {
+            body: "## Architecture\n\nunit: data-capability\nsystem: campaign\nproduces: c.make"
+                .to_string(),
+            ..issue(number, labels, "data-capability")
+        };
+        let waits = |count: usize| {
+            Waits(
+                (0..count)
+                    .map(|i| (format!("R{i}"), vec!["data-capability:c.make".to_string()]))
+                    .collect(),
+            )
+        };
+        let found = |labels: &[&str], count: usize| Snapshot {
+            boards: vec![harness_workflows::dev_loop::data::board::Board {
+                milestone: issue(18, &[labels::MILESTONE], "-"),
+                tasks: vec![task(157, labels)],
+                resuming: None,
+            }],
+            rule_waits: waits(count),
+            ..snapshot(Vec::new(), None)
+        };
+        let said = |snapshot: &Snapshot| {
+            let capture = Rc::new(Capture::default());
+            let log = Logbook::new(
+                Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+                harness_core::traces::Verbosity::Normal,
+            );
+            say_rules_held(snapshot, &log);
+            capture.0.borrow().join("\n")
+        };
+        assert!(
+            said(&found(&[labels::AGENT], 17))
+                .contains("#157 has no harness:ready, holds 17 rules")
+        );
+        assert!(
+            said(&found(&[labels::AGENT, labels::READY], 17)).is_empty(),
+            "ready: the lanes take it"
+        );
+        assert!(
+            said(&found(&[labels::AGENT], 4)).is_empty(),
+            "under the bar"
+        );
+        assert_eq!(
+            rules_held(&found(&[labels::AGENT, labels::READY], 17), 157),
+            Some(17)
+        );
+        assert_eq!(
+            rules_held(&found(&[labels::AGENT, labels::READY], 4), 157),
+            None
+        );
+        assert_eq!(
+            rules_held(&found(&[labels::AGENT, labels::READY], 17), 158),
+            None
+        );
     }
 }

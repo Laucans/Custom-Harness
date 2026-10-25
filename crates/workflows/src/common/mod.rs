@@ -9,7 +9,8 @@
 //! its session, not derived); `delivery` reads the `Closes #n` convention
 //! for the loop (a task is done) and the milestone merge (every task's code
 //! is really on the branch); `routing` is the one pure decision the
-//! launcher's polling loop (`harness watch`) acts on, `catch_up` what keeps
+//! launcher's polling loop (`harness watch`) acts on — `rule_waits` the
+//! rules' pending tests it weighs the tasks by —, `catch_up` what keeps
 //! every building milestone branch up to the integration branch; `contest`
 //! what a PR waits on and how a settled rules contest is followed through,
 //! for the router and `decide`; `dossier` reads what
@@ -33,6 +34,7 @@ pub mod json_reply;
 pub mod labels;
 pub mod review;
 pub mod routing;
+pub mod rule_waits;
 pub mod sections;
 pub mod sentinel;
 

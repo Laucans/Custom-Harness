@@ -8,6 +8,7 @@ here (date, Paris time, source) by whoever received it. Times Paris.
 | Board decisions (`harness:human`, `needs-decision`) are the attendants': act, then report in a line. Still ask before a destructive or account-level step (deleting issues or runs, mass closes, billing, repo visibility) | 10-17 | memory `feedback_factory_decisions_are_mine` |
 | Any live error → understand the cause → harness fix with a test, not only the instance; every autonomous choice logged in `DECISIONS.md` | 10-18 | memory `feedback_errors_evolve_harness` |
 | At most 3 building milestones (`routing::MAX_CURRENT`); the critical path is always admitted | 10-18 07:30 | `DECISIONS.md` |
+| A starved or landing-held building milestone pulls its earlier, unsplit producer past the cap, one a tick (`routing::pulled`); screens freeze ahead of their producers; tasks weigh by the rules they unblock (4/8, cap 100, +5 DataCapability) | 10-25 03:20 | `night/p-design.md` § Decision |
 | The data layer is laid first (one schema task, then aggregates in parallel); data model before the mock-up | 10-18 | memory `project_architecture_decisions_2026_10_18` |
 | Lanes: `--parallel 5`, `--interval 60` (owner's numbers; the attendants lower them only per *Quota, budget, lanes*) | 10-20 12:30 | `DECISIONS.md` |
 | `BUDGET_FLOOR=12` (USD per task) | 10-20 09:30 | `DECISIONS.md` |

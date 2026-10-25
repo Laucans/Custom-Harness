@@ -147,7 +147,11 @@ split, task, refinement, merge — is a weighted job: its route's base
 (`routing::base_weight`: the catch-ups, then the two merges, then plan, rules, decisions,
 contracts, repairs, reviews, splits, arbitration, tasks, business then
 technical refinement, test debt), a bonus for a milestone on the critical
-path, a point per tick it waited, capped. Under `--parallel` the tick
+path, a bonus for a task by the pending rules it unblocks (4 a rule touched,
+8 more a rule completed, capped at 100, +5 for a `DataCapability` —
+`common::rule_waits::bonus`; a task never weighs past
+`routing::DEV_TASK_CEILING`, 779, just under a review), a point per tick it
+waited, capped. Under `--parallel` the tick
 (`router/lanes.rs::run_schedule`) runs every free job in the tick — the
 catch-ups and the merges, a few GitHub calls — and starts the paid ones heaviest first, one
 per free lane: a task as the dev loop's `--task` child, anything else as
@@ -157,6 +161,56 @@ lanes from being refilled. One job per issue or PR at a time; the technical
 refinement, the test debt and the planner one at a time each (an exclusive
 group a lane holds). With one lane, `routing::decide` — the schedule's
 first job — runs in the tick, as before.
+
+**The rules' waits are read once per landing** (`router/mod.rs::rule_waits`):
+the integration branch's `rules-status.json`, the `rules-status` artifact
+`gates.yml` keeps (`GitHub::artifact_file`), once the head the catch-ups
+read has a verdict and was not read yet (`routing::rules_status_due`), kept
+in the pulse in between (`routing::took_rules_status`). A failed read is a
+debug line and is tried again at the next full read. The `saw:` line names
+the top unblockers (`rules: #157 unblocks 17, …`); a task a human holds (no
+`harness:ready`) or a parked one that holds `routing::RULES_SAID` (5) rules
+or more is said each tick (`#157 has no harness:ready, holds 17 rules`,
+`… parked until its issue changes …, holds 17 rules`).
+
+**A starved building milestone pulls its producer's split past the cap**
+(`routing::pulls`, `routing::pulled`): no task of it may start and none is
+on a lane, or every task is delivered and its landing waits. Starved, it
+pulls only what holds a task nothing else holds (no sibling, person or own
+PR cycle: `tasks::held_only_by_milestones`) — the producer of a need no
+mock-up stands in for (`tasks::held_needs`) or a milestone blocker; held at
+its landing, the producer of any need or blocker of its tasks. The
+producer, unsplit, earlier in plan order and a `split_candidate`, is split
+whatever `MAX_CURRENT`, one a tick, only when the cap holds it back
+(`splits(.., None)` would not start it). One that may not split yet is
+pulled through: the first unsplit, splittable milestone it waits on, walked
+through the graph's edges. A pull neither can serve is said once per change
+(`routing::stuck_pulls`, `routing::unpulled_news`: `… would be split past
+the cap …, but its own producers are not split and none can be yet`).
+`Event::SplitPulled` (`… needs X[ through #P] (starved | held at landing)`)
+is told when that split starts on a lane (`router/lanes.rs::pulled_event`),
+not each tick it waits. A pulled split is a lane's job like any: the disk
+floor holds it while the disk is short.
+**Ahead work is judged per task, against every milestone before it**
+(`routing::startable`, `board::building`, `router/lanes.rs::startable_now`:
+`tasks::runs_ahead` over `merge_train::unlanded_before`, the milestones
+earlier in plan order not landed — not only the graph's edges): a task
+waits on the producer of a table, a Concept, or a Micro-UI it builds on;
+a Capability or a `DataCapability` stands on its fixture, and a screen
+(a composition) on the mock-up's fragment of every Micro-UI it lays out —
+named rules no longer hold a screen (`proves_rules` is gone: its rules stay
+pending until their units are built, and `rules-hold` proves them). The
+lanes say which producer holds which task (`#28's tasks … wait for them to
+land (#216 on #20)`). A screen parked `blocked_by` a milestone waives it
+when every id it needs of that milestone is one the mock-up stands in for
+(`tasks::screen_stands_on`, judged on the graph by `tasks::runnable_in`;
+the lane's `--task` run, which reads no graph, trusts the router for a
+screen's milestone blockers: `tasks::runnable_for_lane`). A Micro-UI's
+agent blockers are waived as before.
+**The landing waits on the producers of its tasks' needs**
+(`milestones_ready_to_merge` → `merge_train::landing_waits`, closed tasks
+included), beside the graph's edges — an edge the plan forgot holds the
+landing, not the task.
 
 **Every line of the watch and its lanes is an event first**
 (`Logbook::event`): the sink of a `run.log` or of `watch.log`

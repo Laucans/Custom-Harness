@@ -261,7 +261,9 @@ the Micro-UIs do — or restyle anything outside the design system's
 variables and the kit's classes.
 
 Gates that judge it: manifests-conform-to-contracts (E),
-compositions-resolve (every Micro-UI it lays out exists), pages-mocked
+compositions-resolve (every Micro-UI it lays out exists — into a
+milestone branch, one still planned may stand on its fragment in
+mock/pages.json; strict where the milestone lands), pages-mocked
 (a page names it in mock/pages.json), design-system-single-writer.";
 
 const AGGREGATE: &str = "\

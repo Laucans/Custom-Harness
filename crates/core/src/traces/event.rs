@@ -161,6 +161,26 @@ pub enum Event {
         /// The full board reads it has waited.
         reads: u32,
     },
+    /// A building milestone that could not go on — no task to start, or its
+    /// landing held — had a producer's split started past the cap of
+    /// milestones building at once.
+    SplitPulled {
+        /// The producer split.
+        milestone: u64,
+        /// The building milestone that waited on it.
+        by_milestone: u64,
+        /// Its task that needs it.
+        by_task: u64,
+        /// What the task needs of it: an id, or `its blocker #N`.
+        need: String,
+        /// Why the milestone pulled: `starved` (no task to start) or `held
+        /// at landing` (every task delivered).
+        why: String,
+        /// The producer that could not split yet, which this one was
+        /// pulled through, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        through: Option<u64>,
+    },
     /// A task whose lane stopped for a human is not taken again until its
     /// issue changes.
     TaskParked {
@@ -536,6 +556,20 @@ impl Event {
                 "watch: pr #{pr} still waits on contest #{contest}, settled, after {reads} reads \
                  — its base has not taken the settled rules (a catch-up held?)"
             ),
+            Self::SplitPulled {
+                milestone,
+                by_milestone,
+                by_task,
+                need,
+                why,
+                through,
+            } => {
+                let through = through.map_or_else(String::new, |p| format!(" through #{p}"));
+                format!(
+                    "watch: #{milestone} split past the cap — #{by_task} of #{by_milestone} \
+                     needs {need}{through} ({why})"
+                )
+            }
             Self::TaskParked { task } => format!(
                 "watch: lanes -> #{task} parked: it stopped for a human, and is not taken \
                  again until its issue changes"
@@ -1156,5 +1190,44 @@ mod tests {
         assert!(json.contains("\"event\":\"task_waits\""), "{json}");
         let back: Event = serde_json::from_str(&json).expect("back");
         assert_eq!(back, waits);
+    }
+
+    #[test]
+    fn a_split_pulled_past_the_cap_names_who_needed_what_and_reads_back() {
+        let pulled = Event::SplitPulled {
+            milestone: 27,
+            by_milestone: 29,
+            by_task: 465,
+            need: "SuggestionPill".to_string(),
+            why: "held at landing".to_string(),
+            through: None,
+        };
+        assert_eq!(
+            pulled.line().as_deref(),
+            Some(
+                "watch: #27 split past the cap — #465 of #29 needs SuggestionPill \
+                 (held at landing)"
+            )
+        );
+        let through = Event::SplitPulled {
+            milestone: 10,
+            by_milestone: 14,
+            by_task: 140,
+            need: "Brief".to_string(),
+            why: "starved".to_string(),
+            through: Some(11),
+        };
+        assert_eq!(
+            through.line().as_deref(),
+            Some("watch: #10 split past the cap — #140 of #14 needs Brief through #11 (starved)")
+        );
+        let json = serde_json::to_string(&through).expect("json");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, through);
+        assert_eq!(pulled.level(), Level::Info);
+        let json = serde_json::to_string(&pulled).expect("json");
+        assert!(json.contains("\"event\":\"split_pulled\""), "{json}");
+        let back: Event = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, pulled);
     }
 }

@@ -282,6 +282,7 @@ async fn tick(
     )
     .await?;
     found.database_down = database_down(log).await;
+    found.rule_waits = rule_waits(gh.as_ref(), pulse, &args.branch, log).await;
     // A red base is read in full every tick like a pull request waiting on
     // its checks: the push that turns it green moves no issue. The
     // catch-ups due at the head just read, once its own checks are green.
@@ -363,6 +364,46 @@ async fn database_down(log: &Logbook) -> bool {
     down
 }
 
+/// What the integration branch's `rules-status.json` says the rules' tests
+/// wait for (`routing::Snapshot::rule_waits`): read once per integration
+/// head, when its checks concluded (`routing::rules_status_due`), kept in
+/// the pulse in between. A read that fails is said and tried again at the
+/// next full read; the waits it had stay — they order work, never hold it.
+async fn rule_waits(
+    gh: &dyn GitHub,
+    pulse: &mut Pulse,
+    branch: &str,
+    log: &Logbook,
+) -> harness_workflows::common::rule_waits::Waits {
+    if let Some(head) = routing::rules_status_due(pulse) {
+        match gh
+            .artifact_file("gates.yml", branch, "rules-status", "rules-status.json")
+            .await
+        {
+            Ok(kept) => {
+                routing::took_rules_status(
+                    pulse,
+                    head.clone(),
+                    kept.as_ref().map(|k| k.text.as_str()),
+                );
+                log.debug(&format!(
+                    "rules-status: read at {head} — {} pending rule(s) wait on a unit",
+                    pulse.rule_waits.0.len()
+                ));
+            }
+            Err(halt) => log.debug(&format!(
+                "rules-status: not read at {head} — {}",
+                halt.reason()
+            )),
+        }
+    }
+    pulse.rule_waits.clone()
+}
+
+/// The tasks that unblock the most pending rules, as the `saw:` line names
+/// them (`#157 unblocks 17`).
+const SAID_UNBLOCKERS: usize = 3;
+
 /// What the decision was made from, for a tick whose choice later looks
 /// wrong: the counts are the whole input to `routing::schedule`.
 fn say_saw(found: &Snapshot, log: &Logbook) {
@@ -370,7 +411,7 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
         "saw: base={:?}, {} roadmap, {} milestone(s), {} refining, {} tech-refining, \
          {} arbitrating, {} test-debt, {} rules, pr_fix={:?}, pr_review={:?}, to_merge={:?}, \
          ready_to_merge={:?}, dev_loop={:?}, catch_up={:?}, catch_up_held={:?}, \
-         rules_on_pr={:?}, resume={:?}",
+         rules_on_pr={:?}, resume={:?}, rules: {}",
         found.base_checks,
         found.roadmap.len(),
         found.milestones.len(),
@@ -408,7 +449,23 @@ fn say_saw(found: &Snapshot, log: &Logbook) {
             .iter()
             .map(|settled| settled.contest)
             .collect::<Vec<_>>(),
+        unblockers(found),
     ));
+}
+
+/// The tasks that unblock the most pending rules, said: `#157 unblocks 17,
+/// #160 unblocks 4` — `none` when no task of the boards read unblocks one.
+fn unblockers(found: &Snapshot) -> String {
+    let said: Vec<String> = routing::rule_unblockers(found)
+        .into_iter()
+        .take(SAID_UNBLOCKERS)
+        .map(|(task, unblocked)| format!("#{task} unblocks {}", unblocked.touched))
+        .collect();
+    if said.is_empty() {
+        "none".to_string()
+    } else {
+        said.join(", ")
+    }
 }
 
 /// What a tick may start, given the lanes and the quota.
@@ -655,6 +712,8 @@ async fn snapshot(
         tasks_merged,
         contracts_landed,
         debt_landings,
+        // Read from the pulse by the tick, once per integration head.
+        rule_waits: harness_workflows::common::rule_waits::Waits::default(),
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
@@ -842,9 +901,11 @@ fn by_number(mut prs: Vec<Pr>) -> Vec<Pr> {
 }
 
 /// The open milestones, not yet `harness:waiting-merge`, whose own tasks
-/// are all delivered and whose producers (the plan's graph) have landed —
-/// one extra read per candidate, in number order. The train's order: a
-/// consumer never lands before what it reads.
+/// are all delivered and whose producers have landed — those the plan's
+/// graph names, then those of what its tasks need
+/// (`merge_train::landing_waits`, closed tasks included) — one extra read
+/// per candidate, in number order. The train's order: a consumer never
+/// lands before what it reads, an edge the graph forgot included.
 async fn milestones_ready_to_merge(
     gh: &dyn harness_core::ports::shell::github::GitHub,
     milestones: &[harness_core::domain::Issue],
@@ -859,7 +920,9 @@ async fn milestones_ready_to_merge(
     let mut found = Vec::new();
     for candidate in candidates {
         let tasks = gh.sub_issues(candidate.number).await?;
-        if audit::all_tasks_delivered(&tasks) {
+        if audit::all_tasks_delivered(&tasks)
+            && merge_train::landing_waits(graph, candidate.number, milestones, &tasks).is_empty()
+        {
             found.push(candidate.number);
         }
     }
@@ -1095,5 +1158,75 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn the_saw_line_names_the_tasks_that_unblock_the_most_rules() {
+        use harness_workflows::common::rule_waits::Waits;
+        let task = |number: u64, produces: &str| Issue {
+            number,
+            state: "open".to_string(),
+            labels: vec![labels::AGENT.to_string(), labels::READY.to_string()],
+            body: format!("## Architecture\n\nunit: capability\nsystem: c\nproduces: {produces}"),
+            ..Issue::default()
+        };
+        let waits = Waits(
+            (0..5)
+                .map(|i| {
+                    let mut needs = vec!["capability:a".to_string()];
+                    if i < 2 {
+                        needs.push("capability:b".to_string());
+                    }
+                    (format!("R{i}"), needs)
+                })
+                .collect(),
+        );
+        let found = |rule_waits: Waits| Snapshot {
+            roadmap: Vec::new(),
+            lowest_roadmap_has_milestone: false,
+            milestones: Vec::new(),
+            prs_to_fix: Vec::new(),
+            prs_to_review: Vec::new(),
+            tasks_to_merge: Vec::new(),
+            task_prs: Vec::new(),
+            ready_to_merge: Vec::new(),
+            refining: Vec::new(),
+            tech_refining: Vec::new(),
+            arbitrating: Vec::new(),
+            dev_loop_milestones: Vec::new(),
+            boards: vec![board::Board {
+                tasks: vec![
+                    task(9, "z"),
+                    task(7, "b"),
+                    task(8, "a"),
+                    task(6, "c"),
+                    task(5, "a"),
+                ],
+                ..board::Board::default()
+            }],
+            graph: None,
+            contract_changes: Vec::new(),
+            test_debt: Vec::new(),
+            rules: Vec::new(),
+            deciding: Vec::new(),
+            base_checks: None,
+            database_down: false,
+            review_backlog_full: false,
+            catch_up: Vec::new(),
+            catch_up_held: Vec::new(),
+            prs_waiting: Vec::new(),
+            rules_on_pr: Vec::new(),
+            settled: Vec::new(),
+            tasks_merged: Vec::new(),
+            contracts_landed: Vec::new(),
+            debt_landings: Vec::new(),
+            rule_waits,
+        };
+        assert_eq!(
+            unblockers(&found(waits)),
+            "#5 unblocks 5, #8 unblocks 5, #7 unblocks 2",
+            "most first, then by number, three at most"
+        );
+        assert_eq!(unblockers(&found(Waits::default())), "none");
     }
 }

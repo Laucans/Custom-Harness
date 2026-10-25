@@ -397,6 +397,20 @@ impl Graph {
             .collect()
     }
 
+    /// The milestones before `number` in plan order, in that order — what
+    /// it may read from without a cycle. Empty for the first one, and for a
+    /// number the plan does not know.
+    #[must_use]
+    pub fn before(&self, number: u64) -> Vec<u64> {
+        self.position(number).map_or_else(Vec::new, |at| {
+            self.milestones
+                .iter()
+                .take(at)
+                .map(|node| node.number)
+                .collect()
+        })
+    }
+
     /// The position of `number` in plan order.
     fn position(&self, number: u64) -> Option<usize> {
         self.milestones.iter().position(|n| n.number == number)
@@ -829,6 +843,15 @@ mod tests {
             "a node with no producers waits on nothing"
         );
         assert!(graph.waits_on(7).is_empty(), "unknown to the plan");
+        assert_eq!(
+            graph.before(20),
+            [18, 19],
+            "the ones before it, in plan order"
+        );
+        assert!(
+            graph.before(18).is_empty() && graph.before(7).is_empty(),
+            "should be empty"
+        );
         assert_eq!(graph.node(20).map(|n| n.title.as_str()), Some("c"));
         assert_eq!(graph.node(19).map(|n| n.number), Some(19));
         assert!(graph.node(7).is_none());

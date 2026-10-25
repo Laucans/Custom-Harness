@@ -56,8 +56,8 @@ their tests and gates only: no live watch has run them yet.
       lanes busy). After the fix (13:13Z) the lanes took #62, #63, #138,
       #166 at once — then halted on the quota (6%). To verify: those
       Micro-UIs deliver green against the fixtures alone, their PRs pass
-      `pages-mocked`, and no freeze/screen task starts before its
-      capabilities.
+      `pages-mocked`. (A screen now freezes ahead of its producers: see
+      `p.md`.)
 - [ ] **`pages-mocked` checks the `builtFrom` digests** (template and
       ForgeDesMondes' `main_agent`, `ab64636`, 13:35Z): the next PR that
       changes a Micro-UI's code without `mock/build.sh` goes red on this

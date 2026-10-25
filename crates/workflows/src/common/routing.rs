@@ -26,7 +26,9 @@
 //! preparing (business, then technical refinement); and last a file's test
 //! debt — plus a bonus for a milestone on the critical path
 //! ([`critical_path`]), so its PRs, decisions and tasks pass before the
-//! ahead work, and a bonus for every tick a job has waited
+//! ahead work, a bonus for a task by the pending rules it unblocks
+//! ([`rule_waits::bonus`], `DataCapabilities` first, never past a review:
+//! [`DEV_TASK_CEILING`]), and a bonus for every tick a job has waited
 //! ([`Pulse::waited`]), capped, so the low ones are never starved. **While a
 //! rules' task is open, ready or not, no development task starts**
 //! ([`rules_first`]) — a contest aside: it holds only the PR that contests,
@@ -65,6 +67,9 @@ use crate::common::catch_up::CatchUps;
 use crate::common::close_merged::Delivered;
 use crate::common::contest::{ContractLanded, PrWait, Settled};
 use crate::common::labels;
+use crate::common::rule_waits::{self, Unblocked, Waits};
+use crate::dev_loop::data::tasks;
+use crate::main_agent_merge::data::audit;
 use crate::test_debt::data::landing::Landing;
 
 /// What the router decides to run next.
@@ -340,6 +345,12 @@ pub struct Snapshot {
     /// [`Route::DropDebtPr`]) — the merges dropped while one was merged less
     /// than [`DEBT_MERGE_EVERY`] ago ([`hold_debt_merges`]).
     pub debt_landings: Vec<Landing>,
+    /// The pending rules and the units their tests wait for, as the
+    /// integration branch's last `rules-status.json` says
+    /// ([`rules_status_due`]): what weighs a task by the rules it unblocks
+    /// ([`rule_waits::bonus`]). Up to one landing stale; it orders work and
+    /// never holds any.
+    pub rule_waits: Waits,
 }
 
 /// Whether the integration branch is red: its newest head has a failed
@@ -452,6 +463,13 @@ pub const fn base_weight(route: &Route) -> u32 {
 /// less, and a milestone off the path none.
 pub const CRITICAL_BONUS: u32 = 100;
 
+/// The most a task weighs before its waiting: just under a review.
+///
+/// `Route::PrReview` weighs 780: the rules a task unblocks order the tasks
+/// among themselves and never pass the PRs to finish — finishing before
+/// starting ([`Snapshot::review_backlog_full`]).
+pub const DEV_TASK_CEILING: u32 = 779;
+
 /// The most a job's waiting adds to its weight: one a tick, up to here —
 /// a refinement waited long enough passes the tasks, a test debt never
 /// passes a decision.
@@ -473,6 +491,23 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
                 CRITICAL_BONUS
                     .saturating_sub(u32::try_from(at).unwrap_or(u32::MAX).saturating_mul(10))
             })
+    };
+    // A task's rules: what the pending rules it unblocks add, under the
+    // ceiling — within its kind, never past a review.
+    let rules = |route: &Route| match route {
+        Route::DevTask { task, .. } => snapshot
+            .boards
+            .iter()
+            .flat_map(|board| board.tasks.iter())
+            .find(|issue| issue.number == *task)
+            .map_or(0, |issue| rule_waits::bonus(issue, &snapshot.rule_waits)),
+        _ => 0,
+    };
+    let earned = |route: &Route, milestone: Option<u64>| {
+        let earned = base_weight(route).saturating_add(bonus(milestone));
+        earned
+            .saturating_add(rules(route))
+            .min(DEV_TASK_CEILING.max(earned))
     };
     let mut found = in_flight(snapshot);
     found.extend(to_build(snapshot, running));
@@ -500,9 +535,7 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
                 Route::Planner { .. } => Some("planner"),
                 _ => None,
             },
-            weight: base_weight(&route)
-                .saturating_add(bonus(milestone))
-                .saturating_add(waited(&route).min(AGE_CAP)),
+            weight: earned(&route, milestone).saturating_add(waited(&route).min(AGE_CAP)),
             route,
             key,
         })
@@ -792,7 +825,8 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
 /// red base, which the task's milestone branch would take first — the
 /// refinements and the test debt.
 fn to_build(snapshot: &Snapshot, running: &[u64]) -> Vec<Found> {
-    let mut found: Vec<Found> = splits(&snapshot.milestones, snapshot.graph.as_ref())
+    let pulled = pulled(snapshot, running).map(|pull| pull.producer);
+    let mut found: Vec<Found> = splits(&snapshot.milestones, snapshot.graph.as_ref(), pulled)
         .into_iter()
         .map(|milestone| (Route::Split { milestone }, milestone, Some(milestone)))
         .collect();
@@ -910,9 +944,13 @@ pub fn plan(
 
 /// What may start of a building milestone's tasks.
 ///
-/// Runnable, not on a lane, no aggregate another holds, not held by its own
-/// pull request ([`pr_cycle_owns`]) — and, while the producers of what the
-/// milestone reads still build, only what runs ahead of them
+/// Runnable — a screen's milestone blocker the mock-up stands in for
+/// waived ([`crate::dev_loop::data::tasks::screen_stands_on`]) — not on a
+/// lane, no aggregate another holds, not held by its own
+/// pull request ([`pr_cycle_owns`]) — and, while a milestone before it in
+/// plan order has not landed
+/// ([`crate::main_agent_merge::data::merge_train::unlanded_before`]), only
+/// what runs ahead of the producers of what each task needs
 /// ([`crate::dev_loop::data::tasks::runs_ahead`]).
 #[must_use]
 pub fn startable<'a>(
@@ -921,7 +959,7 @@ pub fn startable<'a>(
     running: &[u64],
 ) -> Vec<&'a Issue> {
     let milestone = board.milestone.number;
-    let waiting_on = crate::main_agent_merge::data::merge_train::producers_landed(
+    let waiting_on = crate::main_agent_merge::data::merge_train::unlanded_before(
         snapshot.graph.as_ref(),
         milestone,
         &snapshot.milestones,
@@ -936,7 +974,12 @@ pub fn startable<'a>(
                     &waiting_on,
                 ))
     };
-    crate::dev_loop::data::tasks::startable_tasks(&board.tasks, running, &may_start)
+    crate::dev_loop::data::tasks::startable_tasks(
+        &board.tasks,
+        running,
+        snapshot.graph.as_ref(),
+        &may_start,
+    )
 }
 
 /// Whether a task's branch is held by its pull request's own cycle.
@@ -1007,6 +1050,33 @@ pub struct Pulse {
     /// When this watch last attempted a test-debt merge that did not fail,
     /// in seconds ([`hold_debt_merges`]).
     pub debt_merged_at: Option<u64>,
+    /// The integration head whose `rules-status.json` was read last
+    /// ([`rules_status_due`]).
+    pub rules_status: Option<String>,
+    /// What that read said ([`Snapshot::rule_waits`]).
+    pub rule_waits: Waits,
+    /// The stuck pulls last told ([`unpulled_news`]).
+    pub unpulled: Vec<String>,
+}
+
+/// The integration head whose `rules-status.json` to read now, if one is
+/// due.
+///
+/// The head the catch-ups last read, once its own checks concluded — the
+/// run that keeps the artifact is done — and not read already. One read
+/// per landing, not one per tick; in memory, so a restart reads it once.
+#[must_use]
+pub fn rules_status_due(pulse: &Pulse) -> Option<String> {
+    let head = pulse.catch_ups.head.clone()?;
+    (pulse.catch_ups.verdict.is_some() && pulse.rules_status.as_ref() != Some(&head))
+        .then_some(head)
+}
+
+/// Keeps what the read of `head`'s `rules-status.json` said: no file is no
+/// wait.
+pub fn took_rules_status(pulse: &mut Pulse, head: String, text: Option<&str>) {
+    pulse.rules_status = Some(head);
+    pulse.rule_waits = text.map(rule_waits::parse).unwrap_or_default();
 }
 
 /// The least time between two test-debt merges, in seconds.
@@ -1425,9 +1495,10 @@ pub const MAX_CURRENT: usize = 3;
 /// on the ahead work — then the rest by number, those only while fewer than
 /// [`MAX_CURRENT`] milestones build (`harness:triggered`, not delivered).
 /// Every path member passing the cap at once put eight milestones in
-/// construction on `ForgeDesMondes`.
+/// construction on `ForgeDesMondes`. The one split a starved building
+/// milestone `pulled` ([`pulled`]) passes the cap too, splittable as any.
 #[must_use]
-pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
+pub fn splits(milestones: &[Issue], graph: Option<&Graph>, pulled: Option<u64>) -> Vec<u64> {
     let building = milestones
         .iter()
         .filter(|m| m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE))
@@ -1447,7 +1518,7 @@ pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
     });
     let mut room = MAX_CURRENT.saturating_sub(building);
     found.retain(|number| {
-        if Some(*number) == next_on_path {
+        if Some(*number) == next_on_path || Some(*number) == pulled {
             return true;
         }
         let kept = room > 0;
@@ -1456,6 +1527,299 @@ pub fn splits(milestones: &[Issue], graph: Option<&Graph>) -> Vec<u64> {
     });
     found
 }
+
+/// Why a building milestone pulls a producer's split past [`MAX_CURRENT`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Starving {
+    /// No task of it may start, and none is on a lane.
+    Starved,
+    /// Every task is delivered, and its landing waits on what its tasks
+    /// need (`merge_train::landing_waits`).
+    HeldAtLanding,
+}
+
+impl Starving {
+    /// How the journal says it: `starved` or `held at landing`.
+    #[must_use]
+    pub const fn said(self) -> &'static str {
+        match self {
+            Self::Starved => "starved",
+            Self::HeldAtLanding => "held at landing",
+        }
+    }
+}
+
+/// A producer's split a building milestone pulls past [`MAX_CURRENT`]
+/// ([`pulls`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pull {
+    /// The milestone to split: unsplit, a [`split_candidate`], before
+    /// `milestone` in plan order.
+    pub producer: u64,
+    /// The building milestone that waits on it.
+    pub milestone: u64,
+    /// Its task that needs it.
+    pub task: u64,
+    /// What the task needs of it: an id, or `its blocker #N`.
+    pub need: String,
+    /// Why the milestone pulls.
+    pub why: Starving,
+    /// Whether the producer may be split now ([`splittable`]): one that may
+    /// not is said, never pulled — its own producers are not split yet.
+    pub splittable: bool,
+    /// The unsplittable producer this one was pulled through: one of its
+    /// own producers ([`Graph::waits_on`]), split first so it may follow.
+    pub through: Option<u64>,
+}
+
+/// The producers' splits the building milestones pull past the cap, in the
+/// boards' order (the critical path's first), each producer once.
+///
+/// A building milestone (`harness:triggered`, open, not delivered) whose
+/// board was read this tick pulls when it is **starved** — no task may
+/// start ([`startable`]) and none is on a lane — or **held at its
+/// landing** — every task delivered. It pulls a producer still unsplit (no
+/// `harness:triggered`), a [`split_candidate`], and **before** the
+/// milestone in plan order — a later one is a plan error, never a wait:
+///
+/// - **starved**, only what actually holds a task that nothing else holds
+///   ([`tasks::held_only_by_milestones`], not its pull request's cycle):
+///   the producers of what it needs that no mock-up stands in for
+///   ([`tasks::held_needs`] against every unlanded milestone before it)
+///   and the milestones it is `blocked_by`. A milestone stalled on its own
+///   chain, or on what the mock-up stands in for, pulls nothing — its
+///   landing pulls those, later;
+/// - **held at its landing**, the producer of anything one of its tasks
+///   needs or is `blocked_by`, closed tasks included, as its landing reads
+///   them.
+///
+/// A producer that may not split yet ([`splittable`]) is pulled through:
+/// its own producers ([`Graph::waits_on`]), walked through the unsplit
+/// ones, give the first unsplit, splittable one in plan order.
+///
+/// `ForgeDesMondes`, 2026-10-24 11:05: #22, #28 and #29 built, #28's last
+/// task #219 was `blocked_by` #24 for its `OralBrief`, and the cap kept #24
+/// unsplit — no edge from #28 to #24 in the graph, so nothing let it pass.
+/// Without a graph nothing is pulled: there is no plan order to trust.
+#[must_use]
+pub fn pulls(snapshot: &Snapshot, running: &[u64]) -> Vec<Pull> {
+    let Some(graph) = snapshot.graph.as_ref() else {
+        return Vec::new();
+    };
+    let find = |number: u64| snapshot.milestones.iter().find(|m| m.number == number);
+    let mut found: Vec<Pull> = Vec::new();
+    for board in &snapshot.boards {
+        let milestone = board.milestone.number;
+        let building = find(milestone).is_some_and(|m| {
+            m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE)
+        });
+        if !building {
+            continue;
+        }
+        let why = if audit::all_tasks_delivered(&board.tasks) {
+            Starving::HeldAtLanding
+        } else if !board.tasks.iter().any(|t| running.contains(&t.number))
+            && startable(snapshot, board, running).is_empty()
+        {
+            Starving::Starved
+        } else {
+            continue;
+        };
+        let mut waiting: Vec<&Issue> = match why {
+            Starving::HeldAtLanding => board.tasks.iter().collect(),
+            Starving::Starved => tasks::open_agent_tasks(&board.tasks)
+                .into_iter()
+                .filter(|task| {
+                    tasks::held_only_by_milestones(task, Some(graph))
+                        && !pr_cycle_owns(snapshot, task)
+                })
+                .collect(),
+        };
+        waiting.sort_by_key(|task| task.number);
+        let earlier = graph.before(milestone);
+        let unlanded = crate::main_agent_merge::data::merge_train::unlanded_before(
+            Some(graph),
+            milestone,
+            &snapshot.milestones,
+        );
+        for task in waiting {
+            for (producer, need) in wanted(task, milestone, graph, why, &unlanded) {
+                if !earlier.contains(&producer) || found.iter().any(|p| p.producer == producer) {
+                    continue;
+                }
+                let Some(unsplit) = find(producer).filter(|p| unsplit(p)) else {
+                    continue;
+                };
+                let pull = Pull {
+                    producer,
+                    milestone,
+                    task: task.number,
+                    need,
+                    why,
+                    splittable: splittable(unsplit, &snapshot.milestones, Some(graph)),
+                    through: None,
+                };
+                let deeper = (!pull.splittable)
+                    .then(|| pulled_through(producer, graph, &snapshot.milestones, &found))
+                    .flatten();
+                let need = pull.need.clone();
+                found.push(pull);
+                if let Some(deeper) = deeper {
+                    found.push(Pull {
+                        producer: deeper,
+                        milestone,
+                        task: task.number,
+                        need,
+                        why,
+                        splittable: true,
+                        through: Some(producer),
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
+/// What a waiting task's milestone may pull for it, `(producer, need)`
+/// ([`pulls`]).
+fn wanted(
+    task: &Issue,
+    milestone: u64,
+    graph: &Graph,
+    why: Starving,
+    unlanded: &[u64],
+) -> Vec<(u64, String)> {
+    let blocker = |number: u64| (number, format!("its blocker #{number}"));
+    match why {
+        Starving::Starved => {
+            let mut wanted = tasks::held_needs(task, milestone, Some(graph), unlanded);
+            wanted.extend(
+                tasks::blockers_pending_in(task, Some(graph))
+                    .iter()
+                    .map(|b| blocker(b.number)),
+            );
+            wanted
+        }
+        Starving::HeldAtLanding => {
+            let mut wanted: Vec<(u64, String)> = tasks::declaration(task)
+                .map(|declaration| declaration.needs)
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|id| {
+                    graph
+                        .ids
+                        .get(&id)
+                        .and_then(|interface| interface.producer)
+                        .map(|producer| (producer, id))
+                })
+                .collect();
+            wanted.extend(task.blocked_by.iter().map(|b| blocker(b.number)));
+            wanted
+        }
+    }
+}
+
+/// Whether a milestone is one a pull may split: a [`split_candidate`] not
+/// split yet nor delivered.
+fn unsplit(milestone: &Issue) -> bool {
+    split_candidate(milestone)
+        && !milestone.has(labels::TRIGGERED)
+        && !milestone.has(labels::WAITING_MERGE)
+}
+
+/// The producer to split so an unsplittable `start` may follow: among the
+/// milestones `start` waits on ([`Graph::waits_on`]), walked through the
+/// unsplit ones, the first in plan order that is unsplit, splittable and
+/// not pulled already. Bounded by the plan: each milestone is seen once.
+fn pulled_through(start: u64, graph: &Graph, milestones: &[Issue], taken: &[Pull]) -> Option<u64> {
+    let find = |number: u64| milestones.iter().find(|m| m.number == number);
+    let mut reached = vec![start];
+    let mut at = 0;
+    while let Some(&from) = reached.get(at) {
+        at = at.saturating_add(1);
+        for producer in graph.waits_on(from) {
+            if !reached.contains(&producer) && find(producer).is_some_and(unsplit) {
+                reached.push(producer);
+            }
+        }
+    }
+    graph.before(start).into_iter().find(|number| {
+        reached.contains(number)
+            && !taken.iter().any(|pull| pull.producer == *number)
+            && find(*number).is_some_and(|m| splittable(m, milestones, Some(graph)))
+    })
+}
+
+/// The one split pulled past the cap this tick: the first splittable of
+/// [`pulls`] the cap actually holds back — one [`splits`] would start
+/// anyway is no pull, and is never told as one.
+///
+/// One a tick — each split starts cold builds on the lanes; and a pulled
+/// split is a lane's job like any, which the disk floor holds while the
+/// disk is short.
+#[must_use]
+pub fn pulled(snapshot: &Snapshot, running: &[u64]) -> Option<Pull> {
+    let admitted = splits(&snapshot.milestones, snapshot.graph.as_ref(), None);
+    pulls(snapshot, running)
+        .into_iter()
+        .find(|pull| pull.splittable && !admitted.contains(&pull.producer))
+}
+
+/// The pulls no split serves: unsplittable, and no producer of theirs was
+/// pulled through them ([`Pull::through`]) — a starved or held milestone
+/// that waits on the plan, not on the cap.
+#[must_use]
+pub fn stuck_pulls(pulls: &[Pull]) -> Vec<&Pull> {
+    pulls
+        .iter()
+        .filter(|pull| {
+            !pull.splittable
+                && !pulls
+                    .iter()
+                    .any(|other| other.through == Some(pull.producer))
+        })
+        .collect()
+}
+
+/// The lines of `said` not said last time, keeping `said` as what was
+/// said ([`Pulse::unpulled`]): a stuck pull is told once per change, not
+/// each tick it stays stuck.
+pub fn unpulled_news(pulse: &mut Pulse, said: Vec<String>) -> Vec<String> {
+    let news = said
+        .iter()
+        .filter(|line| !pulse.unpulled.contains(line))
+        .cloned()
+        .collect();
+    pulse.unpulled = said;
+    news
+}
+
+/// The open tasks of the boards read that unblock pending rules, with what
+/// they unblock, most rules first, then by number — what the router says
+/// of them (`rules: #157 unblocks 17`).
+#[must_use]
+pub fn rule_unblockers(snapshot: &Snapshot) -> Vec<(u64, Unblocked)> {
+    let mut found: Vec<(u64, Unblocked)> = snapshot
+        .boards
+        .iter()
+        .flat_map(|board| tasks::open_agent_tasks(&board.tasks))
+        .filter(|task| !tasks::waiting_merge(task))
+        .map(|task| {
+            (
+                task.number,
+                rule_waits::unblocked(task, &snapshot.rule_waits),
+            )
+        })
+        .filter(|(_, unblocked)| unblocked.touched > 0)
+        .collect();
+    found.sort_by_key(|(number, unblocked)| (std::cmp::Reverse(unblocked.touched), *number));
+    found.dedup_by_key(|(number, _)| *number);
+    found
+}
+
+/// How many rules a parked or held task must hold for the router to say it.
+pub const RULES_SAID: u32 = 5;
 
 /// The critical path of the plan among what is left to build.
 ///
@@ -1556,6 +1920,7 @@ fn lowest_open(issues: &[Issue]) -> Option<&Issue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn without_a_human_gate_every_waiting_tap_opens_but_what_a_person_or_a_decision_holds() {
@@ -1722,6 +2087,7 @@ mod tests {
             tasks_merged: Vec::new(),
             contracts_landed: Vec::new(),
             debt_landings: Vec::new(),
+            rule_waits: Waits::default(),
         }
     }
 
@@ -1786,6 +2152,7 @@ mod tests {
             tasks_merged: Vec::new(),
             contracts_landed: Vec::new(),
             debt_landings: Vec::new(),
+            rule_waits: Waits::default(),
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -2182,7 +2549,7 @@ mod tests {
         );
         // Resumed: forgotten, so a later wait counts from zero.
         tell_settling(&empty(), &mut pulse, &log);
-        assert!(pulse.settling.is_empty());
+        assert!(pulse.settling.is_empty(), "should be empty");
     }
 
     #[test]
@@ -2218,7 +2585,7 @@ mod tests {
         assert_eq!(warned.len(), 1, "said once: {warned:?}");
         // Off its PR: forgotten, the next hold counts from zero.
         bound_rules_on_pr(&mut empty(), &mut pulse, &log);
-        assert!(pulse.rules_held.is_empty());
+        assert!(pulse.rules_held.is_empty(), "should be empty");
         let mut found = held();
         bound_rules_on_pr(&mut found, &mut pulse, &log);
         assert_eq!(found.rules_on_pr, [517]);
@@ -2839,6 +3206,9 @@ mod tests {
             settling: std::collections::BTreeMap::new(),
             rules_held: std::collections::BTreeMap::new(),
             debt_merged_at: None,
+            rules_status: None,
+            rule_waits: Waits::default(),
+            unpulled: Vec::new(),
         }
     }
 
@@ -3139,7 +3509,7 @@ mod tests {
             "critical_path(&milestones, None) should be empty"
         );
         // Nothing builds: #18 (the path) and #21 split; #20 waits on #18.
-        assert_eq!(splits(&milestones, Some(&graph)), [18, 21]);
+        assert_eq!(splits(&milestones, Some(&graph), None), [18, 21]);
         // Three build already: the path still goes, the ahead work waits.
         let crowded = vec![
             building(18),
@@ -3149,13 +3519,13 @@ mod tests {
             ready(31),
         ];
         assert_eq!(
-            splits(&crowded, Some(&graph)),
+            splits(&crowded, Some(&graph), None),
             [20],
             "#31 is ahead work past the cap"
         );
         // Two build: one ahead slot left, the path first.
         let two = vec![building(18), building(21), ready(20), ready(30), ready(31)];
-        assert_eq!(splits(&two, Some(&graph)), [20, 30]);
+        assert_eq!(splits(&two, Some(&graph), None), [20, 30]);
         // Only the path's next step passes over the cap: #19 and #22 both
         // read #20, built; three build already — #19 (on the path) goes, #22
         // waits for a slot.
@@ -3166,7 +3536,7 @@ mod tests {
             ready(19),
             ready(22),
         ];
-        assert_eq!(splits(&chain, Some(&graph)), [19]);
+        assert_eq!(splits(&chain, Some(&graph), None), [19]);
         let landed = vec![
             issue(
                 18,
@@ -3179,7 +3549,7 @@ mod tests {
             ready(22),
         ];
         assert_eq!(
-            splits(&landed, Some(&graph)),
+            splits(&landed, Some(&graph), None),
             [19],
             "a landed path member is no next step"
         );
@@ -3923,5 +4293,643 @@ mod tests {
             ],
             "once"
         );
+    }
+
+    /// The plant of 2026-10-24 11:05, simplified: #18 landed; #22, #28 and
+    /// #29 build — the cap's three; #24 and #27 wait, ready. #28 needs #24's
+    /// `OralBrief` and its `Brief` table, #29 #27's `SuggestionPill`, and
+    /// the graph names neither edge.
+    const STARVED: &str = r#"{"version":1,"milestones":[
+      {"number":18,"title":"Campaigns","systems":["campaign"],"produces":["Campaign"],"consumes":[],"depends_on":[]},
+      {"number":22,"title":"Battle","systems":["battle"],"produces":[],"consumes":["Campaign"],"depends_on":[18]},
+      {"number":24,"title":"Brief","systems":["session"],"produces":["OralBrief"],"consumes":["Campaign"],"depends_on":[18]},
+      {"number":27,"title":"Pill","systems":["ai"],"produces":["SuggestionPill"],"consumes":["Campaign"],"depends_on":[18]},
+      {"number":28,"title":"Preparation","systems":["session"],"produces":["session.a","session.b","session.c"],"consumes":["Campaign"],"depends_on":[18]},
+      {"number":29,"title":"Live","systems":["ai"],"produces":[],"consumes":["Campaign"],"depends_on":[18,22]},
+      {"number":30,"title":"Later","systems":["home"],"produces":["Later"],"consumes":[],"depends_on":[]},
+      {"number":31,"title":"Spare","systems":["spare"],"produces":[],"consumes":[],"depends_on":[]}
+    ],"ids":{
+      "Campaign":{"kind":"aggregate","producer":18,"state":"built","version":1},
+      "OralBrief":{"kind":"micro-ui","producer":24,"state":"planned","version":1},
+      "Brief":{"kind":"aggregate","producer":24,"state":"planned","version":1},
+      "SuggestionPill":{"kind":"micro-ui","producer":27,"state":"mocked","version":1},
+      "Later":{"kind":"micro-ui","producer":30,"state":"planned","version":1}
+    }}"#;
+
+    fn starved_milestones() -> Vec<Issue> {
+        let building = |n: u64| issue(n, &[labels::MILESTONE, labels::TRIGGERED]);
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        vec![
+            issue(
+                18,
+                &[labels::MILESTONE, labels::TRIGGERED, labels::WAITING_MERGE],
+            ),
+            building(22),
+            ready(24),
+            ready(27),
+            building(28),
+            building(29),
+            ready(30),
+            ready(31),
+        ]
+    }
+
+    fn delivered_task(number: u64) -> Issue {
+        issue(
+            number,
+            &[labels::AGENT, labels::READY, labels::WAITING_MERGE],
+        )
+    }
+
+    /// #28's last task #219, parked `blocked_by` #24, the rest delivered:
+    /// it reads #24's `Brief` table, which no fragment stands in for.
+    fn starved_219() -> Issue {
+        Issue {
+            blocked_by: vec![issue(24, &[labels::MILESTONE, labels::READY])],
+            ..task_needing(219, "composition", "OralBrief, Brief, session.a")
+        }
+    }
+
+    fn starved(boards: Vec<crate::dev_loop::data::board::Board>) -> Snapshot {
+        Snapshot {
+            milestones: starved_milestones(),
+            graph: parse_graph(Some(STARVED)),
+            dev_loop_milestones: vec![28, 29],
+            boards,
+            ..empty()
+        }
+    }
+
+    #[test]
+    fn a_building_milestone_s_task_blocked_by_an_unsplit_milestone_pulls_its_split_past_the_cap() {
+        let snapshot = starved(vec![board(28, vec![delivered_task(218), starved_219()])]);
+        let graph = snapshot.graph.clone();
+        assert!(
+            splits(&snapshot.milestones, graph.as_ref(), None).is_empty(),
+            "three build: the cap holds #24 — the 11:05 deadlock"
+        );
+        assert_eq!(
+            pulls(&snapshot, &[]),
+            [Pull {
+                producer: 24,
+                milestone: 28,
+                task: 219,
+                need: "Brief".to_string(),
+                why: Starving::Starved,
+                splittable: true,
+                through: None,
+            }],
+            "the table holds it, not the Micro-UI the mock-up stands in for"
+        );
+        assert_eq!(pulled(&snapshot, &[]).map(|p| p.producer), Some(24));
+        assert_eq!(
+            splits(&snapshot.milestones, graph.as_ref(), Some(24)),
+            [24],
+            "the pulled split passes the cap, the spare #31 does not"
+        );
+        assert!(
+            routes(&snapshot).contains(&Route::Split { milestone: 24 }),
+            "{:?}",
+            routes(&snapshot)
+        );
+        // Through its blocker alone, without the need, the same.
+        let blocked_only = Issue {
+            blocked_by: vec![issue(24, &[labels::MILESTONE, labels::READY])],
+            ..task_needing(219, "composition", "session.a")
+        };
+        let by_blocker = starved(vec![board(28, vec![blocked_only])]);
+        assert_eq!(
+            pulls(&by_blocker, &[]).first().map(|p| p.need.as_str()),
+            Some("its blocker #24")
+        );
+    }
+
+    #[test]
+    fn a_screen_blocked_by_a_milestone_it_lays_out_starts_and_pulls_nothing() {
+        // The real #219: it lays out #24's OralBrief, which the mock-up's
+        // fragment stands in for — its blocker waived, it runs now.
+        let screen = Issue {
+            blocked_by: vec![issue(24, &[labels::MILESTONE, labels::READY])],
+            ..task_needing(219, "composition", "OralBrief, session.a")
+        };
+        let snapshot = starved(vec![board(28, vec![delivered_task(218), screen])]);
+        assert!(pulls(&snapshot, &[]).is_empty(), "not starved");
+        assert!(routes(&snapshot).contains(&Route::DevTask {
+            milestone: 28,
+            task: 219
+        }));
+    }
+
+    #[test]
+    fn a_starved_milestone_pulls_only_what_holds_its_tasks() {
+        // #29 starves: #469 waits on a sibling in review, #470 on its own
+        // PR's cycle, #471 lays out #27's mocked SuggestionPill behind
+        // #469 — nothing #27 holds of them, nothing pulled.
+        let sibling = issue(469, &[labels::AGENT, labels::READY, labels::REVIEW_PENDING]);
+        let behind_sibling = Issue {
+            blocked_by: vec![sibling.clone()],
+            ..task_needing(471, "composition", "SuggestionPill")
+        };
+        let own_pr = Issue {
+            body:
+                "branch: feat/own\n\n## Architecture\n\nunit: capability\nsystem: ai\nneeds: Brief"
+                    .to_string(),
+            ..issue(470, &[labels::AGENT, labels::READY])
+        };
+        let mut snapshot = starved(vec![board(29, vec![sibling, own_pr, behind_sibling])]);
+        snapshot.task_prs = vec![cycle_pr("90", "feat/own", "x", &[], "open")];
+        assert!(
+            pulls(&snapshot, &[]).is_empty(),
+            "{:?}",
+            pulls(&snapshot, &[])
+        );
+    }
+
+    #[test]
+    fn a_producer_the_cap_does_not_hold_is_no_pull_and_never_told_as_one() {
+        // Only #28 builds: #24 splits under the cap, as any.
+        let mut snapshot = starved(vec![board(28, vec![delivered_task(218), starved_219()])]);
+        let closed = |n: u64| Issue {
+            state: "closed".to_string(),
+            ..issue(n, &[labels::MILESTONE])
+        };
+        snapshot.milestones[1] = closed(22);
+        snapshot.milestones[5] = closed(29);
+        assert_eq!(pulls(&snapshot, &[]).len(), 1, "it starves on #24");
+        assert!(splits(&snapshot.milestones, snapshot.graph.as_ref(), None).contains(&24));
+        assert_eq!(pulled(&snapshot, &[]), None);
+    }
+
+    /// #14 builds beside #12 and #15 (the cap's three); it needs #11's
+    /// `Brief`, #11 waits on #10, both unsplit. The critical path is #12 →
+    /// #13: neither #10 nor #11 is on it.
+    const THROUGH: &str = r#"{"version":1,"milestones":[
+      {"number":10,"title":"Q","systems":["q"],"produces":["Q"],"consumes":[],"depends_on":[]},
+      {"number":11,"title":"P","systems":["p"],"produces":["Brief"],"consumes":["Q"],"depends_on":[10]},
+      {"number":12,"title":"A","systems":["a"],"produces":["a1","a2","a3","a4","a5"],"consumes":[],"depends_on":[]},
+      {"number":13,"title":"B","systems":["b"],"produces":["b1","b2","b3"],"consumes":["a1"],"depends_on":[12]},
+      {"number":14,"title":"M","systems":["m"],"produces":[],"consumes":[],"depends_on":[]},
+      {"number":15,"title":"C","systems":["c"],"produces":[],"consumes":[],"depends_on":[]}
+    ],"ids":{
+      "Q":{"kind":"aggregate","producer":10,"state":"planned","version":1},
+      "Brief":{"kind":"aggregate","producer":11,"state":"planned","version":1}
+    }}"#;
+
+    #[test]
+    fn an_unsplittable_producer_is_pulled_through_its_own_producer() {
+        let building = |n: u64| issue(n, &[labels::MILESTONE, labels::TRIGGERED]);
+        let ready = |n: u64| issue(n, &[labels::MILESTONE, labels::READY]);
+        let snapshot = |q: Issue| Snapshot {
+            milestones: vec![
+                q,
+                ready(11),
+                building(12),
+                ready(13),
+                building(14),
+                building(15),
+            ],
+            graph: parse_graph(Some(THROUGH)),
+            dev_loop_milestones: vec![12, 14, 15],
+            boards: vec![board(14, vec![task_needing(140, "capability", "Brief")])],
+            ..empty()
+        };
+        let full = snapshot(ready(10));
+        assert_eq!(
+            splits(&full.milestones, full.graph.as_ref(), None),
+            [13],
+            "the path's next step only: the cap is full"
+        );
+        let found = pulls(&full, &[]);
+        assert_eq!(
+            found
+                .iter()
+                .map(|p| (p.producer, p.splittable, p.through))
+                .collect::<Vec<_>>(),
+            [(11, false, None), (10, true, Some(11))]
+        );
+        assert!(stuck_pulls(&found).is_empty(), "#11 is pulled through");
+        let pull = pulled(&full, &[]).expect("a pull");
+        assert_eq!((pull.producer, pull.need.as_str()), (10, "Brief"));
+        assert!(routes(&full).contains(&Route::Split { milestone: 10 }));
+        // #10 not ready: nothing to pull through, #11 is stuck and said.
+        let stuck = snapshot(issue(10, &[labels::MILESTONE]));
+        let found = pulls(&stuck, &[]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            stuck_pulls(&found)
+                .iter()
+                .map(|p| p.producer)
+                .collect::<Vec<_>>(),
+            [11]
+        );
+        assert_eq!(pulled(&stuck, &[]), None);
+    }
+
+    #[test]
+    fn a_stuck_pull_is_told_once_per_change() {
+        let mut pulse = Pulse::default();
+        let line = |n: u64| format!("#{n} stuck");
+        assert_eq!(unpulled_news(&mut pulse, vec![line(11)]), [line(11)]);
+        assert!(unpulled_news(&mut pulse, vec![line(11)]).is_empty(), "once");
+        assert_eq!(
+            unpulled_news(&mut pulse, vec![line(11), line(24)]),
+            [line(24)]
+        );
+        assert!(unpulled_news(&mut pulse, vec![]).is_empty(), "none stuck");
+        assert_eq!(
+            unpulled_news(&mut pulse, vec![line(11)]),
+            [line(11)],
+            "again once gone"
+        );
+    }
+
+    #[test]
+    fn a_need_produced_by_an_unsplit_milestone_pulls_it_without_a_graph_edge() {
+        // #29's every task is delivered; its #465 laid out #27's
+        // SuggestionPill: the landing waits on #27, which the cap kept unsplit.
+        let closed_465 = Issue {
+            state: "closed".to_string(),
+            ..task_needing(465, "composition", "SuggestionPill")
+        };
+        let snapshot = starved(vec![
+            board(28, vec![delivered_task(218), starved_219()]),
+            board(29, vec![closed_465, delivered_task(466)]),
+        ]);
+        let found = pulls(&snapshot, &[]);
+        assert_eq!(
+            found
+                .iter()
+                .map(|p| (p.producer, p.milestone, p.task, p.why))
+                .collect::<Vec<_>>(),
+            [
+                (24, 28, 219, Starving::Starved),
+                (27, 29, 465, Starving::HeldAtLanding)
+            ]
+        );
+        assert_eq!(
+            pulled(&snapshot, &[]).map(|p| p.producer),
+            Some(24),
+            "one pulled split a tick, the boards' order"
+        );
+        let after = Snapshot {
+            boards: vec![board(29, snapshot.boards[1].tasks.clone())],
+            ..snapshot
+        };
+        assert_eq!(pulled(&after, &[]).map(|p| p.producer), Some(27));
+    }
+
+    #[test]
+    fn a_pulled_milestone_not_splittable_is_said_and_not_pulled() {
+        // #18, #24's producer, is not split nor ready: #24 cannot be split
+        // before it, and nothing pulls #18 in its place.
+        let mut snapshot = starved(vec![board(28, vec![starved_219()])]);
+        snapshot.milestones[0] = issue(18, &[labels::MILESTONE]);
+        let found = pulls(&snapshot, &[]);
+        assert_eq!(found.len(), 1);
+        assert!(!found[0].splittable && found[0].producer == 24);
+        assert_eq!(stuck_pulls(&found).len(), 1);
+        assert_eq!(pulled(&snapshot, &[]), None);
+    }
+
+    #[test]
+    fn a_delivered_or_human_task_pulls_nothing() {
+        let pulls_of = |tasks: Vec<Issue>, running: &[u64]| {
+            pulls(&starved(vec![board(28, tasks)]), running)
+                .iter()
+                .map(|p| p.producer)
+                .collect::<Vec<_>>()
+        };
+        // A task a human holds — harness:ready taken off — pulls nothing.
+        let held = Issue {
+            labels: vec![labels::AGENT.to_string()],
+            ..starved_219()
+        };
+        assert!(pulls_of(vec![held], &[]).is_empty(), "nothing pulled");
+        // A milestone with a task to start, or one on a lane, is not starved.
+        let free = task_needing(220, "capability", "session.a");
+        assert!(
+            pulls_of(vec![starved_219(), free], &[]).is_empty(),
+            "nothing pulled"
+        );
+        assert!(
+            pulls_of(vec![starved_219()], &[219]).is_empty(),
+            "nothing pulled"
+        );
+        // A producer later in plan order is a plan error, never a pull.
+        let ahead = Issue {
+            blocked_by: vec![issue(30, &[labels::MILESTONE, labels::READY])],
+            ..task_needing(221, "capability", "Later")
+        };
+        assert!(pulls_of(vec![ahead], &[]).is_empty(), "nothing pulled");
+        // A producer already split, or not ready, is not pulled.
+        let mut split = starved(vec![board(28, vec![starved_219()])]);
+        split.milestones[2] = issue(24, &[labels::MILESTONE, labels::TRIGGERED]);
+        assert!(pulls(&split, &[]).is_empty(), "nothing pulled");
+        let mut unready = starved(vec![board(28, vec![starved_219()])]);
+        unready.milestones[2] = issue(24, &[labels::MILESTONE]);
+        assert!(pulls(&unready, &[]).is_empty(), "nothing pulled");
+        // No graph: no plan order, nothing pulled.
+        let blind = Snapshot {
+            graph: None,
+            ..starved(vec![board(28, vec![starved_219()])])
+        };
+        assert!(pulls(&blind, &[]).is_empty(), "nothing pulled");
+        // A board whose milestone does not build pulls nothing.
+        let idle = starved(vec![board(31, vec![starved_219()])]);
+        assert!(pulls(&idle, &[]).is_empty(), "nothing pulled");
+    }
+
+    #[test]
+    fn ahead_work_no_task_waits_on_still_respects_the_cap() {
+        // #29 starves on nothing its tasks need from an unsplit milestone:
+        // the spare #31 is ahead work, and the cap holds it.
+        let quiet = Issue {
+            blocked_by: vec![issue(22, &[labels::MILESTONE, labels::TRIGGERED])],
+            ..task_needing(470, "capability", "Campaign")
+        };
+        let snapshot = starved(vec![board(29, vec![quiet])]);
+        assert!(pulls(&snapshot, &[]).is_empty(), "nothing pulled");
+        assert!(
+            !routes(&snapshot)
+                .iter()
+                .any(|route| matches!(route, Route::Split { .. })),
+            "{:?}",
+            routes(&snapshot)
+        );
+    }
+
+    fn rules_board_snapshot(
+        waits: Waits,
+        milestones: Vec<Issue>,
+        graph: Option<Graph>,
+    ) -> Snapshot {
+        let produces = |number: u64, unit: &str, produces: &str| Issue {
+            body: format!(
+                "## Architecture\n\nunit: {unit}\nsystem: campaign\nproduces: {produces}"
+            ),
+            ..issue(number, &[labels::AGENT, labels::READY])
+        };
+        Snapshot {
+            milestones,
+            graph,
+            dev_loop_milestones: vec![18],
+            boards: vec![board(
+                18,
+                vec![
+                    produces(60, "capability", "x.list"),
+                    produces(61, "data-capability", "x.make"),
+                    produces(62, "micro-ui", "XPanel"),
+                ],
+            )],
+            rule_waits: waits,
+            ..empty()
+        }
+    }
+
+    fn waits_of(rules: &[(&str, &[&str])]) -> Waits {
+        Waits(
+            rules
+                .iter()
+                .map(|(id, needs)| {
+                    (
+                        (*id).to_string(),
+                        needs.iter().map(|n| (*n).to_string()).collect(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn dev_weights(snapshot: &Snapshot) -> Vec<(u64, u32)> {
+        schedule(snapshot, &[], &|_| 0)
+            .into_iter()
+            .filter_map(|job| match job.route {
+                Route::DevTask { task, .. } => Some((task, job.weight)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_task_that_unblocks_more_rules_starts_first_within_its_kind() {
+        let open = vec![issue(18, &[labels::MILESTONE, labels::TRIGGERED])];
+        // #62 is listed last but unblocks nothing; #60 touches two rules and
+        // completes one; #61 touches one, and is a DataCapability.
+        let waits = waits_of(&[
+            ("R1", &["capability:x.list"]),
+            ("R2", &["capability:x.list", "data-capability:x.make"]),
+        ]);
+        let snapshot = rules_board_snapshot(waits, open.clone(), None);
+        assert_eq!(
+            dev_weights(&snapshot),
+            [(60, 616), (61, 609), (62, 600)],
+            "4 a rule touched, 8 more a rule completed, 5 for a DataCapability"
+        );
+        // No waits read: a DataCapability first, the rest in number order.
+        let none = rules_board_snapshot(Waits::default(), open, None);
+        assert_eq!(dev_weights(&none), [(61, 605), (60, 600), (62, 600)]);
+    }
+
+    #[test]
+    fn the_rules_bonus_is_capped_and_never_passes_a_review() {
+        let waits = Waits(
+            (0..30)
+                .map(|i| (format!("R{i}"), vec!["capability:x.list".to_string()]))
+                .collect(),
+        );
+        let open = vec![issue(18, &[labels::MILESTONE, labels::TRIGGERED])];
+        let snapshot = rules_board_snapshot(waits.clone(), open.clone(), None);
+        assert_eq!(
+            dev_weights(&snapshot).first(),
+            Some(&(60, 600 + rule_waits::RULES_CAP)),
+            "30 rules weigh the cap"
+        );
+        // On the critical path's first milestone, the ceiling: a review of
+        // the same tick still goes first — finishing before starting.
+        let on_path = Snapshot {
+            prs_to_review: vec![pr("33", "milestone/18-campaigns")],
+            ..rules_board_snapshot(waits, open, Some(graph()))
+        };
+        assert_eq!(dev_weights(&on_path).first(), Some(&(60, DEV_TASK_CEILING)));
+        assert_eq!(
+            dev_weights(&on_path).get(1),
+            Some(&(61, 600 + CRITICAL_BONUS + rule_waits::DATA_CAPABILITY_FIRST)),
+            "under the ceiling, the path's bonus and the tiebreak add up"
+        );
+        let jobs = schedule(&on_path, &[], &|_| 0);
+        let review = jobs
+            .iter()
+            .position(|job| matches!(job.route, Route::PrReview { .. }));
+        let task = jobs
+            .iter()
+            .position(|job| matches!(job.route, Route::DevTask { .. }));
+        assert!(review < task, "{jobs:?}");
+        assert!(
+            DEV_TASK_CEILING
+                < base_weight(&Route::PrReview {
+                    pr: String::new(),
+                    base: String::new(),
+                })
+        );
+        const { assert!(DEV_TASK_CEILING > 600 + CRITICAL_BONUS) };
+    }
+
+    #[test]
+    fn the_rules_status_is_read_once_per_integration_head_once_its_checks_concluded() {
+        let mut pulse = Pulse::default();
+        assert_eq!(rules_status_due(&pulse), None, "no head read yet");
+        pulse.catch_ups.head = Some("abc".to_string());
+        assert_eq!(rules_status_due(&pulse), None, "its checks still run");
+        pulse.catch_ups.verdict = Some(false);
+        assert_eq!(
+            rules_status_due(&pulse).as_deref(),
+            Some("abc"),
+            "a red head kept its artifact too"
+        );
+        took_rules_status(
+            &mut pulse,
+            "abc".to_string(),
+            Some(
+                r#"{"rules":[{"id":"R3","state":"pending","tests":[{"why":"waiting for capability:x.list"}]}]}"#,
+            ),
+        );
+        assert_eq!(rules_status_due(&pulse), None, "read once");
+        assert_eq!(pulse.rule_waits.0.len(), 1);
+        // The head moves: its verdict is forgotten, then read again.
+        pulse.catch_ups.head = Some("def".to_string());
+        pulse.catch_ups.verdict = None;
+        assert_eq!(rules_status_due(&pulse), None);
+        pulse.catch_ups.verdict = Some(true);
+        assert_eq!(rules_status_due(&pulse).as_deref(), Some("def"));
+        took_rules_status(&mut pulse, "def".to_string(), None);
+        assert_eq!(pulse.rule_waits, Waits::default(), "no artifact: no wait");
+        assert_eq!(pulse.rules_status.as_deref(), Some("def"));
+    }
+
+    #[test]
+    fn the_unblockers_are_the_open_tasks_most_rules_first() {
+        let waits = waits_of(&[
+            ("R1", &["capability:x.list"]),
+            ("R2", &["capability:x.list", "data-capability:x.make"]),
+            ("R3", &["micro-ui:XPanel"]),
+        ]);
+        let open = vec![issue(18, &[labels::MILESTONE, labels::TRIGGERED])];
+        let mut snapshot = rules_board_snapshot(waits, open, None);
+        let touched = |snapshot: &Snapshot| {
+            rule_unblockers(snapshot)
+                .iter()
+                .map(|(task, unblocked)| (*task, unblocked.touched))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(touched(&snapshot), [(60, 2), (61, 1), (62, 1)]);
+        // A delivered task unblocks nothing more.
+        snapshot.boards[0].tasks[0]
+            .labels
+            .push(labels::WAITING_MERGE.to_string());
+        assert_eq!(touched(&snapshot), [(61, 1), (62, 1)]);
+    }
+
+    fn arbitrary_plant() -> impl Strategy<Value = (Vec<Issue>, Graph, Option<u64>)> {
+        let labels_of = prop::sample::subsequence(
+            vec![
+                labels::READY,
+                labels::TRIGGERED,
+                labels::WAITING_MERGE,
+                labels::REFINEMENT,
+            ],
+            0..=4,
+        );
+        (1usize..9)
+            .prop_flat_map(move |count| {
+                (
+                    prop::collection::vec((labels_of.clone(), any::<bool>()), count),
+                    prop::collection::vec(prop::collection::vec(any::<bool>(), count), count),
+                    prop::collection::vec(prop::collection::vec("[a-z]{1,4}", 0..3), count),
+                    prop::option::of(0..count),
+                )
+            })
+            .prop_map(|(states, edges, produces, pulled)| {
+                let numbers: Vec<u64> = (0..states.len()).map(|i| 10 + i as u64).collect();
+                let milestones = states
+                    .iter()
+                    .zip(&numbers)
+                    .map(|((labels, open), number)| Issue {
+                        number: *number,
+                        state: if *open { "open" } else { "closed" }.to_string(),
+                        labels: std::iter::once(labels::MILESTONE)
+                            .chain(labels.iter().copied())
+                            .map(str::to_string)
+                            .collect(),
+                        ..Issue::default()
+                    })
+                    .collect();
+                let nodes = numbers
+                    .iter()
+                    .enumerate()
+                    .map(|(at, number)| harness_architecture::graph::Node {
+                        number: *number,
+                        title: format!("m{number}"),
+                        systems: Vec::new(),
+                        produces: produces[at]
+                            .iter()
+                            .map(|id| format!("{id}{number}"))
+                            .collect(),
+                        consumes: Vec::new(),
+                        // Only the ones before it, plan order holding.
+                        depends_on: numbers
+                            .iter()
+                            .take(at)
+                            .enumerate()
+                            .filter(|(earlier, _)| edges[at][*earlier])
+                            .map(|(_, n)| *n)
+                            .collect(),
+                    })
+                    .collect();
+                let graph = Graph {
+                    version: 1,
+                    milestones: nodes,
+                    ids: std::collections::BTreeMap::new(),
+                };
+                (milestones, graph, pulled.map(|at| numbers[at]))
+            })
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_split_is_splittable_the_pulled_one_passes_and_the_rest_keeps_the_cap(
+            (milestones, graph, pulled) in arbitrary_plant()
+        ) {
+            let found = splits(&milestones, Some(&graph), pulled);
+            let splittable_now = |number: &u64| {
+                milestones
+                    .iter()
+                    .find(|m| m.number == *number)
+                    .is_some_and(|m| splittable(m, &milestones, Some(&graph)))
+            };
+            proptest::prop_assert!(found.iter().all(splittable_now), "{found:?}");
+            if let Some(number) = pulled.filter(splittable_now) {
+                proptest::prop_assert!(found.contains(&number), "{found:?} lacks {number}");
+            }
+            let path = critical_path(&milestones, Some(&graph));
+            let next_on_path = path.iter().copied().find(|number| {
+                milestones
+                    .iter()
+                    .find(|m| m.number == *number)
+                    .is_some_and(|m| m.is_open() && !m.has(labels::TRIGGERED))
+            });
+            let building = milestones
+                .iter()
+                .filter(|m| m.is_open() && m.has(labels::TRIGGERED) && !m.has(labels::WAITING_MERGE))
+                .count();
+            let ahead = found
+                .iter()
+                .filter(|number| Some(**number) != next_on_path && Some(**number) != pulled)
+                .count();
+            proptest::prop_assert!(ahead <= MAX_CURRENT.saturating_sub(building), "{found:?}");
+            let mut once = found.clone();
+            once.sort_unstable();
+            once.dedup();
+            proptest::prop_assert_eq!(once.len(), found.len());
+        }
     }
 }

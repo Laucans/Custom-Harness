@@ -124,7 +124,11 @@ mock/components/ first (they are the screen as the human wants it; a
 beside it: carry the micro-frontend's markup, classes and structure into
 apps/, wire it to the real Capabilities and DataCapabilities, and change
 only what the real data demands — never rewrite a screen the mock-up
-already draws. Keep them true to what you build,
+already draws. For a screen, a Micro-UI another milestone builds is not
+missing: lay its id out in apps/screens/<screen>.json, where the mock-up's
+fragment stands in for it until it is built (compositions-resolve passes
+it on a pull request into milestone/*), and never stop on it. Keep them
+true to what you build,
 list them in mock/pages.json (contract N), name the parts of what a Micro-UI
 renders (contract D: data-writes=\"<DataCapability>\" on every actuator,
 data-reads=\"<Capability>\" on every part that shows a read, one at least per
@@ -169,7 +173,9 @@ turns green: start the product with `bash scripts/rules-runtime.sh serve`
 (export the KEY=value lines it prints), run `cargo test --manifest-path
 tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
 test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
-rule stays pending while a unit its test needs is not built. Never change
+rule stays pending while a unit its test needs is not built. A screen does
+not wait for those units: freeze it against the mock-up now —
+rules-hold proves them on every run once their units are built. Never change
 rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
 A rule's test you cannot meet is contested: write CONTEST.md at the root
 (the rule, the test, why it cannot hold) and say so in your reply. The
@@ -666,6 +672,20 @@ mod tests {
             assert!(said.contains("{title}"));
             assert!(said.contains("milestone #{milestone}"));
         }
+    }
+
+    #[test]
+    fn a_screen_lays_out_another_milestone_s_micro_ui_instead_of_stopping() {
+        // ForgeDesMondes' #465 stopped on #27's SuggestionPill, unbuilt, and
+        // was parked on #27 until it landed.
+        let said = flat(CODE);
+        assert!(
+            said.contains("a Micro-UI another milestone builds is not missing"),
+            "{said}"
+        );
+        assert!(said.contains("lay its id out in apps/screens/<screen>.json"));
+        assert!(said.contains("compositions-resolve passes it"));
+        assert!(said.contains("never stop on it"));
     }
 
     #[test]

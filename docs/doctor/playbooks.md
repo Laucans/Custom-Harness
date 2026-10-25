@@ -134,7 +134,10 @@ Traps:
 
 ### The router idles, or runs nothing useful, while work waits
 - Seen: #405 parked 40 min (10-23); the `MAX_CURRENT` deadlock (#219
-  waiting on #24, which the cap kept unsplit, 10-24 11:05).
+  waiting on #24, which the cap kept unsplit, 10-24 11:05) — since lot P
+  a starved milestone pulls such a split itself (`split past the cap`,
+  `through #P` when it pulls the producer's own producer first;
+  `would be split past the cap …` once per change when it cannot).
 - Action, by the `idle:` / `watch:` line:
   - `parked until its issue changes`: expires in 1 h (`089b6bf`); if the
     cause is gone and the task is critical, edit its body (unparks it).

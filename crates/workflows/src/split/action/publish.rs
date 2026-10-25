@@ -60,7 +60,7 @@ pub(crate) fn body_and_labels(
         sections::heading_of(sections::ARCHITECTURE),
         declaration.render()
     );
-    if let Some(rules) = rules_section(&item.rules) {
+    if let Some(rules) = rules_section(&item.rules, declaration.unit) {
         let _ = write!(
             body,
             "\n\n## {}\n\n{rules}",
@@ -102,7 +102,12 @@ pub(crate) fn body_and_labels(
 
 /// The `## Rules` section of a task: the rules whose tests it makes pass,
 /// and what it may not do with them. `None` when the slice names none.
-fn rules_section(rules: &[String]) -> Option<String> {
+///
+/// A screen's says it is frozen now: the router no longer holds a screen
+/// that names rules until every producer lands (`ForgeDesMondes`' #143), so
+/// the session must not wait on a rule pending on a unit another milestone
+/// builds — `rules-hold` proves it on every run once that unit is built.
+fn rules_section(rules: &[String], unit: Unit) -> Option<String> {
     let ids: Vec<&str> = rules
         .iter()
         .map(|r| r.trim())
@@ -110,6 +115,16 @@ fn rules_section(rules: &[String]) -> Option<String> {
         .collect();
     if ids.is_empty() {
         return None;
+    }
+    if unit == Unit::Composition {
+        return Some(format!(
+            "{}\n\nTheir tests, under `tests/rules/` (contract P, `rules.json`), are written \
+             already. Freeze the screen against the mock-up now: these rules' tests stay pending \
+             while a unit they need is not built, and rules-hold proves them on every run once \
+             it is. A pending rule is not this task's to wait for; one that runs red here is: \
+             make it pass, or contest it with `CONTEST.md`. Never change them.",
+            ids.join(", ")
+        ));
     }
     Some(format!(
         "{}\n\nTheir tests, under `tests/rules/` (contract P, `rules.json`), are written \
@@ -450,13 +465,42 @@ mod tests {
         assert!(rules.starts_with("R3, R5\n\n"), "{rules}");
         assert!(rules.contains("Never change them") && rules.contains("CONTEST.md"));
         assert!(found.contains_key(sections::ARCHITECTURE), "{body}");
-        assert_eq!(rules_section(&[" ".to_string()]), None);
+        assert_eq!(rules_section(&[" ".to_string()], Unit::Capability), None);
         let bare =
             plan::parse(r#"[{"title": "t", "brief": "b", "branch": "feat/t", "unit": "tooling"}]"#)
                 .expect("parse");
         let (body, _) =
             body_and_labels(&bare[0], &bare[0].declaration(), labels::AGENT, Side::Read);
         assert!(!body.contains("## Rules"), "{body}");
+    }
+
+    #[test]
+    fn a_screen_s_rules_say_they_are_proven_where_their_units_are_built() {
+        let items = plan::parse(
+            r#"[{"title": "Soundbox", "brief": "freeze it", "branch": "feat/soundbox", "unit": "composition", "system": "soundbox", "rules": ["R111"]}]"#,
+        )
+        .expect("parse");
+        let item = &items[0];
+        let (body, _) = body_and_labels(item, &item.declaration(), labels::AGENT, Side::Read);
+        let rules = sections::parse(&body)
+            .get(sections::RULES)
+            .cloned()
+            .unwrap_or_default();
+        assert!(rules.starts_with("R111\n\n"), "{rules}");
+        for said in [
+            "Freeze the screen against the mock-up now",
+            "rules-hold proves them",
+            "not this task's to wait for",
+            "CONTEST.md",
+            "Never change them",
+        ] {
+            assert!(rules.contains(said), "{said}: {rules}");
+        }
+        let unit = rules_section(&["R3".to_string()], Unit::MicroUi).unwrap_or_default();
+        assert!(
+            !unit.contains("Freeze the screen"),
+            "only a screen is told: {unit}"
+        );
     }
 
     fn ctx(dry_run: bool, text: &str) -> Context<SplitState> {

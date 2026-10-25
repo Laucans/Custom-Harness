@@ -49,12 +49,14 @@ impl Board {
     }
 
     /// The task with this number, if it can run right now — what a
-    /// `--task` run picks instead of the board's own choice.
+    /// `--task` run picks instead of the board's own choice. A screen's
+    /// milestone blockers are the router's to judge on the graph
+    /// ([`tasks::runnable_for_lane`]): the lane reads none.
     #[must_use]
     pub fn wanted(&self, number: u64) -> Option<&Issue> {
         self.tasks
             .iter()
-            .find(|task| task.number == number && tasks::runnable(task))
+            .find(|task| task.number == number && tasks::runnable_for_lane(task))
     }
 
     /// The sub-issue of this milestone with this number, **open or not**.
@@ -196,7 +198,8 @@ pub async fn read_of_those(
 /// most, and every board is one GitHub call per open task. A board that
 /// cannot be read is left out.
 ///
-/// While a milestone's producers still build, only what may run ahead
+/// While a milestone before it in plan order still builds
+/// ([`merge_train::unlanded_before`]), only what may run ahead
 /// ([`tasks::runs_ahead`], judged on what each task needs) is worth its
 /// blockers' GitHub calls and counts as
 /// offered — counting the held crates stopped the reads at two boards and
@@ -214,7 +217,7 @@ pub async fn building(
         if offered >= lanes {
             break;
         }
-        let waiting_on = merge_train::producers_landed(graph, number, milestones);
+        let waiting_on = merge_train::unlanded_before(graph, number, milestones);
         let may_run = |task: &Issue| {
             waiting_on.is_empty() || tasks::runs_ahead(task, number, graph, &waiting_on)
         };
@@ -224,7 +227,7 @@ pub async fn building(
             // Counted as the lanes take them: startable among what may run,
             // one per aggregate — six "offered" that could not start stopped
             // the reads at two boards and left the lanes empty.
-            let could_start = tasks::startable_tasks(&board.tasks, &[], &may_run).len();
+            let could_start = tasks::startable_tasks(&board.tasks, &[], graph, &may_run).len();
             offered = offered.saturating_add(could_start);
             boards.push(board);
         }
