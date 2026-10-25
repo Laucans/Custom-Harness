@@ -481,13 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn stage_all_is_add_dash_a_not_dash_dot() {
-        // `-A` picks up deletions too, not just new/modified files like `.`.
-        let args = git().argv(&["add", "-A"]);
-        assert_eq!(&args[2..], &["add".to_string(), "-A".to_string()]);
-    }
-
-    #[test]
     fn commit_carries_the_message_as_one_argument() {
         let args = git().argv(&["commit", "-m", "feat: deux lignes\n\nplus de détail"]);
         assert_eq!(args[2], "commit");

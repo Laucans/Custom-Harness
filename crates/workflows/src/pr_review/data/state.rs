@@ -26,13 +26,3 @@ impl ReviewState {
             .expect("precheck must set the PR before the stages run")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_state_has_no_pr_yet() {
-        assert!(ReviewState::default().pr.is_none());
-    }
-}

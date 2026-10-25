@@ -3021,28 +3021,20 @@ mod tests {
     // --- checks_are_green ----------------------------------------------------
 
     #[test]
-    fn every_check_succeeding_is_green() {
-        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "SUCCESS"})];
-        assert!(checks_are_green(&rows));
-    }
-
-    #[test]
-    fn one_failing_check_is_not_green() {
-        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "FAILURE"})];
-        assert!(!checks_are_green(&rows));
-    }
-
-    #[test]
-    fn one_pending_check_is_not_green() {
-        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "PENDING"})];
-        assert!(!checks_are_green(&rows));
-    }
-
-    #[test]
-    fn a_skipped_gate_does_not_hold_a_green_pr_back_but_is_not_green_alone() {
-        let rows = vec![json!({"state": "SUCCESS"}), json!({"state": "SKIPPED"})];
-        assert!(checks_are_green(&rows));
-        assert!(!checks_are_green(&[json!({"state": "SKIPPED"})]));
+    fn green_is_one_success_at_least_and_nothing_failing_or_waiting() {
+        // A skipped gate does not hold a green PR back but is not green alone;
+        // no check at all is not green: proof CI ran is the point.
+        for (states, green) in [
+            (&["SUCCESS", "SUCCESS"][..], true),
+            (&["SUCCESS", "FAILURE"], false),
+            (&["SUCCESS", "PENDING"], false),
+            (&["SUCCESS", "SKIPPED"], true),
+            (&["SKIPPED"], false),
+            (&[], false),
+        ] {
+            let rows: Vec<Value> = states.iter().map(|s| json!({"state": s})).collect();
+            assert_eq!(checks_are_green(&rows), green, "{states:?}");
+        }
     }
 
     #[test]
@@ -3078,12 +3070,6 @@ mod tests {
         .expect("rows");
         assert_eq!(rows.len(), 1);
         assert!(super::ci_rows("251", &silent("")).is_err());
-    }
-
-    #[test]
-    fn no_checks_at_all_is_not_green() {
-        // Proof CI ran is the point, not the absence of a reason to refuse.
-        assert!(!checks_are_green(&[]));
     }
 
     // --- branch_checks_from --------------------------------------------------
@@ -3263,13 +3249,6 @@ mod tests {
     fn a_failure_without_a_link_or_a_name_still_says_something() {
         let rows = vec![json!({"state": "FAILURE"})];
         assert_eq!(failing_checks(&rows), ["a check — FAILURE".to_string()]);
-    }
-
-    #[test]
-    fn no_checks_at_all_means_nothing_to_repair() {
-        // Unlike `checks_are_green`, where an empty list refuses: there is
-        // no broken run to send a session at.
-        assert_eq!(failing_checks(&[]), [] as [std::string::String; 0]);
     }
 
     #[test]

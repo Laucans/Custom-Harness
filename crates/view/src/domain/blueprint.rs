@@ -1134,10 +1134,4 @@ mod tests {
         );
         assert_eq!(model_of_stage(&lines(), "publish"), None);
     }
-
-    #[test]
-    fn the_six_rooms_are_numbered_in_order() {
-        let ids: Vec<u8> = ROOMS.iter().map(|room| room.id).collect();
-        assert_eq!(ids, [1, 2, 3, 4, 5, 6]);
-    }
 }

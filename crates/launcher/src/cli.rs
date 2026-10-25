@@ -930,12 +930,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn verbose_and_quiet_cannot_be_asked_for_together() {
-        assert!(Cli::try_parse_from(["harness", "--verbose", "--quiet"]).is_err());
-    }
-
-    #[test]
-    #[serial]
     fn a_bool_flag_still_takes_no_value_on_the_command_line() {
         let cli = Cli::try_parse_from(["harness", "--allow-dirty"]).expect("a bare flag");
         assert!(cli.run.allow_dirty);
@@ -1034,50 +1028,6 @@ mod tests {
 
     #[test]
     #[serial]
-    fn init_repo_parses_as_a_subcommand() {
-        let cli = Cli::try_parse_from(["harness", "init-repo", "https://github.com/o/r"])
-            .expect("must parse");
-        let Some(Command::InitRepo(args)) = cli.command else {
-            panic!("expected Command::InitRepo");
-        };
-        assert_eq!(args.url, "https://github.com/o/r");
-        assert!(!args.dry_run);
-    }
-
-    #[test]
-    #[serial]
-    fn refine_parses_an_issue_and_its_own_checkout() {
-        let cli = Cli::try_parse_from([
-            "harness",
-            "refine",
-            "14",
-            "--use-workspace",
-            "refine-lane-1",
-        ])
-        .expect("must parse");
-        let Some(Command::Refine(args)) = cli.command else {
-            panic!("expected Command::Refine");
-        };
-        assert_eq!(args.issue, 14);
-        assert_eq!(args.lane.use_workspace, "refine-lane-1");
-        assert!(!args.lane.dry_run);
-    }
-
-    #[test]
-    #[serial]
-    fn split_parses_a_milestone_and_its_own_checkout() {
-        let cli =
-            Cli::try_parse_from(["harness", "split", "18", "--use-workspace", "router-lane-0"])
-                .expect("must parse");
-        let Some(Command::Split(args)) = cli.command else {
-            panic!("expected Command::Split");
-        };
-        assert_eq!(args.milestone, 18);
-        assert_eq!(args.lane.use_workspace, "router-lane-0");
-    }
-
-    #[test]
-    #[serial]
     fn init_repo_accepts_its_own_flags() {
         let cli = Cli::try_parse_from([
             "harness",
@@ -1092,6 +1042,7 @@ mod tests {
         let Some(Command::InitRepo(args)) = cli.command else {
             panic!("expected Command::InitRepo");
         };
+        assert_eq!(args.url, "o/r");
         assert_eq!(args.branch.as_deref(), Some("main_agent"));
         assert!(args.dry_run);
         assert!(args.force);

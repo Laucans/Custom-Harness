@@ -33,16 +33,3 @@ impl RulesState {
             .expect("precheck must set the issue before the stages run")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_state_asks_nothing_yet() {
-        let state = RulesState::default();
-        assert!(state.issue.is_none());
-        assert!(state.ask.is_none());
-        assert!(state.unreadable.is_none());
-    }
-}

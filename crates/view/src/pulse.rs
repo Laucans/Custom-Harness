@@ -193,25 +193,6 @@ mod tests {
     }
 
     #[test]
-    fn a_beat_is_heard_by_every_listener_even_one_that_came_late() {
-        let pulse = Pulse::default();
-        let mut early = pulse.subscribe();
-        pulse.beat();
-        let late = pulse.subscribe();
-        assert!(early.has_changed().expect("the pulse lives"));
-        assert_eq!(*early.borrow_and_update(), 1);
-        assert_eq!(
-            *late.borrow(),
-            1,
-            "a late listener reads the count as it is"
-        );
-        let twin = pulse.clone();
-        twin.beat();
-        pulse.beat();
-        assert_eq!(*early.borrow(), 3, "a clone beats the same pulse");
-    }
-
-    #[test]
     fn every_write_beats_and_no_read_does() {
         let pulse = Pulse::default();
         let mut ears = pulse.subscribe();

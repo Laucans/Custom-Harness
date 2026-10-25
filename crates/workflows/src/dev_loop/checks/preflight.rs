@@ -761,48 +761,36 @@ mod quota_gate {
     }
 
     #[tokio::test]
-    async fn a_window_with_room_lets_the_run_through() {
-        let said = gate(Some(&written(0.40, NOW + 3600)), false)
-            .verify(&ctx())
-            .await;
-        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
-    }
-
-    #[tokio::test]
-    async fn no_recorded_reading_lets_the_run_through() {
-        // The deadlock this avoids: only a run can write a reading.
-        let said = gate(None, false).verify(&ctx()).await;
-        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
-    }
-
-    #[tokio::test]
-    async fn an_unreadable_file_is_no_reading_rather_than_a_refusal() {
-        let said = gate(Some("{ this is not a reading }"), false)
-            .verify(&ctx())
-            .await;
-        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
-    }
-
-    #[tokio::test]
-    async fn a_window_that_has_since_reset_lets_the_run_through() {
+    async fn the_run_goes_through_on_anything_but_a_clear_refusal() {
+        let room = written(0.40, NOW + 3600);
         // Its reset time is behind us, so what it measured is gone.
         let reset = written(1.0, NOW - 1);
-        let said = gate(Some(&reset), false).verify(&ctx()).await;
-        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
-    }
-
-    #[tokio::test]
-    async fn ignore_quota_lets_the_run_through_rather_than_skipping_it() {
-        // The defect this locks out, and my previous test locked *in*: this
-        // returned `Verdict::Skip`, `Gate` stops on the first verdict that is not
-        // `Continue`, and so `--ignore-quota` skipped the four checks after it
-        // and then the entire run — exit 0, nothing done, nothing said. The old
-        // test asserted `Skip` because that was what the code did; it should have
-        // asserted what the flag means.
-        let said = gate(Some(&written(0.99, NOW + 3600)), true)
-            .verify(&ctx())
-            .await;
-        assert!(matches!(said, Ok(Verdict::Continue)), "{said:?}");
+        let spent = written(0.99, NOW + 3600);
+        // (case, recorded reading, --ignore-quota)
+        let cases = [
+            ("a window with room", Some(room.as_str()), false),
+            // The deadlock this avoids: only a run can write a reading.
+            ("no recorded reading", None, false),
+            (
+                "an unreadable file",
+                Some("{ this is not a reading }"),
+                false,
+            ),
+            ("a window that has since reset", Some(reset.as_str()), false),
+            // The defect this locks out: `--ignore-quota` returned
+            // `Verdict::Skip`, `Gate` stops on the first verdict that is not
+            // `Continue`, and so it skipped the four checks after it and then
+            // the entire run — exit 0, nothing done, nothing said.
+            (
+                "--ignore-quota on a spent window",
+                Some(spent.as_str()),
+                true,
+            ),
+        ];
+        for (case, held, ignored) in cases {
+            let said = gate(held, ignored).verify(&ctx()).await;
+            assert!(matches!(said, Ok(Verdict::Continue)), "{case}: {said:?}");
+        }
     }
 
     #[tokio::test]

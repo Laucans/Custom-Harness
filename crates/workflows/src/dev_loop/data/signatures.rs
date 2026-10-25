@@ -352,49 +352,50 @@ mod tests {
     }
 
     #[test]
-    fn a_cargo_manifest_says_rust() {
-        assert_eq!(
-            detect(&paths(&["Cargo.toml", "src/main.rs"])),
-            Ecosystem::Rust
-        );
+    fn the_shallow_manifest_says_which_ecosystem_the_checkout_is() {
+        // (case, tracked paths, ecosystem)
+        let cases = [
+            (
+                "a cargo manifest",
+                &["Cargo.toml", "src/main.rs"][..],
+                Ecosystem::Rust,
+            ),
+            (
+                "a tsconfig",
+                &["package.json", "tsconfig.json", "src/a.ts"][..],
+                Ecosystem::TypeScript,
+            ),
+            // A Rust repository may carry a `package.json` for a docs site or
+            // a commit hook; a TypeScript one never carries a `Cargo.toml`.
+            // The rarer marker is the decisive one.
+            (
+                "rust over a package.json kept for tooling",
+                &["Cargo.toml", "package.json"][..],
+                Ecosystem::Rust,
+            ),
+            // Injecting nothing puts the session exactly where it was before.
+            (
+                "an unknown stack",
+                &["main.zig", "build.zig"][..],
+                Ecosystem::Unknown,
+            ),
+            // Nothing shallow enough to say what this checkout is.
+            (
+                "a vendored manifest deep in the tree",
+                &["vendor/some/crate/Cargo.toml", "src/a.ts"][..],
+                Ecosystem::Unknown,
+            ),
+        ];
+        for (case, tracked, ecosystem) in cases {
+            assert_eq!(detect(&paths(tracked)), ecosystem, "{case}");
+        }
     }
 
     #[test]
-    fn a_tsconfig_says_typescript() {
-        assert_eq!(
-            detect(&paths(&["package.json", "tsconfig.json", "src/a.ts"])),
-            Ecosystem::TypeScript
-        );
-    }
-
-    #[test]
-    fn rust_wins_over_a_package_json_kept_for_tooling() {
-        // A Rust repository may carry a `package.json` for a docs site or a
-        // commit hook; a TypeScript one never carries a `Cargo.toml`. The rarer
-        // marker is the decisive one.
-        assert_eq!(
-            detect(&paths(&["Cargo.toml", "package.json"])),
-            Ecosystem::Rust
-        );
-    }
-
-    #[test]
-    fn an_unknown_stack_is_a_case_not_a_failure() {
-        // Injecting nothing puts the session exactly where it was before.
-        assert_eq!(
-            detect(&paths(&["main.zig", "build.zig"])),
-            Ecosystem::Unknown
-        );
+    fn each_ecosystem_indexes_its_own_suffix() {
+        assert_eq!(source_suffix(Ecosystem::Rust), ".rs");
+        assert_eq!(source_suffix(Ecosystem::TypeScript), ".ts");
         assert_eq!(source_suffix(Ecosystem::Unknown), "");
-    }
-
-    #[test]
-    fn a_vendored_manifest_deep_in_the_tree_does_not_decide() {
-        assert_eq!(
-            detect(&paths(&["vendor/some/crate/Cargo.toml", "src/a.ts"])),
-            Ecosystem::Unknown,
-            "nothing shallow enough to say what this checkout is"
-        );
     }
 
     #[test]
@@ -661,7 +662,12 @@ mod tests {
 
     #[test]
     fn an_empty_index_carries_nothing_even_when_files_are_named() {
+        // `--no-signatures` passes `Index::default()` rather than threading a
+        // boolean through four layers: everything downstream must then behave
+        // exactly as it did before the index existed.
         let index = Index::default();
+        assert!(index.is_empty(), "expected nothing");
+        assert_eq!(index.ecosystem, Ecosystem::Unknown);
         assert_eq!(carried(&index, "edit src/a.rs", BUDGET), "");
     }
 
@@ -695,43 +701,9 @@ mod tests {
 
 #[cfg(test)]
 mod real_checkouts {
-    //! Detection against the two checkouts the harness actually drives: its own
-    //! repository (Rust) and the target (TypeScript). The lists are the shallow
-    //! part of each `git ls-files`, so a change of layout that fooled detection
-    //! would fail here rather than in a paid run.
+    //! The selection against a task body as the target's plans actually write
+    //! it, rather than a synthetic one.
     use super::*;
-
-    #[test]
-    fn the_harness_own_repository_is_recognised_as_rust() {
-        let tracked: Vec<String> = [
-            "Cargo.toml",
-            "CLAUDE.md",
-            "rust-toolchain.toml",
-            "crates/core/Cargo.toml",
-            "crates/core/src/lib.rs",
-        ]
-        .iter()
-        .map(|p| (*p).to_string())
-        .collect();
-        assert_eq!(detect(&tracked), Ecosystem::Rust);
-        assert_eq!(source_suffix(Ecosystem::Rust), ".rs");
-    }
-
-    #[test]
-    fn the_target_repository_is_recognised_as_typescript() {
-        let tracked: Vec<String> = [
-            ".github/workflows/ci.yml",
-            "package.json",
-            "tsconfig.json",
-            "vitest.config.mts",
-            "src/core/place.ts",
-        ]
-        .iter()
-        .map(|p| (*p).to_string())
-        .collect();
-        assert_eq!(detect(&tracked), Ecosystem::TypeScript);
-        assert_eq!(source_suffix(Ecosystem::TypeScript), ".ts");
-    }
 
     #[test]
     fn a_real_task_body_selects_the_files_its_plan_names() {
@@ -759,30 +731,5 @@ mod real_checkouts {
         );
         // The two files the plan never mentions cost nothing.
         assert!(!found.contains(&"src/plugin/main.ts".to_string()));
-    }
-}
-
-#[cfg(test)]
-mod turned_off {
-    //! That an empty index carries nothing, which is what `--no-signatures`
-    //! relies on: the flag builds no index, and everything downstream must then
-    //! behave exactly as it did before the index existed.
-    use super::*;
-
-    #[test]
-    fn the_default_index_is_empty_and_carries_nothing() {
-        // `--no-signatures` passes `Index::default()` rather than threading a
-        // boolean through four layers. This is the test that makes that safe.
-        let off = Index::default();
-        assert!(off.is_empty(), "expected nothing");
-        assert_eq!(off.ecosystem, Ecosystem::Unknown);
-        assert_eq!(
-            carried(
-                &off,
-                "edit src/core/place.ts and src/plugin/main.ts",
-                BUDGET
-            ),
-            ""
-        );
     }
 }

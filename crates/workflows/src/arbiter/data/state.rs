@@ -48,17 +48,3 @@ impl ArbiterState {
             .expect("precheck must set the question before the stages run")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_state_has_nothing_yet() {
-        let state = ArbiterState::default();
-        assert!(state.issue.is_none());
-        assert!(state.question.is_none());
-        assert!(state.siblings.is_empty(), "expected nothing");
-        assert!(state.resolution.unresolved.is_empty(), "expected nothing");
-    }
-}

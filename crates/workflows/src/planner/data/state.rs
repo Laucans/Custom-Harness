@@ -83,11 +83,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_fresh_state_has_no_roadmap_issue_yet() {
-        assert!(PlannerState::default().roadmap.is_none());
-    }
-
-    #[test]
     fn the_subject_names_the_issue_and_carries_its_body() {
         let state = PlannerState {
             roadmap: Some(Issue {

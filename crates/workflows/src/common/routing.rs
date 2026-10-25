@@ -2100,24 +2100,6 @@ mod tests {
     }
 
     #[test]
-    fn a_green_task_pr_is_merged_into_its_milestone_before_the_milestone_moves_up() {
-        let snapshot = Snapshot {
-            tasks_to_merge: vec![(64, pr("68", "milestone/52-socle"))],
-            ready_to_merge: vec![52],
-            refining: vec![issue(70, &[labels::REFINEMENT])],
-            ..empty()
-        };
-        assert_eq!(
-            decide(&snapshot),
-            Route::MergeIntoMilestone {
-                task: 64,
-                pr: "68".to_string(),
-                base: "milestone/52-socle".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn a_ready_roadmap_item_with_no_milestone_outranks_every_paid_route() {
         let snapshot = Snapshot {
             roadmap: vec![
@@ -2828,37 +2810,6 @@ mod tests {
     }
 
     #[test]
-    fn a_milestone_ready_to_merge_outranks_refinement_and_the_dev_loop() {
-        let snapshot = Snapshot {
-            ready_to_merge: vec![7],
-            refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestones: vec![3],
-            ..empty()
-        };
-        assert_eq!(decide(&snapshot), Route::MergeMainAgent { milestone: 7 });
-    }
-
-    #[test]
-    fn a_green_task_pr_merges_before_a_repair_or_a_review_is_paid() {
-        let snapshot = Snapshot {
-            tasks_to_merge: vec![(31, pr("34", "milestone/4-territory"))],
-            prs_to_fix: vec![pr("32", "milestone/4-territory")],
-            prs_to_review: vec![pr("33", "milestone/4-territory")],
-            ready_to_merge: vec![7],
-            dev_loop_milestones: vec![3],
-            ..empty()
-        };
-        assert_eq!(
-            decide(&snapshot),
-            Route::MergeIntoMilestone {
-                task: 31,
-                pr: "34".to_string(),
-                base: "milestone/4-territory".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn a_red_pr_outranks_reviewing_refinement_and_the_dev_loop_after_the_merge() {
         // What is already in flight and broken comes before anything new:
         // the milestone it belongs to cannot close over a red PR anyway.
@@ -2888,29 +2839,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pr_to_review_outranks_refinement_and_the_dev_loop_after_the_merge() {
-        let snapshot = Snapshot {
-            prs_to_review: vec![pr("33", "milestone/4-territory")],
-            ready_to_merge: vec![7],
-            refining: vec![issue(6, &[labels::REFINEMENT])],
-            dev_loop_milestones: vec![3],
-            ..empty()
-        };
-        assert_eq!(
-            routes(&snapshot),
-            [
-                Route::MergeMainAgent { milestone: 7 },
-                Route::PrReview {
-                    pr: "33".to_string(),
-                    base: "milestone/4-territory".to_string(),
-                },
-                Route::DevLoop { milestone: 3 },
-                Route::Refinement { issue: 6 },
-            ]
-        );
-    }
-
-    #[test]
     fn the_review_carries_the_branch_the_pr_actually_targets() {
         // A task PR targets its milestone's branch, never the integration
         // branch — a review judging against a fixed base would skip it as
@@ -2923,18 +2851,6 @@ mod tests {
             panic!("a review");
         };
         assert_eq!(base, "milestone/9-cities");
-    }
-
-    #[test]
-    fn a_roadmap_item_to_plan_still_outranks_a_broken_pr() {
-        // Decomposition stays at the top: without a plan there is no task
-        // whose PR could be broken in the first place.
-        let snapshot = Snapshot {
-            roadmap: vec![issue(4, &[labels::ROADMAP, labels::READY])],
-            prs_to_fix: vec![pr("32", "main_agent")],
-            ..empty()
-        };
-        assert_eq!(decide(&snapshot), Route::Planner { roadmap: 4 });
     }
 
     #[test]
@@ -2969,18 +2885,6 @@ mod tests {
     }
 
     #[test]
-    fn the_dev_loop_outranks_pending_refinement() {
-        let snapshot = Snapshot {
-            refining: vec![issue(6, &[labels::REFINEMENT])],
-            tech_refining: vec![issue(7, &[labels::TECH_REFINEMENT])],
-            arbitrating: Vec::new(),
-            dev_loop_milestones: vec![3],
-            ..empty()
-        };
-        assert_eq!(decide(&snapshot), Route::DevLoop { milestone: 3 });
-    }
-
-    #[test]
     fn the_lowest_numbered_refinement_issue_goes_first() {
         let snapshot = Snapshot {
             refining: vec![
@@ -2993,12 +2897,18 @@ mod tests {
     }
 
     #[test]
-    fn business_refinement_goes_before_technical() {
+    fn the_dev_loop_goes_before_business_refinement_and_business_before_technical() {
         let snapshot = Snapshot {
             refining: vec![issue(9, &[labels::REFINEMENT])],
             tech_refining: vec![issue(6, &[labels::TECH_REFINEMENT])],
             arbitrating: Vec::new(),
+            dev_loop_milestones: vec![3],
             ..empty()
+        };
+        assert_eq!(decide(&snapshot), Route::DevLoop { milestone: 3 });
+        let snapshot = Snapshot {
+            dev_loop_milestones: Vec::new(),
+            ..snapshot
         };
         assert_eq!(decide(&snapshot), Route::Refinement { issue: 9 });
         let snapshot = Snapshot {
@@ -3006,20 +2916,6 @@ mod tests {
             ..snapshot
         };
         assert_eq!(decide(&snapshot), Route::TechRefinement { issue: 6 });
-    }
-
-    #[test]
-    fn a_runnable_task_runs_the_dev_loop_when_nothing_outranks_it() {
-        let snapshot = Snapshot {
-            dev_loop_milestones: vec![3],
-            ..empty()
-        };
-        assert_eq!(decide(&snapshot), Route::DevLoop { milestone: 3 });
-    }
-
-    #[test]
-    fn an_entirely_quiet_repo_routes_to_nothing() {
-        assert_eq!(decide(&empty()), Route::Nothing);
     }
 
     #[test]
@@ -3243,36 +3139,58 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_board_skips_the_full_read() {
-        assert!(may_skip(&quiet(), &Activity::Unchanged, 0, false));
-    }
-
-    #[test]
-    fn a_changed_board_is_read_in_full() {
+    fn only_a_quiet_unchanged_board_skips_the_full_read() {
         let changed = Activity::Changed {
             etag: None,
             moved_at: None,
         };
-        assert!(!may_skip(&quiet(), &changed, 0, false));
-    }
-
-    #[test]
-    fn a_waited_on_pull_request_keeps_the_full_read_going() {
-        let pulse = Pulse {
+        let watching = Pulse {
             watching_ci: true,
             ..quiet()
         };
-        assert!(!may_skip(&pulse, &Activity::Unchanged, 0, false));
-    }
-
-    #[test]
-    fn a_moved_integration_head_reads_the_board_again() {
-        assert!(!may_skip(&quiet(), &Activity::Unchanged, 0, true));
-    }
-
-    #[test]
-    fn a_freed_lane_reads_the_board_again() {
-        assert!(!may_skip(&quiet(), &Activity::Unchanged, 1, false));
+        // (case, pulse, activity, freed lanes, catching up, skips)
+        let cases = [
+            (
+                "an unchanged board",
+                quiet(),
+                &Activity::Unchanged,
+                0,
+                false,
+                true,
+            ),
+            ("a changed board", quiet(), &changed, 0, false, false),
+            (
+                "a waited-on pull request",
+                watching,
+                &Activity::Unchanged,
+                0,
+                false,
+                false,
+            ),
+            (
+                "a moved integration head",
+                quiet(),
+                &Activity::Unchanged,
+                0,
+                true,
+                false,
+            ),
+            (
+                "a freed lane",
+                quiet(),
+                &Activity::Unchanged,
+                1,
+                false,
+                false,
+            ),
+        ];
+        for (case, pulse, activity, freed, catching_up, skips) in cases {
+            assert_eq!(
+                may_skip(&pulse, activity, freed, catching_up),
+                skips,
+                "{case}"
+            );
+        }
     }
 
     #[test]

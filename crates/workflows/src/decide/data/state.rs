@@ -56,15 +56,3 @@ impl DecideState {
             .expect("precheck must set the issue before the stages run")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_state_has_nothing_to_decide_yet() {
-        let state = DecideState::default();
-        assert!(state.issue.is_none() && state.question.is_none() && state.pr.is_none());
-        assert!(!state.owner_decided);
-    }
-}

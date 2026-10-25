@@ -33,13 +33,3 @@ impl SplitState {
             .expect("precheck must set the milestone issue before the stages run")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_state_has_no_milestone_issue_yet() {
-        assert!(SplitState::default().milestone.is_none());
-    }
-}

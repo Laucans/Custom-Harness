@@ -893,24 +893,23 @@ mod tests {
     // --- proof of delivery -----------------------------------
 
     #[test]
-    fn closes_needs_the_keyword_on_its_own_line() {
-        assert!(closes("du texte\nCloses #42\nencore", 42));
-        assert!(closes("fixes #42", 42));
-        assert!(closes("  resolves\t#42  ", 42));
-    }
-
-    #[test]
-    fn a_mention_inside_a_sentence_does_not_count_as_closing() {
-        // Stricter than GitHub, and rightly so: reading wider would close an
-        // issue on a sentence mentioning it.
-        assert!(!closes("this PR closes #42 among other things", 42));
-        assert!(!closes("see closes #42 below", 42));
-    }
-
-    #[test]
-    fn closing_another_issue_is_not_closing_this_one() {
-        assert!(!closes("Closes #420", 42));
-        assert!(!closes("Closes #4", 42));
+    fn closes_needs_the_keyword_on_its_own_line_and_this_number() {
+        // (body, closes #42)
+        let cases = [
+            ("du texte\nCloses #42\nencore", true),
+            ("fixes #42", true),
+            ("  resolves\t#42  ", true),
+            // Stricter than GitHub, and rightly so: reading wider would close
+            // an issue on a sentence mentioning it.
+            ("this PR closes #42 among other things", false),
+            ("see closes #42 below", false),
+            // Closing another issue is not closing this one.
+            ("Closes #420", false),
+            ("Closes #4", false),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(closes(body, 42), expected, "{body:?}");
+        }
     }
 
     #[test]

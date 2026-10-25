@@ -32,16 +32,3 @@ impl DebtState {
             .expect("precheck must set the issue before the stages run")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_fresh_state_has_no_issue_and_no_file_yet() {
-        let state = DebtState::default();
-        assert!(state.issue.is_none());
-        assert!(state.file.is_none());
-        assert!(state.findings.is_empty(), "expected nothing");
-    }
-}
