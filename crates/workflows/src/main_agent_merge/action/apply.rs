@@ -9,6 +9,7 @@ use crate::main_agent_merge::data::audit;
 use crate::main_agent_merge::data::merge_train;
 use crate::main_agent_merge::data::report::Outcome as MergeOutcome;
 use crate::main_agent_merge::ports::Ports;
+use crate::milestone_merge::Escalation;
 
 /// Attempts to merge one milestone.
 ///
@@ -162,11 +163,12 @@ async fn red(
             checks,
         });
     }
-    let asked = past_its_repairs(ports, config, milestone, pr, &comments).await?;
+    let done = past_its_repairs(ports, config, milestone, pr, &comments).await?;
     Ok(MergeOutcome::Escalated {
         pr: pr.reference(),
         checks,
-        asked,
+        asked: done.asked(),
+        resumed: resumed_on(done),
     })
 }
 
@@ -189,7 +191,7 @@ async fn conflicting(
             why: halt.reason().to_string(),
         });
     }
-    let asked = past_its_repairs(ports, config, milestone, pr, &comments).await?;
+    let done = past_its_repairs(ports, config, milestone, pr, &comments).await?;
     Ok(MergeOutcome::Escalated {
         pr: pr.reference(),
         checks: vec![format!(
@@ -197,20 +199,31 @@ async fn conflicting(
             config.base_branch,
             halt.reason()
         )],
-        asked,
+        asked: done.asked(),
+        resumed: resumed_on(done),
     })
+}
+
+/// The issues a landing PR was resumed on, when [`past_its_repairs`]
+/// resumed it.
+fn resumed_on(done: Escalation) -> Vec<u64> {
+    match done {
+        Escalation::Resumed(on) => on,
+        _ => Vec::new(),
+    }
 }
 
 /// Asks the decision on a landing PR past its repairs — never while a lane
 /// repairs it or decides on its milestone, nor while it waits
-/// (`common::contest::held`); answers whether it asked now.
+/// (`common::contest::held`); answers what it did
+/// (`milestone_merge::escalate`).
 async fn past_its_repairs(
     ports: &Ports,
     config: &Config,
     milestone: &harness_core::domain::Issue,
     pr: &harness_core::domain::Pr,
     comments: &str,
-) -> Outcome<bool> {
+) -> Outcome<Escalation> {
     // A decision taken on the milestone takes its label off before its
     // session: asked again, it is decided twice (`ForgeDesMondes`' #542).
     let repairing = config.repairing.contains(&milestone.number)
@@ -218,9 +231,17 @@ async fn past_its_repairs(
             .num
             .parse::<u64>()
             .is_ok_and(|n| config.repairing.contains(&n));
-    Ok(!repairing
-        && !contest::held(ports.gh.as_ref(), pr, comments).await?
-        && crate::milestone_merge::escalate(ports.gh.as_ref(), milestone, pr, comments).await?)
+    if repairing || contest::held(ports.gh.as_ref(), pr, comments).await? {
+        return Ok(Escalation::Not);
+    }
+    crate::milestone_merge::escalate(
+        ports.gh.as_ref(),
+        milestone,
+        pr,
+        comments,
+        &config.base_branch,
+    )
+    .await
 }
 
 /// The plan's graph on the base branch, when the plan wrote one.
@@ -580,6 +601,7 @@ mod tests {
                 pr: "#99".to_string(),
                 checks: vec!["rules-hold".to_string()],
                 asked: true,
+                resumed: Vec::new(),
             }
         );
         let writes = gh.writes();
@@ -633,6 +655,30 @@ mod tests {
             outcome,
             MergeOutcome::Escalated { asked: false, .. }
         ));
+        // A decided wait on #27, landed since: resumed, and said so.
+        let mut gh = red_landing(&format!(
+            "{used}{}",
+            crate::common::contest::waits_on_marker(27)
+        ));
+        gh.issues
+            .push(issue(27, "closed", "Media", &[labels::MILESTONE]));
+        let gh = Rc::new(gh);
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(
+            outcome,
+            MergeOutcome::Escalated {
+                pr: "#99".to_string(),
+                checks: vec!["rules-hold".to_string()],
+                asked: false,
+                resumed: vec![27],
+            }
+        );
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(99, labels::PR_FIX.to_string()))
+        );
     }
 
     #[tokio::test]
@@ -808,7 +854,7 @@ mod tests {
             .await
             .expect("a verdict");
         assert!(
-            matches!(&outcome, MergeOutcome::Escalated { pr, checks, asked: true }
+            matches!(&outcome, MergeOutcome::Escalated { pr, checks, asked: true, .. }
                 if pr == "#99" && checks[0].starts_with("conflicts with main_agent")),
             "{outcome:?}"
         );

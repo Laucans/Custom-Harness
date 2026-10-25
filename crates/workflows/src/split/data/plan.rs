@@ -138,10 +138,12 @@ pub fn parse(text: &str) -> Result<Vec<TaskItem>, ParseError> {
 /// that no criterion of it cites; and what would misplace it in the
 /// architecture: a Capability or `DataCapability` whose `system` is not its
 /// id's namespace (`ForgeDesMondes`' #51 declared `dataguard`, the owner, for
-/// `campaign.saveEntity`), a Micro-UI or screen that names nothing it
-/// `produces`, two slices producing the same id (#208 and #209 both built
-/// `Battlemap`: one task is one Micro-UI). Empty when every slice is whole; a
-/// slice for a human is not judged — a human reads it.
+/// `campaign.saveEntity`), a slice of a unit an id names (all but
+/// `infrastructure` and `tooling`) that names nothing it `produces`, even
+/// one that evolves a unit already there, two slices producing the same id
+/// (#208 and #209 both built `Battlemap`: one task is one Micro-UI). Empty
+/// when every slice is whole; a slice for a human is not judged — a human
+/// reads it.
 #[must_use]
 pub fn spec_gaps(items: &[TaskItem]) -> Vec<String> {
     let mut gaps = Vec::new();
@@ -286,12 +288,15 @@ fn placement_gaps(named: &str, item: &TaskItem) -> Vec<String> {
             }
         }
     }
-    if matches!(declaration.unit, Unit::MicroUi | Unit::Composition)
-        && declaration.produces.is_empty()
-    {
+    // Every unit a manifest id names says which: the checkout is narrowed to
+    // the closure of what it produces, and one with none left the unit's
+    // own folder out (ForgeDesMondes' #574, evolving
+    // `campaign.exportCampaign`, and #507: halted on their own files).
+    if declaration.unit.has_an_id() && declaration.produces.is_empty() {
         gaps.push(format!(
-            "{named} is a {} that names nothing it `produces`: the Micro-UI (or screen) it builds, \
-             as the mock-up names it",
+            "{named} is a {} that names nothing it `produces`: the id it builds — or the existing \
+             unit it evolves — as its manifest names it (a Micro-UI or a screen as the mock-up \
+             names it)",
             declaration.unit.key()
         ));
     }
@@ -552,6 +557,44 @@ mod tests {
         let gaps = spec_gaps(&doubled);
         assert_eq!(gaps.len(), 1, "{gaps:?}");
         assert!(gaps[0].contains("names a migration"), "{}", gaps[0]);
+    }
+
+    #[test]
+    fn every_unit_an_id_names_says_what_it_produces_even_one_it_evolves() {
+        // ForgeDesMondes #574: a split slice evolving the existing
+        // `campaign.exportCampaign`, no `produces` — its round halted on
+        // its own folder, which the narrowed checkout had left out.
+        let evolving = |produces: &str| {
+            slice(&format!(
+                r#"{{"title":"campaign.exportCampaign carries media, sounds and sessions","brief":"b","branch":"feat/export-media","unit":"data-capability","system":"campaign","effect":"update","touches":["Campaign.archive"],"aggregate":"Campaign"{produces},{WHOLE}}}"#
+            ))
+        };
+        let gaps = spec_gaps(&[evolving("")]);
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert!(
+            gaps[0].contains("is a data-capability that names nothing it `produces`")
+                && gaps[0].contains("the existing unit it evolves"),
+            "{}",
+            gaps[0]
+        );
+        assert_eq!(
+            spec_gaps(&[evolving(r#","produces":["campaign.exportCampaign"]"#)]),
+            [] as [String; 0]
+        );
+        // Each kind an id names; the plumbing and the tooling are named by
+        // their branch.
+        for unit in Unit::ALL {
+            let bare = slice(&format!(
+                r#"{{"title":"T","brief":"b","branch":"feat/t","unit":"{}","system":"campaign",{WHOLE}}}"#,
+                unit.key()
+            ));
+            assert_eq!(
+                spec_gaps(&[bare]).len(),
+                usize::from(unit.has_an_id()),
+                "{}",
+                unit.key()
+            );
+        }
     }
 
     #[test]

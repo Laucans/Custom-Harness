@@ -79,6 +79,16 @@ impl Unit {
         }
     }
 
+    /// True for the units a manifest id names — every unit but the
+    /// plumbing and the tooling, which their branch names: a task that
+    /// builds or evolves one must say which in `produces`, or the checkout
+    /// narrowed to its closure leaves out the unit's own folder
+    /// (`ForgeDesMondes`' #574 and #507: halted on their own files).
+    #[must_use]
+    pub const fn has_an_id(self) -> bool {
+        !matches!(self, Self::Infrastructure | Self::Tooling)
+    }
+
     /// True for the units the stack builds in Rust, under `crates/` — all
     /// but a Micro-UI, a screen composition and a Concept's document.
     #[must_use]
@@ -467,6 +477,23 @@ mod tests {
         // What an aggregate's task used to be cut into still reads as one.
         assert_eq!(Unit::parse("invariant"), Some(Unit::Aggregate));
         assert_eq!(Unit::parse("Migration"), Some(Unit::Aggregate));
+    }
+
+    #[test]
+    fn every_unit_but_the_plumbing_and_the_tooling_is_named_by_an_id() {
+        let named: Vec<Unit> = Unit::ALL.into_iter().filter(|u| u.has_an_id()).collect();
+        assert_eq!(
+            named,
+            [
+                Unit::Capability,
+                Unit::MicroUi,
+                Unit::Concept,
+                Unit::DataCapability,
+                Unit::PersistedQuery,
+                Unit::Composition,
+                Unit::Aggregate,
+            ]
+        );
     }
 
     #[test]

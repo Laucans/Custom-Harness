@@ -34,6 +34,10 @@ pub struct Issue {
     /// Closed as not planned (GitHub's `state_reason`): work given up or
     /// covered elsewhere, which no merged PR delivers.
     pub not_planned: bool,
+    /// The `harness:milestone` issue whose native milestone this issue is
+    /// on (`<!-- harness-milestone: #<n> -->` in the native's description,
+    /// else its title's `#<n>`): where a task was built. `None` off any.
+    pub milestone: Option<u64>,
 }
 
 impl Issue {

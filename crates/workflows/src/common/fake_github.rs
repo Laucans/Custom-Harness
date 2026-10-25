@@ -166,6 +166,9 @@ pub struct FakeGitHub {
     /// When filled, both native milestone writes refuse with this halt — a
     /// token without the right, a GitHub outage.
     pub natives_broken: Option<Halt>,
+    /// The issues and PRs a comment on fails for, by number — written
+    /// nowhere, as GitHub refusing it or the process stopped mid-write.
+    pub refused_comments: Vec<u64>,
 }
 
 impl FakeGitHub {
@@ -314,6 +317,9 @@ impl GitHub for FakeGitHub {
     }
 
     async fn post_issue_comment(&self, number: u64, body: &str) -> Outcome<()> {
+        if self.refused_comments.contains(&number) {
+            return Err(Halt::Failed(format!("comment on #{number} refused")));
+        }
         self.wrote
             .borrow_mut()
             .push(Wrote::Comment(number, body.to_string()));

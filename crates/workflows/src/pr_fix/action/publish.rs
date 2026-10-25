@@ -168,18 +168,21 @@ impl Action<FixState> for RaiseContract {
                     ),
                 )
                 .await?;
-            let asked = crate::milestone_merge::escalate(
+            let done = crate::milestone_merge::escalate(
                 self.gh.as_ref(),
                 &owner_issue,
                 &pr,
                 &ctx.state.comments,
+                &self.integration,
             )
             .await?;
+            let became = done.outcome(owner.issue);
+            if let Some(line) = done.resumed_line(&pr) {
+                ctx.traces.say(&line);
+            }
             ctx.traces.warn(&format!(
-                "{}: stopped on `{id}` past its {waits} wait(s) — no new wait, #{} escalated{}",
+                "{}: stopped on `{id}` past its {waits} wait(s) — no new wait, {became}",
                 pr.reference(),
-                owner.issue,
-                if asked { "" } else { " (asked already)" }
             ));
             return Ok(Verdict::Continue);
         }

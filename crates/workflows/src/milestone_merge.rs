@@ -80,6 +80,10 @@ pub fn candidates<'a>(board: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issue, &'a
 /// (`ForgeDesMondes`' #542, PR #547, 2026-10-25: two "repair" verdicts
 /// three minutes apart).
 ///
+/// `integration` is the integration branch, where an issue a decided wait
+/// named lands when it was built under another milestone; `log` journals
+/// a PR resumed on its settled waits ([`journal`]).
+///
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
 /// or mergeability, or from the escalation's writes.
@@ -88,6 +92,8 @@ pub async fn ready_to_merge<'a>(
     board: &'a [Issue],
     open: &'a [Pr],
     held: &[u64],
+    integration: &str,
+    log: &Logbook,
 ) -> Outcome<(Option<(&'a Issue, &'a Pr)>, Vec<(u64, String)>)> {
     let mut escalated = Vec::new();
     for (task, pr) in candidates(board, open) {
@@ -103,7 +109,11 @@ pub async fn ready_to_merge<'a>(
         match review::status(&comments) {
             review::Status::Clean => {}
             status if status.exhausted() => {
-                if escalate(gh, task, pr, &comments).await? {
+                if journal(
+                    log,
+                    pr,
+                    &escalate(gh, task, pr, &comments, integration).await?,
+                ) {
                     escalated.push((task.number, pr.reference()));
                 }
                 continue;
@@ -112,7 +122,11 @@ pub async fn ready_to_merge<'a>(
         }
         if gh.pr_mergeable(&pr.num).await? == Some(false) {
             if review::repairs(&comments) >= review::MAX_FIXES
-                && escalate(gh, task, pr, &comments).await?
+                && journal(
+                    log,
+                    pr,
+                    &escalate(gh, task, pr, &comments, integration).await?,
+                )
             {
                 escalated.push((task.number, pr.reference()));
             }
@@ -124,7 +138,11 @@ pub async fn ready_to_merge<'a>(
             // the repairs did not settle.
             if review::repairs(&comments) >= review::MAX_FIXES
                 && !gh.pr_failing_checks(&pr.num).await?.is_empty()
-                && escalate(gh, task, pr, &comments).await?
+                && journal(
+                    log,
+                    pr,
+                    &escalate(gh, task, pr, &comments, integration).await?,
+                )
             {
                 escalated.push((task.number, pr.reference()));
             }
@@ -148,7 +166,8 @@ pub async fn ready_to_merge<'a>(
 /// The caller passes `to_fix` without the PRs a lane repairs now and those
 /// that wait (`contest::not_waiting`): neither is escalated. Nor is one
 /// whose task a lane holds (`held`, the lanes' keys): a decision taken on
-/// it is not asked again ([`ready_to_merge`]).
+/// it is not asked again ([`ready_to_merge`]). `integration` and `log` as
+/// [`ready_to_merge`] takes them.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from a read of a PR, its comments or its
@@ -158,6 +177,7 @@ pub async fn exhausted_repairs(
     to_fix: &[Pr],
     to_review: &[Pr],
     held: &[u64],
+    integration: &str,
     log: &Logbook,
 ) -> Outcome<Vec<(u64, String)>> {
     let mut escalated = Vec::new();
@@ -191,7 +211,11 @@ pub async fn exhausted_repairs(
             continue;
         }
         let owner = gh.issue(task).await?;
-        if escalate(gh, &owner, pr, &comments).await? {
+        if journal(
+            log,
+            pr,
+            &escalate(gh, &owner, pr, &comments, integration).await?,
+        ) {
             escalated.push((task, pr.reference()));
         }
     }
@@ -431,23 +455,48 @@ const REVIEW_DECISIONS: u32 = 2;
 /// cut the task; a PR into the integration branch is never merged nor cut
 /// by a decision) and tells the human what it decided.
 ///
-/// A decided `wait` is never a round: the question is asked again at the
-/// same round once the wait settles. Past `REVIEW_DECISIONS` rounds, or
-/// [`contest::MAX_WAITS`] decided waits on the PR (`comments`, its
-/// comments as read), the PR is a human's, told what was decided — the
-/// repairs and waits counted from the PR's own markers, and the last
-/// decision quoted. **An owner's answer to the question is never asked
-/// over** (`ForgeDesMondes`' #157, 2026-10-20: the owner answered, `decide`
-/// paid nothing, and "still blocked after 2 repairs" posed the label again
-/// nine times in 1 h 40): the PR is the owner's until the answer is taken
-/// off.
+/// A decided `wait` is never a round, and never what hands the PR to a
+/// human while it can still settle ([`waits_settle`], `ForgeDesMondes`'
+/// #569 and #580, 2026-10-25: both sent to a human on the waits' cap
+/// minutes before what they waited on landed). Each issue a decided wait
+/// named is read against the PR's base (`contest::landed_on_base`, with
+/// `integration`, the integration branch): one whose work has not reached
+/// it — still open, or landed under another milestone that has not, or
+/// whose base has not caught up — asks nothing, the wait stands
+/// ([`Escalation::Waits`]); once every one landed there (closed or
+/// `harness:waiting-merge`), the PR is resumed instead
+/// (`contest::resume_decided`: its repairs counted anew, one repair
+/// asked, [`Escalation::Resumed`]), and the question is asked again at the
+/// same round only if those repairs fail too. A wait that cannot settle by
+/// itself — on an issue a person holds (`contest::wait_stuck`), one cut
+/// (`contest::was_cut`: closed as not planned or by a decision to cut, or
+/// built under a milestone that was), or one built under a milestone that
+/// waits on the PR's own — hands the PR to a human at once, told which.
+/// Past `REVIEW_DECISIONS` rounds, or [`contest::MAX_WAITS`] decided waits
+/// on the PR (`comments`, its comments as read) every one of which landed,
+/// the PR is a human's too, told why and what was decided — the repairs
+/// and waits counted from the PR's own markers, and the last decision
+/// quoted. **An owner's answer to the question is never asked over**
+/// (`ForgeDesMondes`' #157, 2026-10-20: the owner answered, `decide` paid
+/// nothing, and "still blocked after 2 repairs" posed the label again nine
+/// times in 1 h 40): the PR is the owner's until the answer is taken off.
+///
+/// Answers what it did ([`Escalation`]): the callers journal a resume
+/// ([`journal`]), which happens here and nowhere else.
 ///
 /// # Errors
-/// [`harness_core::domain::Halt`] from the label or the comment write.
-pub async fn escalate(gh: &dyn GitHub, owner: &Issue, pr: &Pr, comments: &str) -> Outcome<bool> {
+/// [`harness_core::domain::Halt`] from a read of an issue a wait named or
+/// its milestone, or from the label or the comment write.
+pub async fn escalate(
+    gh: &dyn GitHub,
+    owner: &Issue,
+    pr: &Pr,
+    comments: &str,
+    integration: &str,
+) -> Outcome<Escalation> {
     let task = owner;
     if task.has(labels::NEEDS_DECISION) || task.has(labels::HUMAN) {
-        return Ok(false);
+        return Ok(Escalation::Not);
     }
     let why = format!(
         "PR {} still does not merge after {} repair attempts — its review blocks \
@@ -475,8 +524,14 @@ pub async fn escalate(gh: &dyn GitHub, owner: &Issue, pr: &Pr, comments: &str) -
         .as_ref()
         .is_some_and(crate::common::decision::Question::decided_by_owner)
     {
-        return Ok(false);
+        return Ok(Escalation::Not);
     }
+    let lost = match waits_settle(gh, pr, comments, integration).await? {
+        Settle::Stands(on) => return Ok(Escalation::Waits(on)),
+        Settle::Resumed(on) => return Ok(Escalation::Resumed(on)),
+        Settle::Lost(because) => Some(because),
+        Settle::Nothing => None,
+    };
     let last_verdict = asked.as_ref().and_then(|q| q.verdict.clone());
     // A wait decided is not a repair bought (ForgeDesMondes' #486,
     // 2026-10-24: two "wait on #517" verdicts read as two rounds, and a
@@ -496,21 +551,28 @@ pub async fn escalate(gh: &dyn GitHub, owner: &Issue, pr: &Pr, comments: &str) -
     // `REVIEW_DECISIONS` of them, the PR is a human's, not a third paid
     // cycle (ForgeDesMondes' #312, 2026-10-20: repair, decide, repair,
     // decide) — and so is one the harness keeps deciding to wait on.
-    if round > REVIEW_DECISIONS || waits >= contest::MAX_WAITS {
+    if lost.is_some() || round > REVIEW_DECISIONS || waits >= contest::MAX_WAITS {
         let repairs = comments.matches(review::DECIDED_MARKER).count();
+        let because = match lost {
+            Some(because) => because,
+            None if waits >= contest::MAX_WAITS => "Every issue its waits named has landed, and \
+                 the repairs since still fail."
+                .to_string(),
+            None => "The repairs it decided did not settle it.".to_string(),
+        };
         gh.post_issue_comment(
             task.number,
             &format!(
-                "{why} The harness decided {repairs} repair(s) and {waits} wait(s) on it (last \
-                 decision: {}); it stops spending on it. A human decides: repair it by hand, \
-                 merge it as it is, or cut the task — then remove `{}`.",
+                "{why} {because} The harness decided {repairs} repair(s) and {waits} wait(s) on \
+                 it (last decision: {}); it stops spending on it. A human decides: repair it by \
+                 hand, merge it as it is, or cut the task — then remove `{}`.",
                 last_verdict.as_deref().unwrap_or("none"),
                 labels::HUMAN
             ),
         )
         .await?;
         gh.add_label(task.number, labels::HUMAN).await?;
-        return Ok(true);
+        return Ok(Escalation::Asked);
     }
     let question = crate::common::decision::Question {
         kind: Some("review".to_string()),
@@ -537,7 +599,156 @@ pub async fn escalate(gh: &dyn GitHub, owner: &Issue, pr: &Pr, comments: &str) -
     )
     .await?;
     gh.add_label(task.number, labels::NEEDS_DECISION).await?;
-    Ok(true)
+    Ok(Escalation::Asked)
+}
+
+/// What [`escalate`] did with a PR past its repairs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Escalation {
+    /// A decision, or a human, was asked now.
+    Asked,
+    /// Every issue its decided waits named landed on its base: the PR was
+    /// resumed on them now, one repair asked.
+    Resumed(Vec<u64>),
+    /// A decided wait on this issue still stands: nothing asked.
+    Waits(u64),
+    /// Nothing asked: asked already, a human's, or the owner's answer
+    /// stands.
+    Not,
+}
+
+impl Escalation {
+    /// Whether a decision or a human was asked now.
+    #[must_use]
+    pub const fn asked(&self) -> bool {
+        matches!(self, Self::Asked)
+    }
+
+    /// What became of the escalation of a PR owned by `owner`, said for
+    /// the journal.
+    #[must_use]
+    pub fn outcome(&self, owner: u64) -> String {
+        match self {
+            Self::Asked => format!("#{owner} escalated"),
+            Self::Resumed(_) => "resumed on its settled waits".to_string(),
+            Self::Waits(on) => format!("its decided wait on #{on} stands"),
+            Self::Not => format!("#{owner} asked already"),
+        }
+    }
+
+    /// The journal line of a resume on `pr`, `None` for anything else.
+    #[must_use]
+    pub fn resumed_line(&self, pr: &Pr) -> Option<String> {
+        let Self::Resumed(on) = self else {
+            return None;
+        };
+        let named = on
+            .iter()
+            .map(|number| format!("#{number}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!(
+            "watch: decided wait on {named} landed -> PR {} resumed, its repairs counted anew",
+            pr.reference()
+        ))
+    }
+}
+
+/// Journals what [`escalate`] did on `pr` when it resumed it; answers
+/// whether it asked.
+#[must_use]
+pub fn journal(log: &Logbook, pr: &Pr, escalation: &Escalation) -> bool {
+    if let Some(line) = escalation.resumed_line(pr) {
+        log.say(&line);
+    }
+    escalation.asked()
+}
+
+/// Where the decided waits on a PR stand, as [`escalate`] reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Settle {
+    /// No decided wait left uncleared on the PR.
+    Nothing,
+    /// The work of this issue a wait named has not reached the PR's base:
+    /// the wait stands, nothing is asked.
+    Stands(u64),
+    /// Every issue the waits named landed on the PR's base: the PR was
+    /// resumed on them now.
+    Resumed(Vec<u64>),
+    /// A wait that cannot settle by itself, said for the human.
+    Lost(String),
+}
+
+/// Reads every issue a decided wait named on `pr` and no resumed marker
+/// cleared (`contest::waits_named`), against the PR's base
+/// (`contest::landed_on_base`, everything the integration branch changed
+/// as what it touched), and settles what can be.
+///
+/// One whose work has not reached the base is [`Settle::Stands`]; one a
+/// person holds, one cut, or one under a milestone waiting on the PR's
+/// own is [`Settle::Lost`] — the first met, said; when every one landed,
+/// the PR is resumed on them (`contest::resume_decided`) and
+/// [`Settle::Resumed`].
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from an issue read, the comment or the
+/// label.
+async fn waits_settle(
+    gh: &dyn GitHub,
+    pr: &Pr,
+    comments: &str,
+    integration: &str,
+) -> Outcome<Settle> {
+    let named = contest::waits_named(comments);
+    if named.is_empty() {
+        return Ok(Settle::Nothing);
+    }
+    let mut lost = None;
+    for &on in &named {
+        let target = gh.issue(on).await?;
+        if contest::wait_stuck(&target) {
+            lost = lost.or_else(|| {
+                Some(format!(
+                    "It waits on #{on}, which a person holds (`{}`): that wait cannot settle by \
+                     itself.",
+                    labels::HUMAN
+                ))
+            });
+            continue;
+        }
+        let home = contest::home_of(&target);
+        match contest::landed_on_base(gh, pr, &target, home, |_| true, integration).await? {
+            contest::Landing::Landed => {}
+            contest::Landing::NotYet => return Ok(Settle::Stands(on)),
+            contest::Landing::Cut(cut) => {
+                lost = lost.or_else(|| {
+                    Some(if cut == on {
+                        format!(
+                            "It waited on #{on}, which was cut: what it waited for will not come."
+                        )
+                    } else {
+                        format!(
+                            "It waited on #{on}, built under #{cut}, which was cut: what it \
+                             waited for will not come."
+                        )
+                    })
+                });
+            }
+            contest::Landing::Cycle(milestone) => {
+                lost = lost.or_else(|| {
+                    Some(format!(
+                        "It waits on #{on}, built under #{milestone}, which waits on this PR's \
+                         own milestone: it cannot land before this PR does."
+                    ))
+                });
+            }
+        }
+    }
+    if let Some(because) = lost {
+        return Ok(Settle::Lost(because));
+    }
+    contest::resume_decided(gh, pr, &named).await?;
+    Ok(Settle::Resumed(named))
 }
 
 #[cfg(test)]
@@ -545,6 +756,37 @@ mod tests {
     use super::*;
     use crate::common::fake_github::{FakeGitHub, Wrote};
     use std::collections::HashMap;
+
+    /// The integration branch of every board here.
+    const INTEGRATION: &str = "main_agent";
+
+    /// [`super::escalate`] on [`INTEGRATION`]: whether it asked.
+    async fn escalate(gh: &dyn GitHub, owner: &Issue, pr: &Pr, comments: &str) -> Outcome<bool> {
+        super::escalate(gh, owner, pr, comments, INTEGRATION)
+            .await
+            .map(|done| done.asked())
+    }
+
+    /// [`super::ready_to_merge`] on [`INTEGRATION`], journalling nowhere.
+    async fn ready_to_merge<'a>(
+        gh: &dyn GitHub,
+        board: &'a [Issue],
+        open: &'a [Pr],
+        held: &[u64],
+    ) -> Outcome<(Option<(&'a Issue, &'a Pr)>, Vec<(u64, String)>)> {
+        super::ready_to_merge(gh, board, open, held, INTEGRATION, &Logbook::null()).await
+    }
+
+    /// [`super::exhausted_repairs`] on [`INTEGRATION`].
+    async fn exhausted_repairs(
+        gh: &dyn GitHub,
+        to_fix: &[Pr],
+        to_review: &[Pr],
+        held: &[u64],
+        log: &Logbook,
+    ) -> Outcome<Vec<(u64, String)>> {
+        super::exhausted_repairs(gh, to_fix, to_review, held, INTEGRATION, log).await
+    }
 
     fn task(number: u64, labels: &[&str], branch: &str) -> Issue {
         Issue {
@@ -706,7 +948,12 @@ mod tests {
     async fn a_decided_wait_is_not_a_round() {
         let gh = FakeGitHub::default();
         let waited = decided(1, "wait — #517 settles the test first (4/5)");
-        let comments = contest::waits_on_marker(517);
+        // The wait settled and resumed the PR, and its repairs since failed.
+        let comments = format!(
+            "{}\n{}",
+            contest::waits_on_marker(517),
+            contest::resumed_marker(517)
+        );
         assert!(
             escalate(&gh, &waited, &pr("516", "feat/scene"), &comments)
                 .await
@@ -744,8 +991,9 @@ mod tests {
         let gh = FakeGitHub::default();
         let repaired = decided(2, "repair — fix the slug mapping (4/5)");
         let comments = format!(
-            "{}\n{}\nrepair\n{}\nrepair\n",
+            "{}\n{}\n{}\nrepair\n{}\nrepair\n",
             contest::waits_on_marker(517),
+            contest::resumed_marker(517),
             review::DECIDED_MARKER,
             review::DECIDED_MARKER
         );
@@ -765,6 +1013,10 @@ mod tests {
             .expect("the human is told");
         assert!(said.contains("decided 2 repair(s) and 1 wait(s)"), "{said}");
         assert!(
+            said.contains("The repairs it decided did not settle it."),
+            "{said}"
+        );
+        assert!(
             said.contains("last decision: repair — fix the slug mapping (4/5)"),
             "{said}"
         );
@@ -774,10 +1026,13 @@ mod tests {
     async fn waits_past_their_cap_are_a_human_s() {
         let gh = FakeGitHub::default();
         let waited = decided(1, "wait — #520 first (3/5)");
+        // Both waits landed and resumed the PR; its repairs since still fail.
         let comments = format!(
-            "{}\n{}",
+            "{}\n{}\n{}\n{}",
             contest::waits_on_marker(517),
-            contest::waits_on_marker(520)
+            contest::resumed_marker(517),
+            contest::waits_on_marker(520),
+            contest::resumed_marker(520)
         );
         assert!(
             escalate(&gh, &waited, &pr("516", "feat/scene"), &comments)
@@ -787,9 +1042,435 @@ mod tests {
         let writes = gh.writes();
         assert!(writes.contains(&Wrote::Label(486, labels::HUMAN.to_string())));
         assert!(!writes.contains(&Wrote::Label(486, labels::NEEDS_DECISION.to_string())));
-        assert!(writes.iter().any(
-            |w| matches!(w, Wrote::Comment(486, said) if said.contains("0 repair(s) and 2 wait(s)"))
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(486, said) if said.contains("0 repair(s) and 2 wait(s)")
+                && said.contains("Every issue its waits named has landed, and the repairs since \
+                                  still fail.")
+        )));
+    }
+
+    /// An issue a decided wait named, in the state the replay reads it.
+    fn named(number: u64, state: &str, labels: &[&str]) -> Issue {
+        Issue {
+            number,
+            state: state.to_string(),
+            labels: labels.iter().map(|l| (*l).to_string()).collect(),
+            ..Issue::default()
+        }
+    }
+
+    /// PR #569's comments up to the escalation of 14:50 (2026-10-25): its
+    /// contract wait on #570 resumed, two repairs, then the decided wait on
+    /// #567.
+    fn comments_569() -> String {
+        format!(
+            "{}\n{}\n{}\n{}\n{}\nThe harness decided this PR waits on #567.",
+            contest::contract_wait_marker(570),
+            contest::resumed_marker(570),
+            review::FIX_MARKER,
+            review::FIX_MARKER,
+            contest::waits_on_marker(567)
+        )
+    }
+
+    /// Task #568's body once `decide` answered "wait on #567".
+    fn task_568() -> Issue {
+        let mut decided = task(568, &[labels::AGENT, labels::READY], "feat/scene-board");
+        decided.body.push_str(
+            "\n## Decision\n\nkind: review\nblocks: PR #569 still does not merge\nround: 1\n\
+             decided-by: ai\nverdict: wait, 4/5: PR #569 cannot merge until #567 lands\n",
+        );
+        decided
+    }
+
+    /// The milestone of every PR here (`milestone/52-socle`).
+    const OWN: u64 = 52;
+
+    /// [`named`], built under `home` (its native milestone).
+    fn built_under(number: u64, state: &str, labels: &[&str], home: u64) -> Issue {
+        Issue {
+            milestone: Some(home),
+            ..named(number, state, labels)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_replay_of_569_resumes_once_567_landed_never_a_human_on_the_waits_cap() {
+        let pr_569 = pr("569", "feat/scene-board");
+        // 14:50: #567 merged into the PR's base one minute before — the PR
+        // resumes, one repair, journalled.
+        let gh = FakeGitHub {
+            issues: vec![built_under(567, "closed", &[labels::AGENT], OWN)],
+            ..FakeGitHub::default()
+        };
+        let done = super::escalate(&gh, &task_568(), &pr_569, &comments_569(), INTEGRATION)
+            .await
+            .expect("resumed");
+        assert_eq!(done, Escalation::Resumed(vec![567]));
+        assert_eq!(
+            done.resumed_line(&pr_569).as_deref(),
+            Some("watch: decided wait on #567 landed -> PR #569 resumed, its repairs counted anew")
+        );
+        let writes = gh.writes();
+        let said = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Comment(569, said) => Some(said.clone()),
+                _ => None,
+            })
+            .expect("the PR told");
+        assert!(said.starts_with(&contest::resumed_marker(567)), "{said}");
+        assert!(said.contains("landed on its base (#567)"), "{said}");
+        assert_eq!(writes[0], Wrote::Label(569, labels::PR_FIX.to_string()));
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::Label(568, _))),
+            "neither a human nor a decision: {writes:?}"
+        );
+        // Its repairs are counted anew from there.
+        let resumed = format!("{}\n{said}", comments_569());
+        assert_eq!(review::repairs(&resumed), 0);
+        // Those two repairs fail too: now a human's, told why.
+        let failed = format!("{resumed}\n{}\n{}", review::FIX_MARKER, review::FIX_MARKER);
+        let gh = FakeGitHub {
+            issues: vec![built_under(567, "closed", &[labels::AGENT], OWN)],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            escalate(&gh, &task_568(), &pr_569, &failed)
+                .await
+                .expect("handed over")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(568, labels::HUMAN.to_string())));
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(568, said) if said.contains("Every issue its waits named has landed")
+                && said.contains("0 repair(s) and 2 wait(s)")
+        )));
+        assert!(!writes.iter().any(|w| matches!(w, Wrote::Comment(569, _))));
+    }
+
+    #[tokio::test]
+    async fn the_replay_of_569_waits_while_567_is_merged_only_under_another_milestone() {
+        // #567 built under #27: closed, it is merged into milestone/27,
+        // not into PR #569's base — the wait stands, nothing paid.
+        let pr_569 = pr("569", "feat/scene-board");
+        let board = |milestone_27: &[&str], behind: Vec<String>| FakeGitHub {
+            issues: vec![
+                built_under(567, "closed", &[labels::AGENT], 27),
+                named(27, "open", milestone_27),
+            ],
+            changed_files: HashMap::from([(
+                "milestone/52-socle...main_agent".to_string(),
+                Some(behind),
+            )]),
+            ..FakeGitHub::default()
+        };
+        let read = |gh: FakeGitHub| async move {
+            let done = super::escalate(
+                &gh,
+                &task_568(),
+                &pr("569", "feat/scene-board"),
+                &comments_569(),
+                INTEGRATION,
+            )
+            .await
+            .expect("reads");
+            (done, gh.writes())
+        };
+        let (done, writes) = read(board(&[labels::MILESTONE], Vec::new())).await;
+        assert_eq!(done, Escalation::Waits(567), "#27 still building");
+        assert!(writes.is_empty(), "{writes:?}");
+        let (done, writes) = read(board(
+            &[labels::MILESTONE, labels::WAITING_MERGE],
+            vec!["crates/scene/src/lib.rs".to_string()],
+        ))
+        .await;
+        assert_eq!(done, Escalation::Waits(567), "#27 landed, base behind");
+        assert!(writes.is_empty(), "{writes:?}");
+        let (done, writes) = read(board(
+            &[labels::MILESTONE, labels::WAITING_MERGE],
+            Vec::new(),
+        ))
+        .await;
+        assert_eq!(
+            done,
+            Escalation::Resumed(vec![567]),
+            "#27 landed, base caught up"
+        );
+        assert!(writes.contains(&Wrote::Label(569, labels::PR_FIX.to_string())));
+        assert_eq!(Escalation::Waits(567).resumed_line(&pr_569), None);
+    }
+
+    #[tokio::test]
+    async fn a_decided_wait_on_a_landed_milestone_resumes_and_is_not_held() {
+        // `wait on #27`: #27 landed on the integration branch
+        // (`waiting-merge`, open until promotion) — settled, not a wait
+        // that stands until a human promotes `main_agent`.
+        let comments = format!("{}\n{}", comments_569(), contest::waits_on_marker(27));
+        let comments = comments.replace(&contest::waits_on_marker(567), "");
+        let landed_27 = named(27, "open", &[labels::MILESTONE, labels::WAITING_MERGE]);
+        let gh = FakeGitHub {
+            issues: vec![landed_27],
+            ..FakeGitHub::default()
+        };
+        let pr_569 = pr("569", "feat/scene-board");
+        assert!(!contest::held(&gh, &pr_569, &comments).await.expect("read"));
+        assert_eq!(
+            super::escalate(&gh, &task_568(), &pr_569, &comments, INTEGRATION)
+                .await
+                .expect("resumed"),
+            Escalation::Resumed(vec![27])
+        );
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(569, labels::PR_FIX.to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_on_an_open_issue_asks_nothing_and_one_a_person_holds_is_a_human_s() {
+        let pr_569 = pr("569", "feat/scene-board");
+        // #567 still being built: the wait stands, nothing counted, nothing
+        // asked.
+        let gh = FakeGitHub {
+            issues: vec![built_under(567, "open", &[labels::AGENT], OWN)],
+            ..FakeGitHub::default()
+        };
+        assert_eq!(
+            super::escalate(&gh, &task_568(), &pr_569, &comments_569(), INTEGRATION)
+                .await
+                .expect("reads"),
+            Escalation::Waits(567)
+        );
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+        // #567 stopped for a person: the wait cannot settle — a human's at
+        // once, told which issue holds it.
+        let gh = FakeGitHub {
+            issues: vec![named(567, "open", &[labels::AGENT, labels::HUMAN])],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            escalate(&gh, &task_568(), &pr_569, &comments_569())
+                .await
+                .expect("handed over")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(568, labels::HUMAN.to_string())));
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(568, said) if said.contains("It waits on #567, which a person holds")
+        )));
+        assert!(!writes.contains(&Wrote::Label(569, labels::PR_FIX.to_string())));
+        // Two waits, one landed and one still open: the open one stands.
+        let two = format!("{}\n{}", comments_569(), contest::waits_on_marker(571));
+        let gh = FakeGitHub {
+            issues: vec![
+                built_under(567, "closed", &[], OWN),
+                built_under(571, "open", &[labels::AGENT], OWN),
+            ],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            !escalate(&gh, &task_568(), &pr_569, &two)
+                .await
+                .expect("reads")
+        );
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+    }
+
+    #[tokio::test]
+    async fn a_wait_on_a_cut_issue_or_a_cycle_is_a_human_s_never_a_resume() {
+        let pr_569 = pr("569", "feat/scene-board");
+        let handed = |gh: &FakeGitHub, why: &str| {
+            let writes = gh.writes();
+            assert!(
+                writes.contains(&Wrote::Label(568, labels::HUMAN.to_string())),
+                "{writes:?}"
+            );
+            assert!(
+                writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::Comment(568, said) if said.contains(why))),
+                "{why}: {writes:?}"
+            );
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::Comment(569, _) | Wrote::Label(569, _))),
+                "never resumed: {writes:?}"
+            );
+        };
+        // Closed as not planned, or cut by a decision.
+        let mut not_planned = built_under(567, "closed", &[labels::AGENT], OWN);
+        not_planned.not_planned = true;
+        let mut decided_cut = built_under(567, "closed", &[labels::AGENT], OWN);
+        decided_cut.body = "## Decision\n\nkind: review\nblocks: x\nround: 1\ndecided-by: ai\n\
+                            verdict: cut — out of scope (4/5)\n"
+            .to_string();
+        for cut in [not_planned, decided_cut] {
+            let gh = FakeGitHub {
+                issues: vec![cut],
+                ..FakeGitHub::default()
+            };
+            assert!(
+                escalate(&gh, &task_568(), &pr_569, &comments_569())
+                    .await
+                    .expect("handed over")
+            );
+            handed(
+                &gh,
+                "It waited on #567, which was cut: what it waited for will not come.",
+            );
+        }
+        // Built under #27, which was cut.
+        let mut cut_27 = named(27, "closed", &[labels::MILESTONE]);
+        cut_27.not_planned = true;
+        let gh = FakeGitHub {
+            issues: vec![built_under(567, "closed", &[], 27), cut_27],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            escalate(&gh, &task_568(), &pr_569, &comments_569())
+                .await
+                .expect("handed over")
+        );
+        handed(&gh, "It waited on #567, built under #27, which was cut");
+        // Built under #27, which waits on #52, the PR's own milestone.
+        let mut waits_on_own = named(27, "open", &[labels::MILESTONE]);
+        waits_on_own.blocked_by = vec![named(OWN, "open", &[labels::MILESTONE])];
+        let gh = FakeGitHub {
+            issues: vec![built_under(567, "open", &[], 27), waits_on_own.clone()],
+            subs: vec![(12, vec![waits_on_own])],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            escalate(&gh, &task_568(), &pr_569, &comments_569())
+                .await
+                .expect("handed over")
+        );
+        handed(
+            &gh,
+            "built under #27, which waits on this PR's own milestone",
+        );
+    }
+
+    #[test]
+    fn only_a_resume_is_journalled_and_only_an_ask_counts_as_asked() {
+        /// The journal's lines, kept.
+        #[derive(Default)]
+        struct Capture(std::cell::RefCell<Vec<String>>);
+        impl harness_core::traces::Sink for Capture {
+            fn emit(&self, line: &str) {
+                self.0.borrow_mut().push(line.to_string());
+            }
+        }
+        let pr_569 = pr("569", "feat/scene-board");
+        let capture = std::rc::Rc::new(Capture::default());
+        let log = Logbook::new(
+            std::rc::Rc::clone(&capture) as std::rc::Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        let lines = &capture.0;
+        assert!(journal(&log, &pr_569, &Escalation::Asked));
+        assert!(!journal(
+            &log,
+            &pr_569,
+            &Escalation::Resumed(vec![567, 571])
         ));
+        assert!(!journal(&log, &pr_569, &Escalation::Waits(567)));
+        assert!(!journal(&log, &pr_569, &Escalation::Not));
+        let said = lines.borrow().join("\n");
+        assert!(
+            said.contains("decided wait on #567, #571 landed -> PR #569 resumed"),
+            "{said}"
+        );
+        assert_eq!(said.matches("watch:").count(), 1, "{said}");
+        for (done, told) in [
+            (Escalation::Asked, "#568 escalated"),
+            (
+                Escalation::Resumed(vec![567]),
+                "resumed on its settled waits",
+            ),
+            (Escalation::Waits(567), "its decided wait on #567 stands"),
+            (Escalation::Not, "#568 asked already"),
+        ] {
+            assert_eq!(done.outcome(568), told);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_replay_of_580_resumes_once_582_landed() {
+        // PR #580: its contract wait on #581 resumed, two repairs, then
+        // "wait on #582" — and #582 landed at 16:5x.
+        let comments = format!(
+            "{}\n{}\n{}\n{}\n{}",
+            contest::contract_wait_marker(581),
+            contest::resumed_marker(581),
+            review::FIX_MARKER,
+            review::FIX_MARKER,
+            contest::waits_on_marker(582)
+        );
+        let mut owner = task(
+            576,
+            &[labels::AGENT, labels::READY],
+            "feat/campaign-list-micro-ui",
+        );
+        owner.body.push_str(
+            "\n## Decision\n\nkind: review\nblocks: PR #580\nround: 1\ndecided-by: ai\n\
+             verdict: wait for #582 (campaign.listCampaigns v2)\n",
+        );
+        let gh = FakeGitHub {
+            issues: vec![built_under(582, "closed", &[labels::AGENT], OWN)],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            !escalate(
+                &gh,
+                &owner,
+                &pr("580", "feat/campaign-list-micro-ui"),
+                &comments
+            )
+            .await
+            .expect("resumed")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(580, labels::PR_FIX.to_string())));
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(580, said) if said.starts_with(&contest::resumed_marker(582))
+        )));
+        assert!(!writes.contains(&Wrote::Label(576, labels::HUMAN.to_string())));
+        // Had #582 been closed as not planned: no resume, no repair burnt —
+        // a human's, told it was cut.
+        let mut cut = built_under(582, "closed", &[labels::AGENT], OWN);
+        cut.not_planned = true;
+        let gh = FakeGitHub {
+            issues: vec![cut],
+            ..FakeGitHub::default()
+        };
+        assert!(
+            escalate(
+                &gh,
+                &owner,
+                &pr("580", "feat/campaign-list-micro-ui"),
+                &comments
+            )
+            .await
+            .expect("handed over")
+        );
+        let writes = gh.writes();
+        assert!(writes.contains(&Wrote::Label(576, labels::HUMAN.to_string())));
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(576, said) if said.contains("#582, which was cut")
+        )));
+        assert!(
+            !writes
+                .iter()
+                .any(|w| matches!(w, Wrote::Label(580, _) | Wrote::Comment(580, _)))
+        );
     }
 
     #[tokio::test]

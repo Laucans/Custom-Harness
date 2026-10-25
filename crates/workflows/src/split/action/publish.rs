@@ -100,6 +100,26 @@ pub(crate) fn body_and_labels(
     (body, labels)
 }
 
+/// `body` with the task's `id:` under its `unit:` line — the first id it
+/// produces — for a unit an id names (`Unit::has_an_id`), as the contract
+/// manager and the missing-task opener write it: every task the harness
+/// opens names the unit it builds or evolves (`ForgeDesMondes`' #574).
+fn with_unit_id(body: &str, declaration: &Declaration) -> String {
+    let Some(id) = declaration
+        .produces
+        .first()
+        .filter(|_| declaration.unit.has_an_id())
+    else {
+        return body.to_string();
+    };
+    let rendered = declaration.render();
+    body.replacen(
+        &rendered,
+        &crate::dev_loop::data::missing::with_id(&rendered, id),
+        1,
+    )
+}
+
 /// The `## Rules` section of a task: the rules whose tests it makes pass,
 /// and what it may not do with them. `None` when the slice names none.
 ///
@@ -309,6 +329,7 @@ impl Action<SplitState> for Write {
             let side = declaration.side();
             let layer = declaration.unit.layer();
             let (body, labels) = body_and_labels(item, &declaration, kind, side);
+            let body = with_unit_id(&body, &declaration);
             let number = self.gh.create_issue(&item.title, &body, &labels).await?;
             self.link(milestone_number, native, number, &ctx.traces)
                 .await?;
@@ -695,12 +716,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_unit_an_id_names_carries_its_id_and_the_plumbing_does_not() {
+        let body_of = |json: &str| {
+            let item = plan::parse(&format!("[{json}]")).expect("parse").remove(0);
+            let declaration = item.declaration();
+            let (body, _) = body_and_labels(&item, &declaration, labels::AGENT, declaration.side());
+            with_unit_id(&body, &declaration)
+        };
+        let evolving = body_of(
+            r#"{"title":"Export","brief":"b","branch":"feat/export","unit":"data-capability","system":"campaign","produces":["campaign.exportCampaign","campaign.other"]}"#,
+        );
+        assert!(
+            evolving
+                .contains("unit: data-capability\nid: campaign.exportCampaign\nsystem: campaign"),
+            "{evolving}"
+        );
+        let wiring = body_of(
+            r#"{"title":"Wiring","brief":"b","branch":"chore/wiring-campaign","unit":"tooling","system":"campaign","produces":["campaign"]}"#,
+        );
+        assert!(!wiring.contains("id: "), "{wiring}");
+        let bare = body_of(
+            r#"{"title":"UI","brief":"b","branch":"feat/ui","unit":"micro-ui","system":"campaign"}"#,
+        );
+        assert!(!bare.contains("id: "), "{bare}");
+    }
+
     #[tokio::test]
     async fn each_task_is_created_linked_placed_and_the_milestone_is_marked() {
         let gh = Rc::new(gh_with_base());
         let mut context = ctx(
             false,
-            r#"[{"title":"A","brief":"do A","branch":"feat/a","needs_human":false,"unit":"capability","system":"credit","concept":"Risk@3"},
+            r#"[{"title":"A","brief":"do A","branch":"feat/a","needs_human":false,"unit":"capability","system":"credit","concept":"Risk@3","produces":["credit.calculateRisk"]},
                {"title":"B","brief":"do B","branch":"feat/b","needs_human":true,"unit":"micro-ui","system":"credit","depends_on":[0]}]"#,
         );
         Write {
@@ -724,7 +771,8 @@ mod tests {
                 Wrote::CreatedIssue(
                     "A".to_string(),
                     "## Scope\n\nbranch: feat/a\n\ndo A\n\n## Architecture\n\n\
-                     unit: capability\nsystem: credit\nconcept: Risk@3\nprofile: mid\nside: harness:read-side"
+                     unit: capability\nid: credit.calculateRisk\nsystem: credit\nconcept: Risk@3\n\
+                     produces: credit.calculateRisk\nprofile: mid\nside: harness:read-side"
                         .to_string(),
                     vec![
                         labels::AGENT.to_string(),
@@ -912,7 +960,7 @@ mod tests {
             "{}",
             bodies[8]
         );
-        assert!(bodies[1].contains("unit: aggregate\nsystem: campagne\naggregate: PJ\nproduces: PJ\nprofile: small\nside: harness:write-side"), "{}", bodies[1]);
+        assert!(bodies[1].contains("unit: aggregate\nid: PJ\nsystem: campagne\naggregate: PJ\nproduces: PJ\nprofile: small\nside: harness:write-side"), "{}", bodies[1]);
         // The data layer's label still marks what merges after its review.
         let labelled: Vec<Vec<String>> = gh
             .writes()

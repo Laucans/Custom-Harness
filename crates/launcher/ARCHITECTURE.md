@@ -376,9 +376,13 @@ into its head so its checks run again — and marks the PR resumed
   task), the PR's `Closes` line written first when it lacked it,
   `TaskDelivered`.
 - `Route::ContractLanded` (1003) — a PR waiting on a contract change its
-  repair stopped on (`PrWait::Contract`), the change closed and the PR's base
-  holding the manifest (`contest::contract_landed`): resumed — the change's
-  last word quoted on the PR, its repairs counted anew, `harness:pr-fix`.
+  repair stopped on (`PrWait::Contract`), the change closed and its work on
+  the PR's base — the producer task the contract manager recorded on it
+  landed there (`contest::landed_on_base`), or, with none recorded, the
+  manifest (`contest::contract_landed`): resumed — `harness:pr-fix`, then
+  the change's last word quoted on the PR, its repairs counted anew; a
+  producer cut hands the PR's task to a human instead, the PR still
+  waiting.
 - `Route::DropDebtPr` (995) and `Route::MergeDebt` (985, not on a red base)
   — the PRs labelled `harness:debt-pr` (`test_debt::data::landing::ready`):
   a red, conflicting or out-of-bounds one closed with the reason

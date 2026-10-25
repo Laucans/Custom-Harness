@@ -1058,6 +1058,7 @@ mod tests {
             body: String::new(),
             blocked_by: vec![],
             not_planned: false,
+            milestone: None,
         }
     }
 

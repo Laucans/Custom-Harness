@@ -170,7 +170,7 @@ mod tests {
         let mut context = ctx(false);
         context.results.insert(
             "slice".to_string(),
-            reply(r#"[{"title":"A","brief":"b","branch":"feat/a","unit":"capability","goal":"g","acceptance":["given, when, then (R3)"],"rules":["R3"]},
+            reply(r#"[{"title":"A","brief":"b","branch":"feat/a","unit":"capability","produces":["A"],"goal":"g","acceptance":["given, when, then (R3)"],"rules":["R3"]},
                       {"title":"H","brief":"b","branch":"chore/h","unit":"tooling","needs_human":true}]"#),
         );
         assert_eq!(
