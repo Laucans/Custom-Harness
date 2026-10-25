@@ -227,7 +227,7 @@ pub async fn run_streaming_with_env(
     let mut last_cpu = tree_activity(root).cpu;
     let mut busy = move || {
         let now = tree_activity(root);
-        let moved = now.cpu > last_cpu + threshold || now.compiling;
+        let moved = now.worked_since(last_cpu, threshold);
         last_cpu = now.cpu;
         moved
     };
@@ -352,6 +352,14 @@ struct Activity {
     compiling: bool,
 }
 
+impl Activity {
+    /// Whether the tree worked since a check that read `last_cpu`: more than
+    /// `threshold` seconds of CPU spent since, or a compilation under way.
+    fn worked_since(self, last_cpu: f64, threshold: f64) -> bool {
+        self.cpu > last_cpu + threshold || self.compiling
+    }
+}
+
 /// What `root` and every process under it are doing — `ps` over `pgrep -P`
 /// walked down; nothing when the tree cannot be read (then silence is
 /// idleness, as before).
@@ -425,6 +433,25 @@ fn cpu_time_seconds(text: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tree_works_only_past_its_threshold_of_cpu_or_while_compiling() {
+        let at = |cpu| Activity {
+            cpu,
+            compiling: false,
+        };
+        assert!(at(1.6).worked_since(1.0, 0.5));
+        assert!(!at(1.5).worked_since(1.0, 0.5), "exactly the threshold");
+        assert!(!at(1.2).worked_since(1.0, 0.5), "spent less than it");
+        assert!(
+            Activity {
+                cpu: 1.0,
+                compiling: true,
+            }
+            .worked_since(1.0, 0.5),
+            "sccache compiles outside the tree"
+        );
+    }
 
     #[tokio::test]
     async fn processes_built_with_variables_hand_them_to_every_child() {

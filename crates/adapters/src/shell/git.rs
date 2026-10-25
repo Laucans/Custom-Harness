@@ -277,7 +277,7 @@ impl Repo for GitCli {
 
     async fn merge_base(&self, a: &str, b: &str) -> Outcome<Option<String>> {
         let ran = self.git(&["merge-base", a, b]).await?;
-        Ok((ran.ok() && !ran.out().is_empty()).then(|| ran.out().to_string()))
+        Ok(base_of(&ran))
     }
 
     async fn show(&self, spec: &str) -> Outcome<Option<String>> {
@@ -329,9 +329,31 @@ fn sparse_set_args(patterns: &[String]) -> Vec<String> {
     args
 }
 
+/// The commit `git merge-base` answered: only from a call that succeeded
+/// and said something — a failure's words, or a silent success, name none.
+fn base_of(ran: &Ran) -> Option<String> {
+    (ran.ok() && !ran.out().is_empty()).then(|| ran.out().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ran(code: i32, stdout: &str) -> Ran {
+        Ran {
+            code: Some(code),
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_merge_base_is_read_only_from_a_success_that_names_one() {
+        assert_eq!(base_of(&ran(0, "abc\n")).as_deref(), Some("abc"));
+        assert_eq!(base_of(&ran(0, "  \n")), None, "a silent success");
+        assert_eq!(base_of(&ran(1, "abc\n")), None, "a failure's words");
+        assert_eq!(base_of(&ran(1, "")), None);
+    }
 
     fn git() -> GitCli {
         GitCli::new(Path::new("/tmp/le-clone"))

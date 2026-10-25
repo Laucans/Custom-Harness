@@ -170,23 +170,31 @@ impl CacheWish {
     /// and the build variables it inherited.
     fn of_process() -> Self {
         let read = |variable: &str| std::env::var(variable).unwrap_or_default();
-        let mut inherited: Vec<(String, String)> = std::env::vars()
-            // An unfilled `.env.local` line sets an empty one: nothing to say.
-            .filter(|(name, value)| {
-                !value.is_empty()
-                    && (name == "RUSTC_WRAPPER"
-                        || name == "CARGO_INCREMENTAL"
-                        || name.starts_with("SCCACHE_"))
-            })
-            .collect();
-        inherited.sort();
         Self {
             switch: read("SCCACHE"),
             dir: read("SCCACHE_DIR"),
             size: read("SCCACHE_CACHE_SIZE"),
-            inherited,
+            inherited: build_variables(std::env::vars()),
         }
     }
+}
+
+/// The build variables of `vars` a child inherits unless the cache sets
+/// them: `RUSTC_WRAPPER`, `CARGO_INCREMENTAL` and every `SCCACHE_*`, set to
+/// something, by name.
+fn build_variables(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
+    let mut inherited: Vec<(String, String)> = vars
+        .into_iter()
+        // An unfilled `.env.local` line sets an empty one: nothing to say.
+        .filter(|(name, value)| {
+            !value.is_empty()
+                && (name == "RUSTC_WRAPPER"
+                    || name == "CARGO_INCREMENTAL"
+                    || name.starts_with("SCCACHE_"))
+        })
+        .collect();
+    inherited.sort();
+    inherited
 }
 
 /// What the resolver reads of the process, given rather than read, so a
@@ -1017,6 +1025,32 @@ mod tests {
             cache_said: String::new(),
             harness_bin: None,
         }
+    }
+
+    #[test]
+    fn only_the_build_variables_set_to_something_are_inherited() {
+        let vars = [
+            ("SCCACHE_DIR", "/cache"),
+            ("PATH", "/bin"),
+            ("RUSTC_WRAPPER", "sccache"),
+            ("SCCACHE_CACHE_SIZE", ""),
+            ("CARGO_INCREMENTAL", "0"),
+            ("CARGO_HOME", "/cargo"),
+        ]
+        .map(|(name, value)| (name.to_string(), value.to_string()));
+        let inherited = build_variables(vars);
+        let kept: Vec<(&str, &str)> = inherited
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        assert_eq!(
+            kept,
+            [
+                ("CARGO_INCREMENTAL", "0"),
+                ("RUSTC_WRAPPER", "sccache"),
+                ("SCCACHE_DIR", "/cache"),
+            ]
+        );
     }
 
     #[test]

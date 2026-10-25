@@ -821,6 +821,30 @@ mod tests {
     }
 
     #[test]
+    fn a_stuck_pull_is_said() {
+        let stuck = routing::Pull {
+            producer: 18,
+            milestone: 28,
+            task: 219,
+            need: "Brief".to_string(),
+            why: routing::Starving::HeldAtLanding,
+            splittable: false,
+            through: None,
+        };
+        let capture = Rc::new(Capture::default());
+        let log = Logbook::new(
+            Rc::clone(&capture) as Rc<dyn harness_core::traces::Sink>,
+            harness_core::traces::Verbosity::Normal,
+        );
+        say_unpulled(std::slice::from_ref(&stuck), &mut Pulse::default(), &log);
+        let said = capture.0.borrow().join("\n");
+        assert!(
+            said.contains("watch: #18 would be split past the cap for #219 of #28"),
+            "{said}"
+        );
+    }
+
+    #[test]
     fn a_task_a_human_holds_that_holds_many_rules_is_said() {
         use harness_workflows::common::rule_waits::Waits;
         let task = |number: u64, labels: &[&str]| Issue {
@@ -864,6 +888,11 @@ mod tests {
         assert!(
             said(&found(&[labels::AGENT], 4)).is_empty(),
             "under the bar"
+        );
+        assert!(
+            said(&found(&[labels::AGENT], routing::RULES_SAID as usize))
+                .contains("#157 has no harness:ready, holds 5 rules"),
+            "the bar itself is said"
         );
         assert_eq!(
             rules_held(&found(&[labels::AGENT, labels::READY], 17), 157),

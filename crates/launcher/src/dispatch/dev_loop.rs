@@ -383,6 +383,17 @@ async fn signature_index(
     let Ok(tracked) = repo.tracked_files().await else {
         return signatures::Index::default();
     };
+    index_of(workspace, disk, tracked, log).await
+}
+
+/// The index of a checkout whose `tracked` files are read: the
+/// dependencies' API, and the files' shapes by its ecosystem.
+async fn index_of(
+    workspace: &Workspace,
+    disk: &dyn Disk,
+    tracked: Vec<String>,
+    log: &Logbook,
+) -> signatures::Index {
     let dependencies = dependency_index(workspace.root(), disk, &tracked, log).await;
     let ecosystem = signatures::detect(&tracked);
     let by_path = match ecosystem {
@@ -949,6 +960,142 @@ mod tests {
             ..locked
         };
         assert_eq!(checkout_source(&home.0, &elsewhere, &RealDisk), None);
+    }
+
+    /// The real disk with the user's cargo home moved to a scratch folder:
+    /// the engine's checkout is laid there, never in the user's own.
+    struct Rebased {
+        home: PathBuf,
+        to: PathBuf,
+    }
+
+    impl Rebased {
+        fn at(&self, path: &Path) -> PathBuf {
+            path.strip_prefix(&self.home)
+                .map_or_else(|_| path.to_path_buf(), |rest| self.to.join(rest))
+        }
+    }
+
+    impl Disk for Rebased {
+        fn exists(&self, path: &Path) -> bool {
+            RealDisk.exists(&self.at(path))
+        }
+        fn create_dir_all(&self, path: &Path) -> harness_core::domain::Outcome<()> {
+            RealDisk.create_dir_all(&self.at(path))
+        }
+        fn remove_dir_all(&self, path: &Path) -> harness_core::domain::Outcome<()> {
+            RealDisk.remove_dir_all(&self.at(path))
+        }
+        fn dir_names(&self, path: &Path) -> Vec<String> {
+            RealDisk.dir_names(&self.at(path))
+        }
+        fn file_names(&self, path: &Path) -> Vec<String> {
+            RealDisk.file_names(&self.at(path))
+        }
+        fn read_to_string(&self, path: &Path) -> Option<String> {
+            RealDisk.read_to_string(&self.at(path))
+        }
+        fn write_to_string(&self, path: &Path, content: &str) -> harness_core::domain::Outcome<()> {
+            RealDisk.write_to_string(&self.at(path), content)
+        }
+    }
+
+    /// Cargo's home as the user's environment names it, read apart from
+    /// [`cargo_home`] so a wrong one is seen.
+    fn users_cargo_home() -> PathBuf {
+        std::env::var_os("CARGO_HOME").map_or_else(
+            || {
+                std::env::var_os("HOME")
+                    .map_or_else(PathBuf::new, PathBuf::from)
+                    .join(".cargo")
+            },
+            PathBuf::from,
+        )
+    }
+
+    #[tokio::test]
+    async fn the_engine_s_api_is_read_from_cargo_s_checkout_ranked_by_the_product_s_rust() {
+        let home = scratch("engine-home");
+        let product = scratch("engine-product");
+        let at = "git/checkouts/custom-harness-68e549c37e73101b/56cb6be/crates/dataguard";
+        put(
+            &home.0,
+            &format!("{at}/Cargo.toml"),
+            "[package]\nname = \"harness-dataguard\"\n",
+        );
+        put(&home.0, &format!("{at}/src/alpha.rs"), "pub fn a() {}\n");
+        put(&home.0, &format!("{at}/src/zeta.rs"), "pub fn z() {}\n");
+        put(
+            &product.0,
+            "Cargo.lock",
+            "version = 4\n\n[[package]]\nname = \"harness-dataguard\"\nversion = \"0.1.0\"\n\
+             source = \"git+https://github.com/laucans/custom-harness?tag=dataguard-v5\
+             #56cb6be9f54a5b29dae0cdf8e544600eaa63c556\"\n",
+        );
+        // The product's Rust uses `zeta`; a note that names `alpha` is no use.
+        put(
+            &product.0,
+            "src/main.rs",
+            "use harness_dataguard::zeta;\nfn main() { zeta::z(); }\n",
+        );
+        put(
+            &product.0,
+            "notes.md",
+            "harness_dataguard::alpha harness_dataguard::alpha\n",
+        );
+        let tracked: Vec<String> = ["Cargo.lock", "notes.md", "src/main.rs"]
+            .map(ToString::to_string)
+            .to_vec();
+        let disk = Rebased {
+            home: users_cargo_home(),
+            to: home.0.clone(),
+        };
+        let log = Logbook::null();
+        let found = dependency_index(&product.0, &disk, &tracked, &log).await;
+        let [engine] = found.as_slice() else {
+            panic!("one engine: {found:?}");
+        };
+        assert_eq!(engine.source, "dataguard-v5 @ 56cb6be");
+        let modules: Vec<&str> = engine.modules.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(modules, ["zeta", "alpha"], "ranked by the product's Rust");
+        // No Rust ecosystem: the engine's API is kept all the same.
+        let index = index_of(&Workspace::new(&product.0), &disk, tracked.clone(), &log).await;
+        assert_eq!(index.dependencies.len(), 1);
+        // A lock file without the engine reads nothing of it.
+        put(&product.0, "Cargo.lock", "version = 4\n");
+        let none = dependency_index(&product.0, &disk, &tracked, &log).await;
+        assert_eq!(none.len(), 0);
+    }
+
+    /// A sink that keeps what the log said, debug lines included.
+    #[derive(Default)]
+    struct Lines(std::cell::RefCell<Vec<String>>);
+
+    impl Sink for Lines {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn cargo_metadata_finds_the_engine_this_workspace_holds() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let (src, label) = metadata_source(&root, &Logbook::null())
+            .await
+            .expect("the workspace holds the engine");
+        assert!(src.ends_with("crates/dataguard/src"), "{}", src.display());
+        assert!(
+            label.ends_with("crates/dataguard"),
+            "a path, no tag: {label}"
+        );
+        // Out of any cargo project: nothing found, and why kept in the log.
+        let elsewhere = scratch("no-manifest");
+        std::fs::create_dir_all(&elsewhere.0).expect("mkdir");
+        let lines = Rc::new(Lines::default());
+        let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+        assert_eq!(metadata_source(&elsewhere.0, &log).await, None);
+        let said = lines.0.borrow().join("\n");
+        assert!(said.contains("cargo metadata: "), "{said}");
     }
 
     #[test]

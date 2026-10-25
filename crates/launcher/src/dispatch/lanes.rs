@@ -721,6 +721,23 @@ pub mod tests {
     }
 
     #[test]
+    fn a_build_exactly_the_margin_older_than_the_newest_stays() {
+        let deps = "/ws/lane-0/target/debug/deps";
+        let built = |older: u64| {
+            Builds::with(&[
+                (&format!("{deps}/report-00000000000000c1"), 10, Some(0)),
+                (&format!("{deps}/report-00000000000000c2"), 10, Some(older)),
+            ])
+        };
+        let at_margin = built(SUPERSEDED_AFTER);
+        let profile = Path::new("/ws/lane-0/target/debug");
+        assert_eq!(remove_stale(&at_margin, profile), (0, Vec::new()));
+        assert!(at_margin.removed.borrow().is_empty());
+        let past = built(SUPERSEDED_AFTER + 1);
+        assert_eq!(remove_stale(&past, profile), (1, Vec::new()));
+    }
+
+    #[test]
     fn a_removal_refused_is_said_and_unknown_times_keep_every_build() {
         let deps = "/ws/lane-0/target/debug/deps";
         let whole = Builds {

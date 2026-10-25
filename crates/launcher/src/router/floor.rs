@@ -234,6 +234,18 @@ mod tests {
     }
 
     #[test]
+    fn exactly_the_floor_free_prunes_nothing() {
+        let gauge = Rc::new(Gauge::default());
+        let log = Logbook::null();
+        let mut floor = Floor::new(12, PathBuf::from("/f"), Rc::clone(&gauge) as Rc<dyn Volume>);
+        gauge.free.set(Some(12 * GIB));
+        let mut asked = false;
+        assert_eq!(floor.check(&log, || asked = true), Room::Enough);
+        assert!(!asked, "the floor itself is room enough: nothing pruned");
+        assert_eq!(gauge.asked.borrow().len(), 1, "measured once");
+    }
+
+    #[test]
     fn no_floor_asks_nothing_and_an_unreadable_volume_changes_nothing() {
         let gauge = Rc::new(Gauge::default());
         let lines = Rc::new(Lines::default());

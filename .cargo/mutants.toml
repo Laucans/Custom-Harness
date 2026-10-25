@@ -75,6 +75,16 @@ exclude_re = [
   "architecture/src/graph\\.rs:.*replace \\+ with \\* in Graph::critical_path$",
   "router/routes\\.rs:.*replace (dispatched|refine_here|arbitrate_here) ",
   "dataguard/src/reconcile\\.rs:.*NoProposer",
+  # Launcher, kill batch 1. `CacheWish::of_process` reads this process's
+  # own environment, which a test can only set through `std::env::set_var`
+  # (`unsafe` in edition 2024, denied at the root); what it filters is
+  # `build_variables`, tested. `signature_index` reads the tracked files
+  # with a `GitCli` and hands them to `index_of`, tested against the disk.
+  "toolchain\\.rs:.*replace CacheWish::of_process -> Self with Default::default\\(\\)$",
+  "dispatch/dev_loop\\.rs:.*replace signature_index -> signatures::Index with Default::default\\(\\)$",
+  # Equivalent: `Path::join` with an absolute folder is that folder, so an
+  # absolute `SCCACHE_DIR` joined to the home is the same path.
+  "toolchain\\.rs:.*replace match guard named\\.is_relative\\(\\) with true in cache_variables$",
 ]
 
 # Every mutant runs the mutated crate's own tests, under the flags the CI

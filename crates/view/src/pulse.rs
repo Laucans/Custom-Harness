@@ -143,10 +143,10 @@ mod tests {
         }
         fn product_files(
             &self,
-            _branch: &str,
-            _pattern: &str,
+            branch: &str,
+            pattern: &str,
         ) -> Result<Vec<(String, Vec<u8>)>, String> {
-            Ok(Vec::new())
+            Ok(vec![(format!("{branch}:{pattern}"), b"read".to_vec())])
         }
         fn workspace(&self, _branch: &str) -> Result<PathBuf, String> {
             Ok(PathBuf::from("/nowhere"))
@@ -228,6 +228,7 @@ mod tests {
         let _ = mockups.branches();
         let _ = mockups.files("b");
         let _ = mockups.ensure_branch("b", "main");
+        let _ = mockups.product_files("b", "plan/graph.json");
         assert!(!heard(&mut ears), "a read wakes nobody");
 
         let _ = mockups.save("b", "n");
@@ -270,5 +271,9 @@ mod tests {
         assert_eq!(mockups.publish("b", "m").as_deref(), Ok("abc"));
         assert_eq!(mockups.write("b", "x", b""), Err("refused".to_string()));
         assert_eq!(mockups.state("b").map(|s| s.branch).as_deref(), Ok("b"));
+        assert_eq!(
+            mockups.product_files("b", "plan/graph.json"),
+            Ok(vec![("b:plan/graph.json".to_string(), b"read".to_vec())])
+        );
     }
 }

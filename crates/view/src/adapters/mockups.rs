@@ -1189,6 +1189,40 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A product file that is not there, or is a folder, is not read; one
+    /// that cannot be read for another reason is an error, never silence.
+    #[test]
+    fn a_product_file_missing_is_none_and_one_unreadable_is_an_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "harness-view-product-unread-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        let folder = dir.join("milestone__1");
+        let as_folder = folder.join("crates/a/data-capabilities/b/data-capability.json");
+        fs::create_dir_all(&as_folder).expect("dir");
+        let demo = DirMockups::new(&dir);
+        assert_eq!(
+            demo.product_files("milestone/1", "plan/graph.json"),
+            Ok(Vec::new()),
+            "not there"
+        );
+        assert_eq!(
+            demo.product_files("milestone/1", mockup::DATA_CAPABILITY_MANIFESTS),
+            Ok(Vec::new()),
+            "a folder"
+        );
+        // A link to itself: a loop, which no reader runs past.
+        fs::create_dir_all(folder.join("plan")).expect("dir");
+        std::os::unix::fs::symlink("graph.json", folder.join("plan/graph.json")).expect("link");
+        assert!(
+            demo.product_files("milestone/1", "plan/graph.json")
+                .is_err(),
+            "a loop is not a missing file"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The real thing: a workspace's changes discarded are kept aside, and
     /// brought back uncommitted; a workspace being edited refuses it.
     #[test]

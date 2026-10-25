@@ -2301,6 +2301,18 @@ mod tests {
     }
 
     #[test]
+    fn a_row_read_twice_keeps_its_first_reading() {
+        // Same run, job and start: no newer attempt, nothing replaced.
+        let rows = vec![
+            job("rust", "FAILURE", 7, 70, "2026-10-24T20:00:00Z"),
+            job("rust", "SUCCESS", 7, 70, "2026-10-24T20:00:00Z"),
+        ];
+        let kept = latest_per_job(rows);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(text_at(&kept[0], "state"), "FAILURE");
+    }
+
+    #[test]
     fn two_runs_of_one_workflow_are_never_collapsed() {
         // A landing PR: the `pull_request` run (red, strict rules) is older
         // than the `push` run (green) of the same sha. Both stay.
@@ -3275,6 +3287,10 @@ mod tests {
             Some(1_792_860_000)
         );
         assert_eq!(epoch_of("2026-10-24T11:40:00-05:00"), Some(1_792_860_000));
+        // An offset's minutes count, added to its hours.
+        assert_eq!(epoch_of("2026-10-24T22:10:00+05:30"), Some(1_792_860_000));
+        // A leap second is a second.
+        assert_eq!(epoch_of("2016-12-31T23:59:60Z"), Some(1_483_228_800));
         for wrong in [
             "",
             "2026-10-24",
@@ -3287,6 +3303,7 @@ mod tests {
             "2026-10-24T16:40Z",
             "2026-10-24T16:40:00:00Z",
             "2026-10-24-01T16:40:00Z",
+            "2026-1-24T16:40:00Z",
             "+026-10-24T16:40:00Z",
             "2026-10-24T16:40:00*02:00",
             "1969-12-31T23:59:59Z",

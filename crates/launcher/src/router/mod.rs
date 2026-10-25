@@ -252,18 +252,30 @@ fn room(
     log: &Logbook,
 ) -> floor::Room {
     floor.check(log, || {
-        if !args.dry_run {
-            for slot in lanes.idle() {
-                lanes::prune_slot(
-                    args,
-                    here,
-                    slot,
-                    &harness_adapters::shell::disk::RealDisk,
-                    log,
-                );
-            }
-        }
+        reclaim(
+            args,
+            here,
+            &lanes.idle(),
+            &harness_adapters::shell::disk::RealDisk,
+            log,
+        );
     })
+}
+
+/// Prunes the build folders of the `idle` lanes' checkouts, under the
+/// floor — a dry run removes nothing.
+fn reclaim(
+    args: &WatchArgs,
+    here: &Path,
+    idle: &[usize],
+    disk: &dyn harness_core::ports::shell::disk::Disk,
+    log: &Logbook,
+) {
+    if !args.dry_run {
+        for slot in idle {
+            lanes::prune_slot(args, here, *slot, disk, log);
+        }
+    }
 }
 
 /// This tick's pace once the lanes' quota news is taken: a lane struck by
@@ -841,6 +853,12 @@ async fn rules_train(gh: &dyn GitHub, rules: &[Issue]) -> Outcome<(Option<(u64, 
     }
     let open_rules = by_number(gh.open_prs_labelled(labels::RULES).await?);
     let stands = harness_workflows::milestone_merge::rules_prs(gh, rules, &open_rules).await?;
+    Ok(train_of(&stands))
+}
+
+/// What the train takes of where the rules' PRs stand: the first mergeable
+/// one, and the tasks whose PR is mergeable or still checking.
+fn train_of(stands: &[(&Issue, &Pr, RulesPr)]) -> (Option<(u64, Pr)>, Vec<u64>) {
     let merge = stands
         .iter()
         .find(|(_, _, stands)| *stands == RulesPr::Mergeable)
@@ -850,7 +868,7 @@ async fn rules_train(gh: &dyn GitHub, rules: &[Issue]) -> Outcome<(Option<(u64, 
         .filter(|(_, _, stands)| matches!(stands, RulesPr::Mergeable | RulesPr::Checking))
         .map(|(task, _, _)| task.number)
         .collect();
-    Ok((merge, on_pr))
+    (merge, on_pr)
 }
 
 /// Says, once a full read, each PR that waits and on what, and warns of an
@@ -982,13 +1000,23 @@ async fn milestones_ready_to_merge(
     let mut found = Vec::new();
     for candidate in candidates {
         let tasks = gh.sub_issues(candidate.number).await?;
-        if audit::all_tasks_delivered(&tasks)
-            && merge_train::landing_waits(graph, candidate.number, milestones, &tasks).is_empty()
-        {
+        if lands_now(graph, candidate.number, milestones, &tasks) {
             found.push(candidate.number);
         }
     }
     Ok(found)
+}
+
+/// Whether `milestone` may land now: its own `tasks` all delivered, and no
+/// producer its landing waits on.
+fn lands_now(
+    graph: Option<&harness_workflows::common::routing::Graph>,
+    milestone: u64,
+    milestones: &[Issue],
+    tasks: &[Issue],
+) -> bool {
+    audit::all_tasks_delivered(tasks)
+        && merge_train::landing_waits(graph, milestone, milestones, tasks).is_empty()
 }
 
 /// The task whose PR is open on its milestone, reviewed and green, with that
@@ -1070,6 +1098,226 @@ async fn with_split_blockers(gh: &dyn GitHub, milestones: Vec<Issue>) -> Outcome
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A sink that keeps what the log said.
+    #[derive(Default)]
+    struct Lines(std::cell::RefCell<Vec<String>>);
+
+    impl Sink for Lines {
+        fn emit(&self, line: &str) {
+            self.0.borrow_mut().push(line.to_string());
+        }
+    }
+
+    /// What `run` says through a log, joined.
+    fn said(run: impl FnOnce(&Logbook)) -> String {
+        let lines = Rc::new(Lines::default());
+        let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+        run(&log);
+        lines.0.borrow().join("\n")
+    }
+
+    /// The arguments of `harness watch` followed by `extra`.
+    fn watch(extra: &[&str]) -> WatchArgs {
+        use clap::Parser as _;
+        let mut line = vec!["harness", "watch"];
+        line.extend_from_slice(extra);
+        match crate::cli::Cli::try_parse_from(line) {
+            Ok(crate::cli::Cli {
+                command: Some(crate::cli::Command::Watch(args)),
+                ..
+            }) => args,
+            other => panic!("a watch command line: {other:?}"),
+        }
+    }
+
+    /// A throwaway folder, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn the_floor_measures_the_lanes_workspaces_once_they_exist() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let scratch = Scratch(
+            std::env::temp_dir().join(format!("watch-volume-{}-{stamp}", std::process::id())),
+        );
+        let factory = scratch.0.join("factory");
+        std::fs::create_dir_all(&factory).expect("mkdir");
+        let args = watch(&["--workspaces-dir", "../ws"]);
+        assert_eq!(lanes_volume(&args, &factory), factory, "no workspaces yet");
+        std::fs::create_dir_all(scratch.0.join("ws")).expect("mkdir");
+        assert_eq!(lanes_volume(&args, &factory), factory.join("../ws"));
+    }
+
+    #[test]
+    fn under_the_floor_the_idle_lanes_are_pruned_unless_dry_run() {
+        use crate::dispatch::lanes::tests::Builds;
+        let here = Path::new("/f/factory");
+        let built = || {
+            Builds::with(&[(
+                "/f/factory/../ws/lane-1/target/debug/deps/a-0123456789abcdef",
+                3 * floor::GIB,
+                Some(1),
+            )])
+        };
+        let flags = [
+            "--parallel",
+            "3",
+            "--workspaces-dir",
+            "../ws",
+            "--lane-target-cap-gb",
+            "1",
+        ];
+        let disk = built();
+        let dry = [&flags[..], &["--dry-run"]].concat();
+        reclaim(&watch(&dry), here, &[1], &disk, &Logbook::null());
+        assert!(
+            disk.removed.borrow().is_empty(),
+            "a dry run removes nothing"
+        );
+        let disk = built();
+        reclaim(&watch(&flags), here, &[1], &disk, &Logbook::null());
+        assert_eq!(
+            *disk.removed.borrow(),
+            [PathBuf::from("/f/factory/../ws/lane-1/target/debug")]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_rule_waits_kept_stay_while_no_read_is_due() {
+        use crate::testing::NoGitHub;
+        use harness_workflows::common::rule_waits::Waits;
+        let mut pulse = Pulse {
+            rule_waits: Waits(std::collections::BTreeMap::from([(
+                "R3".to_string(),
+                vec!["capability:a".to_string()],
+            )])),
+            ..Pulse::default()
+        };
+        let kept = pulse.rule_waits.clone();
+        let read = rule_waits(&NoGitHub, &mut pulse, "main_agent", &Logbook::null()).await;
+        assert_eq!(read, kept);
+    }
+
+    #[tokio::test]
+    async fn the_rules_train_reads_github_only_while_a_rules_task_is_open() {
+        use crate::testing::NoGitHub;
+        let rules = |state: &str| {
+            vec![Issue {
+                number: 7,
+                state: state.to_string(),
+                ..Issue::default()
+            }]
+        };
+        let (merge, on_pr) = rules_train(&NoGitHub, &rules("closed"))
+            .await
+            .expect("nothing read");
+        assert!(merge.is_none() && on_pr.is_empty());
+        assert!(
+            rules_train(&NoGitHub, &rules("open")).await.is_err(),
+            "an open rules task reads its PRs"
+        );
+    }
+
+    #[test]
+    fn the_train_merges_the_first_mergeable_rules_pr_and_holds_the_checking_ones() {
+        let task = |number: u64| Issue {
+            number,
+            ..Issue::default()
+        };
+        let pr = |num: &str| Pr {
+            num: num.to_string(),
+            ..Pr::default()
+        };
+        let (t1, t2, t3, t4) = (task(1), task(2), task(3), task(4));
+        let (p1, p2, p3, p4) = (pr("11"), pr("12"), pr("13"), pr("14"));
+        let stands = [
+            (&t1, &p1, RulesPr::Red),
+            (&t2, &p2, RulesPr::Checking),
+            (&t3, &p3, RulesPr::Mergeable),
+            (&t4, &p4, RulesPr::Unjudged),
+        ];
+        let (merge, on_pr) = train_of(&stands);
+        assert_eq!(
+            merge.map(|(task, pr)| (task, pr.num)),
+            Some((3, "13".to_string()))
+        );
+        assert_eq!(on_pr, [2, 3]);
+        assert!(train_of(&[]).0.is_none());
+    }
+
+    #[test]
+    fn a_milestone_lands_once_its_tasks_are_delivered() {
+        let task = |state: &str| Issue {
+            number: 9,
+            state: state.to_string(),
+            ..Issue::default()
+        };
+        assert!(lands_now(None, 5, &[], &[task("closed")]));
+        assert!(
+            !lands_now(None, 5, &[], &[task("open")]),
+            "a task still building"
+        );
+        assert!(!lands_now(None, 5, &[], &[]), "no task, nothing delivered");
+    }
+
+    #[test]
+    fn a_waiting_pr_is_said_and_only_an_open_contest_naming_no_rule_is_warned() {
+        let issue = |number: u64, state: &str, title: &str, body: &str| Issue {
+            number,
+            state: state.to_string(),
+            title: title.to_string(),
+            body: body.to_string(),
+            ..Issue::default()
+        };
+        let rules = [
+            issue(40, "open", "Rules contested: PR #12", "no rule here"),
+            issue(41, "open", "Rules contested: PR #13", "contests R3"),
+            issue(42, "open", "rules for milestone 4", "no rule here"),
+            issue(43, "closed", "Rules contested: PR #14", "no rule here"),
+            issue(44, "closed", "rules for milestone 5", ""),
+        ];
+        let waiting = [(
+            Pr {
+                num: "12".to_string(),
+                ..Pr::default()
+            },
+            contest::PrWait::Contest { issue: 40 },
+        )];
+        let out = said(|log| say_waits(&waiting, &rules, log));
+        assert!(out.contains("watch: pr #12 waits on contest #40"), "{out}");
+        assert!(out.contains("watch: contest #40 names no rule"), "{out}");
+        for quiet in [41, 42, 43, 44] {
+            assert!(!out.contains(&format!("#{quiet} names no rule")), "{out}");
+        }
+    }
+
+    #[test]
+    fn a_full_backlog_is_said_and_one_with_room_is_not() {
+        let pr = |num: &str| Pr {
+            num: num.to_string(),
+            base: "milestone/2-x".to_string(),
+            ..Pr::default()
+        };
+        let full = said(|log| {
+            backlog_full(&[pr("1")], &[pr("3")], 2, log);
+        });
+        assert!(
+            full.contains("watch: 2 task PRs open for 2 lane(s)"),
+            "{full}"
+        );
+        let room = said(|log| {
+            backlog_full(&[pr("1")], &[], 2, log);
+        });
+        assert!(room.is_empty(), "{room}");
+    }
 
     #[test]
     fn the_watch_lock_sits_under_the_checkouts_own_state() {
