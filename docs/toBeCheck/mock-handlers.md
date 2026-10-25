@@ -188,37 +188,37 @@ digests stale.
 
 ## To check live
 
-- [ ] The upgrade at the watch's start rewrites `server.js` (and the
+- [x] The upgrade at the watch's start rewrites `server.js` (and the
       scripts, `gates.yml`, the README) on main_agent **and** runs
       `sh mock/build.sh` in the install clone: the same commit carries the
       12 bundles and `pages.json`, and `pages-mocked--bundles` stays green
       on main_agent and on the next task PR. The watch log says
-      "rebuilt the mock-up's bundles and their digests".
-- [ ] The install clone has the node the build needs (`npx esbuild`): if
+      "rebuilt the mock-up's bundles and their digests". (seen 2026-10-24 20:40 Paris: `upgrade: installed 8 file(s) on main_agent` and `rebuilt the mock-up's bundles and their digests: mock/build.sh, in the same commit`; 19dfbe5 carries the 14 bundles and pages.json; node-gates (pages-mocked--bundles, mock-handlers) green on main_agent and on the next task PRs #516, #526–#529)
+- [x] The install clone has the node the build needs (`npx esbuild`): if
       the upgrade fails there, the watch log says
-      `sh mock/build.sh failed in the install clone` and nothing is pushed.
-- [ ] Each milestone's next catch-up after the upgrade (round D): no
+      `sh mock/build.sh failed in the install clone` and nothing is pushed. (seen 2026-10-24 20:40 Paris: `sh mock/build.sh` ran in the install clone (bundles in 19dfbe5); the failure line not exercised)
+- [x] Each milestone's next catch-up after the upgrade (round D): no
       `Merge <sha> into milestone/N-…` from GitHub, but `milestone/N-…
       holds main_agent: mock/components/X.js and … regenerated` and a
       `chore: sh mock/build.sh after merging main_agent (<sha>) …` commit
       on the branch, one milestone a tick. `pages-mocked--bundles` green on
-      the pushed branch, including a component only the milestone has.
-- [ ] GitHub's compare answers for a branch name with a slash
+      the pushed branch, including a component only the milestone has. (seen 2026-10-24 20:50–20:54 Paris: #28, #24, #29 one a tick (`its local catch-up waits for the next tick`), `holds main_agent: mock/components/… regenerated`, #29 with ElementsPanel/TableSheet that only it has; node-gates green on 45cef01 and ee39bcc. The commit is one `chore: merge main_agent (<sha>) into <branch>, … regenerated`, not git's merge plus `chore: sh mock/build.sh after merging …`)
+- [x] GitHub's compare answers for a branch name with a slash
       (`compare/milestone/N-…...<sha>`): the watch log shows no
       `what main_agent changed since it cannot be read` debug line. If it
-      does, every catch-up goes local (still correct, one a tick).
-- [ ] A `main_agent` push that changes no file of the mock-up's build
+      does, every catch-up goes local (still correct, one a tick). (seen 2026-10-25 01:40 Paris: catch-ups of 10-24 18:50–20:14Z on milestone/N-… branches, 0 `cannot be read` lines in watch.log)
+- [x] A `main_agent` push that changes no file of the mock-up's build
       (a handler file, a Rust source) still catches up on GitHub: `Merge
-      <sha> into milestone/N-…`, no `catch-up` checkout mounted.
+      <sha> into milestone/N-…`, no `catch-up` checkout mounted. (seen 2026-10-24 21:21 Paris: after rules PR #518 landed, GitHub committed `Merge 19262b9 into milestone/28-…` and `… into milestone/24-…`, `holds main_agent`, no catch-up checkout mounted)
 - [ ] A task PR whose component exists only on it, after such a
       catch-up: the watch says `task PR(s) #n take it when they land`, the
       PR keeps its old base and stays green; no `pr_fix` session starts.
-- [ ] Its landing: `watch: milestone_merge -> #<task> waits: PR #n took
+- [x] Its landing: `watch: milestone_merge -> #<task> waits: PR #n took
       milestone/N-… in the harness's checkout, its mock-up bundles
       rebuilt`, a `chore: sh mock/build.sh after merging milestone/N-… (<sha>)
       into <task branch>` commit on the PR, CI reruns green, the next
       attempt merges it, and `pages-mocked--bundles` stays green on the
-      milestone after.
+      milestone after. (seen 2026-10-24 21:37 Paris: `milestone_merge -> #486 waits: PR #516 took milestone/24-… in the harness's checkout, its mock-up bundles rebuilt`; the PR got `Merge commit '2cb67f9' into feat/scr…` (not the `chore: sh mock/build.sh after merging …` wording), CI green, merged 19:51Z by milestone_merge; node-gates green on milestone/24 after (PR #519))
 - [ ] A task PR skipped as `Busy` during that catch-up (its session still
       running), green on its old base: it never lands with the old digest —
       the merge train refreshes it first, same lines as above.
@@ -226,18 +226,18 @@ digests stale.
       catching up after `main_agent` landed another milestone's components:
       local catch-up with `sh mock/build.sh`, no GitHub merge, its
       `pages-mocked--bundles` green after.
-- [ ] GitHub's compare with a sha as base and a branch as head
+- [x] GitHub's compare with a sha as base and a branch as head
       (`compare/<sha>...milestone/N-…`, the reverse read): no `cannot be
-      read` debug line in the watch log.
-- [ ] The conformance check (`ArchitectureHolds`) reports no stale bundle
+      read` debug line in the watch log. (seen 2026-10-24 22:13 Paris: catch-ups after #519 brought #24's bundles, 0 `cannot be read` lines in watch.log)
+- [x] The conformance check (`ArchitectureHolds`) reports no stale bundle
       on a milestone branch the upgrade has not reached yet (old `server.js`,
-      old digests).
+      old digests). (seen 2026-10-24 20:55 Paris: #486's round mounted milestone/24 at 18:45Z, before its catch-up (18:52Z, old server.js and digests): `ArchitectureHolds: pass`)
 - [ ] Open PRs adding a handler to `mock/src/commands.js` stay green after
       the upgrade (only the README in `mock/handlers/`), and go red only
       once the split landed on their base.
-- [ ] Step 1 on the real main_agent: 54 handler files + 2 `_lib`, the
+- [x] Step 1 on the real main_agent: 54 handler files + 2 `_lib`, the
       self-check passes, `pages.json` digests rewritten (no bundle change),
-      `pages-mocked--bundles` and `mock-handlers` green, the PR lands.
+      `pages-mocked--bundles` and `mock-handlers` green, the PR lands. (seen 2026-10-24 23:10 Paris: PR #530 (squash a55bd4d): 61 handler files + `_lib/{reads,commands}.js` (more ids than the rehearsal's 54), legacy files deleted, pages.json rewritten, no bundle changed; node-gates and every check green; merged)
 - [ ] The view's easel on main_agent: every mocked page behaves as before.
       Commands apply, reads answer, an unknown DataCapability is rejected
       with "has no handler: write mock/handlers/<id>.js". The only console
@@ -249,6 +249,6 @@ digests stale.
       milestone added before migrating is resolved by the merge-base rule.
 - [ ] After a week: no catch-up residual on `mock/src/commands.js`, and no
       `pages.json` digest conflict caused by a handler.
-- [ ] A session building a Capability/DataCapability writes
+- [x] A session building a Capability/DataCapability writes
       `mock/handlers/<id>.js` (its narrowed checkout has it) and nothing in
-      `mock/src/reads.js` / `commands.js`.
+      `mock/src/reads.js` / `commands.js`. (seen 2026-10-24 22:33 Paris: PR #526 (`live.listSuggestions`, a session after the upgrade) adds `mock/handlers/live.listSuggestions.js`, nothing in the legacy files, node-gates green; NO_NARROW is on, so the narrowed checkout was not exercised)

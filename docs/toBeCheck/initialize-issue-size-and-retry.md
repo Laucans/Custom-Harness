@@ -21,9 +21,9 @@ refused as not a fast-forward and left nothing to save aside.
   each secrets task as soon as it opens.
 
 ## To verify
-- [ ] Rebuild and restart the view, ForgeDesMondes → Initialize again: the
-      roadmap task opens (body ≈ 57–63k characters, under 65,536).
-- [ ] No second rules task (#2) nor secrets task (#3).
-- [ ] `mockup_at` still `main_agent@9e6e4db57f` (or a newer commit), `design_at` kept.
-- [ ] The planner reads the lighter roadmap well and puts each rule in a milestone.
+- [x] Rebuild and restart the view, ForgeDesMondes → Initialize again: the
+      roadmap task opens (body ≈ 57–63k characters, under 65,536). (seen 2026-10-17 00:05 Paris: roadmap task #4 opened, body 47,685 characters — under 65,536, below the expected range since Decisions folded)
+- [x] No second rules task (#2) nor secrets task (#3). (seen 2026-10-17 00:05 Paris: the retry opened #4 only; #2 and #3 are the first attempt's (22:04), #5+ the planner's)
+- [x] `mockup_at` still `main_agent@9e6e4db57f` (or a newer commit), `design_at` kept. (seen 2026-10-17 00:05 Paris: #4 names `main_agent@9e6e4db57f`)
+- [x] The planner reads the lighter roadmap well and puts each rule in a milestone. (seen 2026-10-17 03:16 Paris: the planner opened milestones #16–#30; all 49 rules of rules.json are named in their bodies)
 - [ ] A forced refusal shows GitHub's reason in the job's error.

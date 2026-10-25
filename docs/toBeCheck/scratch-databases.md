@@ -48,7 +48,7 @@ default); the installed guard compiled against the engine by path and its
 panic test leaving no database (`tests/scratch_db.rs`, ignored by default).
 
 ## To check
-- [ ] The factory's role is **`forgedesmondes`** (its `DATABASE_URL`, owner
+- [x] The factory's role is **`forgedesmondes`** (its `DATABASE_URL`, owner
       of the test databases), not the role `provision.sh` provisions: the
       container's env names `dnd_app` (`APP_DATABASE_URL` of the shared
       checkout's `.env.local`), so `scripts/postgres.sh provision` never
@@ -56,15 +56,15 @@ panic test leaving no database (`tests/scratch_db.rs`, ignored by default).
       by `postgres`, read 2026-10-24): `select pg_has_role('forgedesmondes',
       'pg_signal_backend', 'USAGE')` is `t` and its `rolsuper` is `f`. Check
       it again before relying on `WITH (FORCE)`; a new factory's role is
-      granted by hand (`GRANT pg_signal_backend TO <role>` as `postgres`).
-- [ ] Restart the watch (`tools/restart_watch.sh`): the start's upgrade
+      granted by hand (`GRANT pg_signal_backend TO <role>` as `postgres`). (seen 2026-10-24 10:20 Paris: DECISIONS.md — `GRANT pg_signal_backend TO forgedesmondes` on harness-postgres; not re-queried since)
+- [x] Restart the watch (`tools/restart_watch.sh`): the start's upgrade
       commits `crates/platform/scratch-db/`, the v6 `CLAUDE.md` block and
       `gates.yml` on `main_agent`, with no "diverged … kept" line for
       `gates.yml` or `CLAUDE.md` in the journal. If `gates.yml` was kept,
-      port the gate by hand.
-- [ ] The application role sees the connection counts of its own databases
+      port the gate by hand. (seen 2026-10-24 13:38 Paris: `upgrade: installed 9 file(s) on main_agent: .github/workflows/gates.yml, …, crates/platform/scratch-db/…, scripts/rules-runtime.sh, CLAUDE.md`; neither gates.yml nor CLAUDE.md in the diverged list)
+- [x] The application role sees the connection counts of its own databases
       and drops them: no "could not be listed" / "could not be dropped"
-      warning in `watch.log` over the first hour.
+      warning in `watch.log` over the first hour. (seen 2026-10-24 13:38–22:52 Paris: no `could not be listed` / `could not be dropped` warning; no ScratchDatabasesSwept line either (nothing dated to drop))
 - [ ] The sweep drops only dated names: compare `select datname from
       pg_database` before and after the first `ScratchDatabasesSwept` line —
       `forgedesmondes`, `dnd_helper`, `postgres`, the templates and every
@@ -74,11 +74,11 @@ panic test leaving no database (`tests/scratch_db.rs`, ignored by default).
       pg_database where datname ~ '^(rules_runtime|schema_dump)_[0-9]{10}_'`
       taken just before); `scratch_*` drops appear only once product tests
       use the guard, and stay a handful an hour (killed processes only).
-- [ ] The upgrade carried the new `scripts/rules-runtime.sh` (database
-      created after the build): no "diverged … kept" line for it.
-- [ ] A new product test written by a session uses `ScratchDb::create`; a PR
+- [x] The upgrade carried the new `scripts/rules-runtime.sh` (database
+      created after the build): no "diverged … kept" line for it. (seen 2026-10-24 13:38 Paris: in the installed list, not diverged)
+- [x] A new product test written by a session uses `ScratchDb::create`; a PR
       that adds one with `CREATE DATABASE` turns `scratch-databases-shared`
-      red, and editing an old file stays green.
+      red, and editing an old file stays green. (seen 2026-10-24 22:06 Paris: #24's new tests `analyze-brief/tests/tables.rs` and `Session/tests/entries.rs` use ScratchDb, no CREATE DATABASE; the gate's red case not seen)
 - [ ] The 73 old files still create `<name>_<pid>` databases the sweep
       never touches: the +250/h goes on until they move. Keep
       `tools/db-sweeper.sh` running, and open the product task that moves

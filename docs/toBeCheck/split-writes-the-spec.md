@@ -29,17 +29,17 @@ sessions of business refinement. These are milestones M2 and M3 of the plan
 
 ## To check on a fresh product
 
-- [ ] The planner logs `design dossier: …` and opens milestones with
+- [x] The planner logs `design dossier: …` and opens milestones with
       `harness:ready` and no `harness:refinement`. The notification
-      "#R: N milestone(s) planned" appears.
-- [ ] Split opens tasks carrying the four sections, each criterion with its
+      "#R: N milestone(s) planned" appears. (seen 2026-10-17 03:09–03:16 Paris: `design dossier: 22 micro-frontend(s), 53 write(s), 12 aggregate(s), 49 rule(s)`, milestones #16–#30 opened harness:ready without refinement, MilestonesPlanned event)
+- [x] Split opens tasks carrying the four sections, each criterion with its
       rule. Agent tasks carry `harness:ready`; human tasks do not. Count the
-      tasks with all four sections: expected all of the agent ones.
+      tasks with all four sections: expected all of the agent ones. (seen 2026-10-24 22:07 Paris: split of #27: 6/6 agent tasks #520–#525 carry Business Goal, Acceptance Criteria, Business Rules, Technical, all harness:ready; rules cited where the milestone's rules fall (#524: R6, R18))
 - [ ] No hand label is posed between Initialize and the first PR.
-- [ ] A task runs one `code` session: `costs.tsv` has one row per task, no
+- [x] A task runs one `code` session: `costs.tsv` has one row per task, no
       `technical-refinement` or `create-test` rows. Its PR carries the tests,
-      `## Plan` and `Rules:`.
+      `## Plan` and `Rules:`. (seen 2026-10-24: no technical-refinement or create-test rows in costs.tsv; 34 of 41 tasks one code row (the others resumed after stops); PRs #526–#529 carry tests and `## Plan`, `Rules:` where cited (#528))
 - [ ] Cost per task compared with the three-stage baseline of the dnd_helper2
-      run (healthy task $2–5): target a median of at most $2.5.
-- [ ] A task opened by hand without the sections stops with "carries no SPEC".
-      Writing the sections lets the next tick take it.
+      run (healthy task $2–5): target a median of at most $2.5. (contradicted 2026-10-25 01:40 Paris: median code cost per task since 10-22 is 3.54 $ over 67 tasks; 6.8 $ all-in per merged task PR over the night of 23→24)
+- [x] A task opened by hand without the sections stops with "carries no SPEC".
+      Writing the sections lets the next tick take it. (seen 2026-10-24 05:17 Paris: #434 `carries no SPEC — write its ## Business Goal and ## Acceptance Criteria …`; sections written, retaken 03:18Z (pass). Same for #503 at 15:18 Paris)

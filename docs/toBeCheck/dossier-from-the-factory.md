@@ -32,15 +32,15 @@ and the rules' tests read one per Capability. Milestone M1 of the plan
 - [ ] Componentize writes one fixture per Capability and `fixtures: [...]` in
       `mock/pages.json`; the fragments fetch `../fixtures/<Capability>.json`
       and show their data on the easel.
-- [ ] Every fragment carries `data-reads` / `data-writes` for each need and
+- [x] Every fragment carries `data-reads` / `data-writes` for each need and
       action. Otherwise the Rules step refuses validation, naming the
-      micro-frontend.
-- [ ] Initialize writes `mock/data/aggregates/*.aggregate.json`;
+      micro-frontend. (seen 2026-10-24 23:10 Paris: `pages-mocked` (every hand-written micro-frontend's parts and fixtures) green on main_agent; the Rules-step refusal not seen in the traces)
+- [x] Initialize writes `mock/data/aggregates/*.aggregate.json`;
       `npx ajv-cli@5 validate --spec=draft2020 -s contracts/i-aggregate.schema.json -d 'mock/data/aggregates/*.aggregate.json'`
-      passes.
-- [ ] `mock/proof-of-concept.json` lists `writes` with the audit's effects
-      (when the audit ran) and the data step's `touches`.
+      passes. (seen 2026-10-16 22:04 Paris: Initialize (9e6e4db) wrote 12 aggregate drafts, unchanged since; `manifests-conform-to-contracts` validates them against i-aggregate, green from 864d594 to today)
+- [x] `mock/proof-of-concept.json` lists `writes` with the audit's effects
+      (when the audit ran) and the data step's `touches`. (seen 2026-10-16 22:04 Paris: 9e6e4db's proof-of-concept.json lists 53 writes with effect and touches, and 12 aggregates)
 - [ ] The gates `manifests-conform-to-contracts` and `pages-mocked` are
-      green on the integration branch right after Initialize.
+      green on the integration branch right after Initialize. (contradicted 2026-10-16 22:04 Paris: once the gates of today were installed (af5d19a), main_agent@9e6e4db failed contract N — single `fixture`, no `version` — fixed by hand in 864d594 (17 Oct 02:18); the mock-up was componentized before this shipped)
 - [ ] An existing factory's mock-up with `fixture` (single) is refused by
-      `manifests-conform-to-contracts`. Re-componentizing fixes it.
+      `manifests-conform-to-contracts`. Re-componentizing fixes it. (partly seen: that refusal came on ForgeDesMondes, fixed by hand (864d594), not by re-componentizing)

@@ -18,12 +18,12 @@ real model is unverified.
 
 ## To check in a real creation
 
-- [ ] dnd-like brief (campaign, player characters, combat): round 1 lands in
-      ≥ 3 topic cards plus a *General* one.
-- [ ] Topics are written in the brief's language.
-- [ ] Round 2 reuses the round-1 topics — no near-synonym card
-      (*Combat* / *Combats* / *Fights*).
-- [ ] No decision asked twice across two cards, in a round or across rounds.
+- [x] dnd-like brief (campaign, player characters, combat): round 1 lands in
+      ≥ 3 topic cards plus a *General* one. (seen 2026-10-16 22:04 Paris, ForgeDesMondes' record (9e6e4db mock/proof-of-concept.json): round 1 filed under Préparation de campagne, Micro et suggestions IA, Médias, plus 4 under General)
+- [x] Topics are written in the brief's language. (seen same record: topics in French; one, `DM view`, keeps the brief's own term)
+- [x] Round 2 reuses the round-1 topics — no near-synonym card
+      (*Combat* / *Combats* / *Fights*). (seen same record: 5 rounds, 8 topics, later rounds reuse them, no near-synonym card)
+- [x] No decision asked twice across two cards, in a round or across rounds. (seen same record: 38 distinct question titles, none repeated across cards)
 - [ ] An old creation record (questions without `topic`) shows them all
       under *General*, and answering still saves.
 - [ ] Answering, *use it*, delete and *use the N recommendations* work inside
@@ -39,5 +39,5 @@ real model is unverified.
 - [ ] The new round's questions are yellow; typing in one (or *use it*,
       *use the N recommendations*) greys it at once; after a reload the
       answered ones stay grey.
-- [ ] The roadmap issue opened at the end shows `### General` then one
-      `### <topic>` per topic with decisions.
+- [x] The roadmap issue opened at the end shows `### General` then one
+      `### <topic>` per topic with decisions. (seen 2026-10-17 00:05 Paris: issue #4 folded Decisions into mock/proof-of-concept.md for size; there `### General` then 8 `### <topic>`)

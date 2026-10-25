@@ -20,28 +20,28 @@ catch-up regeneration) add their own points below.
 
 ## To verify
 
-- [ ] The tag `dataguard-v2` is cut on a green `main` and pushed, on the
+- [x] The tag `dataguard-v2` is cut on a green `main` and pushed, on the
       owner's word, before any product installs these assets: the skeleton
-      names it already (`assets/dataguard-server/Cargo.toml`).
+      names it already (`assets/dataguard-server/Cargo.toml`). (seen 2026-10-25 01:40 Paris: `dataguard-v2` on GitHub at aa84687, its CI green)
 - [ ] `harness init-repo` on a product without a registry runs
       `bash scripts/register.sh` in the install clone, and its one commit
       carries `crates/dataguard/registry/Cargo.toml` beside the assets; the
       report says `registered the units: …`.
-- [ ] On ForgeDesMondes (M1): `crates/server/Cargo.toml` is reported
+- [x] On ForgeDesMondes (M1): `crates/server/Cargo.toml` is reported
       `diverged, the product's own now — kept`, and nothing of its
-      `crates/server/` is overwritten.
-- [ ] A unit crate that takes the engine itself (an aggregate's `Judge`, a
+      `crates/server/` is overwritten. (seen 2026-10-21 19:00 Paris: upgrade line `diverged, the product's own now — kept: … crates/server/Cargo.toml, crates/server/src/main.rs`)
+- [x] A unit crate that takes the engine itself (an aggregate's `Judge`, a
       DataCapability's `Prepare`) resolves to the same `harness-dataguard`
       as the server. Decided in A5c: `harness-dataguard = { workspace = true }`,
       the root's `[workspace.dependencies]` line written by `register.sh`
       from the server's. Proved on the throwaway product (engine by `path`);
       on ForgeDesMondes after M1, `cargo tree -i harness-dataguard` shows one
-      package, at the tag.
-- [ ] The root `Cargo.toml` lists `crates/dataguard/registry`,
+      package, at the tag. (seen 2026-10-25 01:40 Paris: the product's Cargo.lock holds one harness-dataguard, `tag=dataguard-v5`; 65 unit crates take it `{ workspace = true }`)
+- [x] The root `Cargo.toml` lists `crates/dataguard/registry`,
       `crates/server` and the three unit globs (`workspace-members-by-glob`,
-      A5b).
+      A5b). (seen 2026-10-25 01:40 Paris: root members list crates/dataguard/registry, crates/server and the three unit globs)
 - [ ] `cargo run -p server -- inventory` on the real product lists every
-      unit and its needs; `serve` refuses to start while a need is unshared.
+      unit and its needs; `serve` refuses to start while a need is unshared. (partly seen 2026-10-21: code sessions ran the server's inventory and found their unit listed; serve's refusal on an unshared need not seen)
 
 ## What shipped (A5b)
 
@@ -59,24 +59,24 @@ catch-up regeneration) add their own points below.
 
 ## To verify (A5b)
 
-- [ ] ForgeDesMondes is red on purpose until M2: its twelve aggregates sit
+- [x] ForgeDesMondes is red on purpose until M2: its twelve aggregates sit
       under `crates/dataguard/aggregates/`, so `aggregate-placed` fails on
       each (naming the system its DataCapabilities share), and
       `units-registered` fails while it has no registry. No compatibility
       path was added. Expected after M2: both green on `main_agent`, and
-      `tree::violations` (the dev loop's reading) empty of either rule.
-- [ ] The gate's `cargo metadata --no-deps` on the real product resolves
+      `tree::violations` (the dev loop's reading) empty of either rule. (seen 2026-10-24 23:10 Paris: `aggregate-placed` and `units-registered` green on main_agent run 40133015694; no ArchitectureHolds halt since 21 Oct names either rule)
+- [x] The gate's `cargo metadata --no-deps` on the real product resolves
       without the network (the engine is a `git` dependency) and in under
-      a minute on the CI runner.
-- [ ] `isolation.sh` on the migrated product: every DataCapability depends
+      a minute on the CI runner. (seen 2026-10-24 23:10 Paris: `units-registered` (cargo metadata --no-deps) took 3 s on the CI runner)
+- [x] `isolation.sh` on the migrated product: every DataCapability depends
       on its target aggregate's crate and on no other, and nothing but
-      `crates/dataguard/server` and `crates/server` depends on the registry.
+      `crates/dataguard/server` and `crates/server` depends on the registry. (seen 2026-10-24 23:10 Paris: `capability-isolation` (scripts/isolation.sh) green on main_agent run 40133015694)
 - [ ] A DataCapability whose target aggregate is another system's: the
       gate lets it depend on that crate (a decision of A5b, not of the
       plan) — confirm the owner wants writes across systems allowed this way.
 - [ ] Narrowing, if it comes back: a unit's closure carries
       `crates/dataguard/registry/`, which reaches every unit crate by path,
-      so the graph pass brings every unit folder back (cargo needs them).
+      so the graph pass brings every unit folder back (cargo needs them). (not exercised: NO_NARROW since 17 Oct)
 
 ## What shipped (A5c)
 
@@ -98,7 +98,7 @@ catch-up regeneration) add their own points below.
 
 - [ ] `harness init-repo` (or the watch's upgrade) on ForgeDesMondes writes
       `harness-dataguard` under the root's `[workspace.dependencies]`, below
-      its own entries, and appends the CLAUDE rules v5 block in place of v4.
+      its own entries, and appends the CLAUDE rules v5 block in place of v4. (partly seen: the root engine line and rules v5 came by hand in migration PRs #323/#324/#335 (21 Oct); the upgrade later replaced the CLAUDE block in place, v6 → v7 (19dfbe5, 24 Oct))
 - [ ] A live watch whose milestone branch GitHub refuses to catch up on
       `Cargo.lock` and the registry's `Cargo.toml` only: the journal says
       `… holds main_agent: Cargo.lock and crates/dataguard/registry/Cargo.toml
@@ -106,18 +106,18 @@ catch-up regeneration) add their own points below.
       milestone's branch, and the held task starts at the next tick.
       Expected cost: one clone (`catch-up`, under the workspaces) the first
       time, then a fetch.
-- [ ] Same, with a source file conflicting too: the watch still says
+- [x] Same, with a source file conflicting too: the watch still says
       `held: … cannot take main_agent`, the `catch-up` checkout is left
-      clean (merge aborted, released), nothing pushed.
+      clean (merge aborted, released), nothing pushed. (seen 2026-10-24 18:09 Paris: milestone/24 conflicting on mock/src/commands.js — `cannot take main_agent`, the catch-up checkout `back on origin/…, clean`, nothing pushed)
 - [ ] `cargo metadata` in the `catch-up` checkout fetches the engine by git
       within its 10-minute limit on a cold cargo cache.
-- [ ] A `pr_fix` session on a PR conflicting on the generated pair follows
+- [x] A `pr_fix` session on a PR conflicting on the generated pair follows
       the prompt: `git checkout --theirs Cargo.lock`, `register.sh`,
-      `cargo metadata`, no hand-edited registry line in its merge commit.
+      `cargo metadata`, no hand-edited registry line in its merge commit. (seen 2026-10-22 02:54 Paris: pr-fix 20261022-005440 — `git checkout --theirs Cargo.lock crates/dataguard/registry/Cargo.toml && bash scripts/register.sh; cargo metadata`)
 - [ ] A session building a DataCapability or an aggregate from its card
       alone writes `plugin()`, takes the engine with `{ workspace = true }`,
       and its PR touches only its folder, `Cargo.lock` and the registry's
-      `Cargo.toml` (M5's proof).
+      `Cargo.toml` (M5's proof). (contradicted 2026-10-24: DataCapability PRs #479, #496, #500 also touch mock/src/commands.js, every mock/components bundle and mock/pages.json, #500 crates/ports/llm and crates/server too — before H1-C's own handler files)
 
 ## What shipped (A6)
 
@@ -140,14 +140,14 @@ catch-up regeneration) add their own points below.
 
 ## To verify (A6)
 
-- [ ] The tag `dataguard-v3` is cut on the A6 commit once its CI is green,
-      and pushed on the owner's word: the skeleton names it already.
+- [x] The tag `dataguard-v3` is cut on the A6 commit once its CI is green,
+      and pushed on the owner's word: the skeleton names it already. (seen 2026-10-25 01:40 Paris: `dataguard-v3` on GitHub at bc8183d, its CI green)
 - [ ] ForgeDesMondes on `dataguard-v3` (M1): no `payload key(s) … not
       declared` warning on the ten DataCapabilities whose wire keys the
       legacy `submit()` renames; `note_import_invariants.rs:268` passes
-      with its exact warnings.
-- [ ] The rules suite (`tests/rules/business`, `target.id`) runs green
-      against the real server, not only the mock.
+      with its exact warnings. (partly seen 2026-10-24 23:15 Paris: 0 `not declared` in main_agent's CI log; note_import_invariants.rs went with the legacy server (#335))
+- [x] The rules suite (`tests/rules/business`, `target.id`) runs green
+      against the real server, not only the mock. (seen 2026-10-24 23:13 Paris: `rules-hold` green on main_agent run 40133015694 — rules-runtime.sh serves the real server, never the mock)
 - [ ] `ai.extractFromNotes` as a `Prepare` with `then` (N proposals, then
       the note): the answer's `then` lists N+1 `submitted`, the note's
       idempotency key replays the whole without resubmitting a proposal.
@@ -178,15 +178,15 @@ catch-up regeneration) add their own points below.
 
 ## To verify (A7)
 
-- [ ] The tag `dataguard-v4` is cut on the A7 commit once its CI is green,
-      and pushed on the owner's word: the skeleton names it already.
-- [ ] ForgeDesMondes on `dataguard-v4`: each aggregate crate with a
+- [x] The tag `dataguard-v4` is cut on the A7 commit once its CI is green,
+      and pushed on the owner's word: the skeleton names it already. (seen 2026-10-25 01:40 Paris: `dataguard-v4` on GitHub at 16370bc, its CI green)
+- [x] ForgeDesMondes on `dataguard-v4`: each aggregate crate with a
       `ProjectPg` drops its `tokio-postgres` line, `externals-behind-ports`
-      is green on `main_agent`, and `Cargo.lock` holds one `tokio-postgres`.
-- [ ] After `bash scripts/register.sh`, the product's `cargo machete` (its
-      CI) reports none of the registry's units.
-- [ ] A hostless Capability manifest (`"host": "hostless"`) passes
-      `manifests-conform-to-contracts` in a real product's CI.
+      is green on `main_agent`, and `Cargo.lock` holds one `tokio-postgres`. (seen 2026-10-25 01:40 Paris: no aggregate Cargo.toml names tokio-postgres (8 have a ProjectPg), Cargo.lock holds one, externals-behind-ports green on main_agent)
+- [x] After `bash scripts/register.sh`, the product's `cargo machete` (its
+      CI) reports none of the registry's units. (seen 2026-10-24 23:15 Paris: main_agent's ci — `cargo-machete didn't find any unused dependencies`)
+- [x] A hostless Capability manifest (`"host": "hostless"`) passes
+      `manifests-conform-to-contracts` in a real product's CI. (seen 2026-10-24 23:10 Paris: ai/list-provider-requests capability.json has `host: hostless`; manifests-conform-to-contracts green on main_agent)
 
 ## Found by the ForgeDesMondes migration (M2-noteimport, PR #334)
 
@@ -217,10 +217,10 @@ catch-up regeneration) add their own points below.
       `harness:contract-change` issue. `pr_fix` only halts. PR #343 (task
       #156) stopped on `media.listMedia` (input `campaign` and not
       `campaignId`), and the issue was opened by hand (2026-10-21). `pr_fix`'s
-      stop should share the dev loop's contract path.
+      stop should share the dev loop's contract path. (still open: seen again in the 23→24 Oct night — #423's pr_fix stopped on session.listScenes, #433/#434 opened by hand (night/report-2026-10-24.md))
 - [ ] **The contract manager's task has no SPEC.** The task the contract
       manager opens on the producer's milestone (#362 for `media.listMedia`
       v2) has `## Scope` but no `## Business Goal` or `## Acceptance
       Criteria`. The dev loop's gate `TaskHasASpec` halts it. The sections
       were added by hand on 2026-10-21. The contract manager should write
-      them, derived from the need and the evolution.
+      them, derived from the need and the evolution. (still open: seen again in the 23→24 Oct night, #433/#434 completed by hand (night/report-2026-10-24.md))

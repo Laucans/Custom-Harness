@@ -31,7 +31,7 @@ and 120 s: 162 calls in 10 minutes.
 - [ ] No merge of a PR whose head moved after its checks were read
       (a refused merge says `--match-head-commit`, and the next tick
       re-reads).
-- [ ] A task closed or a label changed by a lane is seen by the watch at
-      its next tick (the activity read changes, the kept board is dropped).
-- [ ] Back to `--parallel 5 --interval 60`: no `rate limit exceeded` in
-      `watch.log` over two hours.
+- [x] A task closed or a label changed by a lane is seen by the watch at
+      its next tick (the activity read changes, the kept board is dropped). (seen 2026-10-24 18:04 Paris: decide's lane marked #486 decided at 18:04:08; the next tick, 18:04:29, offered `DevTask` #486)
+- [x] Back to `--parallel 5 --interval 60`: no `rate limit exceeded` in
+      `watch.log` over two hours. (seen 2026-10-25 01:40 Paris: no `rate limit exceeded` in watch.log after 2026-10-20 07:38 Paris; the watch ran every 60 s on lanes 0–4 through 21–24 Oct)

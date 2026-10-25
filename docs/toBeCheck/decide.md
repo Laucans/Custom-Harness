@@ -36,23 +36,23 @@ This is M5 of the plan "autonomous development from the design dossier".
 
 ## To check on a real run
 
-- [ ] A session answering `AGENT_LOOP_STOP: …`:
+- [x] A session answering `AGENT_LOOP_STOP: …`:
   - the task gets `## Decision` (kind stop, round 1) and
     `harness:needs-decision`;
   - the lane ends 0 and nothing is parked;
   - within two ticks `decide` answers, the task carries `harness:ai-decided`,
-    and the loop takes it again with the answer in its SPEC.
+    and the loop takes it again with the answer in its SPEC. (seen 2026-10-24 12:07–18:04 Paris: #486 stopped (stop, round 1), lane exit 0; decide at the next tick labelled harness:ai-decided (wait); once #22 landed the answer came at 18:04 and the loop took #486 the next tick)
 - [ ] The breaker refusing: same path, kind `breaker`. The body changed, so
       the next prompt's fingerprint differs and the session runs.
-- [ ] A write-side PR blocking after 2 repairs: the notification "repairs:#t",
+- [x] A write-side PR blocking after 2 repairs: the notification "repairs:#t",
       then "decided:#t".
   - On `repair`: the PR gets the decision marker and `harness:pr-fix`, and
     `pr_fix` runs once more.
-  - On `merge`: `milestone_merge::run` merges it and closes the task.
+  - On `merge`: `milestone_merge::run` merges it and closes the task. (seen PR #493 of #449 → decide `repair` 2026-10-24 12:15 Paris, harness:pr-fix posed, pr_fix ran the next tick; PR #411 of #190 → `merge` 2026-10-23 22:26 Paris, merged and #190 closed; the view's notifications not checked)
 - [ ] Overrule: write `decided-by: owner` + the answer under `## Decision` and
       pose `harness:needs-decision`. `decide` pays nothing, takes the label,
-      and the task goes on.
-- [ ] A third stop on one task opens "Decide for #t: …" (`harness:human`,
+      and the task goes on. (contradicted 2026-10-20 06:17–07:55 Paris: on #157 the owner's answer cost nothing (`the owner had decided — nothing paid`), but PR #279's `still blocked after 2 repair(s)` posed the label again — decide re-ran 9 times in 1 h 40, the task did not go on)
+- [x] A third stop on one task opens "Decide for #t: …" (`harness:human`,
       sub-issue of the milestone, blocking #t). The notification "#h needs
-      you" appears.
-- [ ] Cost: one opus session per decision; count them per milestone.
+      you" appears. (seen 2026-10-17 16:51 Paris: #42's third stop opened #74 `Decide for #42: …` (harness:human, blocks #42), HumanTaskOpened recorded; the view's notification not checked)
+- [x] Cost: one opus session per decision; count them per milestone. (seen 2026-10-25 01:40 Paris: 133 decide sessions, $40.03 (~$0.30 each) for 131 DecisionTaken; per milestone #16 5, #17 7, #18 16, #19 4, #20 9, #21 6, #22 3, #23 3, #24 5, #25 12, #26 2, #28 54, none 7)

@@ -100,11 +100,11 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
       progress and no red before adds the same two; a quiet tick still
       reads nothing beyond the activity probe. Count them in the watch's
       journal at `--verbose`.
-- [ ] `gh run list --branch main_agent --limit 20 --json
+- [x] `gh run list --branch main_agent --limit 20 --json
       headSha,status,conclusion,name` on the product's repo: the first row is
       the newest run (the assumption `branch_checks_from` makes to pick the
-      newest sha); 20 rows hold every workflow of the last push.
-- [ ] Push something red on `main_agent` directly (or merge a red milestone
+      newest sha); 20 rows hold every workflow of the last push. (seen 2026-10-25 01:40 Paris: the newest run comes first (a55bd4d gates/ci); 20 rows hold the last 10 pushes, both workflows each)
+- [x] Push something red on `main_agent` directly (or merge a red milestone
       PR by hand):
   - within one full read (at most `FULL_READ_EVERY` = 10 ticks, 5 min at
     the default interval, less if the board moves), the journal says
@@ -120,11 +120,11 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
     `schedule: …` entry naming one; under `--parallel`, no `LaneTaken`;
   - a `harness:pr-fix` PR or a `harness:to-review` PR is still dispatched;
     a `harness:needs-decision` issue is still decided;
-  - restart the watch while red: still no second issue.
-- [ ] Fix the base (push green): within one full read, the issue is
+  - restart the watch while red: still no second issue. (seen 2026-10-21 21:32 Paris: red at 1a31d39: `integration branch main_agent is red …` and the warning; exactly one issue #363 (harness:human, body names the sha); next ticks the line again, `saw: base=Some(false)`, no DevTask or merge tick (to_merge=[202] waited), PrFix/PrReview/Decide went on. A restart while red and the view's notification were not seen)
+- [x] Fix the base (push green): within one full read, the issue is
       commented "green again" and closed, `BaseGreen` in the journal, the
       notification gone, and the next tick schedules a `DevTask` / a merge
-      again.
+      again. (seen 2026-10-21 22:05 Paris: `green again — development and merges resume`, #363 commented and closed, BaseGreen, next tick MergeIntoMilestone #202; the view's notification not checked)
 - [ ] A task PR whose checks are still running when `decide` answers
       `merge`: no merge, the PR carries `<!-- harness-decided: merge -->`
       with the clean verdict marker, the task says "merges when its checks
@@ -133,13 +133,13 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
       (the train), which merges and closes the task.
 - [ ] A task PR with a red check when `decide` answers `merge`: the PR gets
       `harness:pr-fix` and the decision marker; `pr_fix` runs once more.
-- [ ] A milestone PR red on `main_agent`: `watch: main_agent_merge -> PR #n
+- [x] A milestone PR red on `main_agent`: `watch: main_agent_merge -> PR #n
       of #m is red: k failing check(s), its repair asked — …` every tick,
       nothing merged, no `harness:waiting-merge` on the milestone,
-      `harness:pr-fix` on the PR.
+      `harness:pr-fix` on the PR. (seen 2026-10-24 07:13 Paris: `main_agent_merge -> PR #423 of #25 is red: 2 failing check(s), its repair asked — rules-hold …` every tick (77 lines), nothing merged until green)
 - [ ] A task PR the router read green that turns red between the read and
       the merge: `watch: milestone_merge -> #n refused: …`, nothing merged.
-- [ ] A rules' issue decided `merge` while its PR's checks ran (the live
+- [x] A rules' issue decided `merge` while its PR's checks ran (the live
       case: the judge poses `harness:needs-decision` right after an
       unfaithful second round): the PR carries the decision comment, the
       issue says "the watch merges it at the first tick it is green and
@@ -150,17 +150,17 @@ On the branch `worktree-wf_b56293a2-7f9-2`, to merge into `main` locally:
       delivered` on the view, and the next tick schedules a `DevTask` (the
       rules no longer hold). While the rules' issue is open: **one** extra
       `gh pr list --label harness:rules` per full read, plus three reads per
-      candidate PR; none when no rules' issue is open.
+      candidate PR; none when no rules' issue is open. (seen 2026-10-24 21:14 Paris: rules PR #518 (#517): `saw: … to_merge=[517]`, `tick: MergeIntoMilestone { task: 517, pr: "518", base: "main_agent" }`, `#517 merged into main_agent`, #517 closed `merged by milestone_merge`. The decision came from the fidelity's faithful marker (d0a2a93), not decide; the next ticks ran catch-ups)
 - [ ] A rules' issue decided `merge` whose PR turns red afterwards, or
       conflicts: nobody takes it (the train skips it, no `harness:pr-fix`
       posed) — the development stays held on the rules' issue. Known gap,
       the owner's call: pose the repair, or escalate once.
-- [ ] After a red, push the fix on `main_agent`: while its runs are queued
+- [x] After a red, push the fix on `main_agent`: while its runs are queued
       or in progress, the journal says `integration branch main_agent is not
       green again yet: its checks run — development and merges wait` each
       tick, `saw: base=Some(false)`, no `DevTask` / merge scheduled, the
       issue still open; once the runs pass, the issue is closed and the jobs
-      resume. One `gh issue list -l harness:human` per tick meanwhile.
+      resume. One `gh issue list -l harness:human` per tick meanwhile. (seen 2026-10-21 22:01–22:03 Paris: `not green again yet: its checks run — development and merges wait`, `saw: base=Some(false)`, no DevTask or merge, #363 open; closed at 20:05Z and the merges resumed)
 - [ ] A product whose `gh run list --branch main_agent` errors (Actions
       disabled, the API refusing): every tick fails with `TickFailed` and
       dispatches nothing — the sentinel's read is a routing read, and a

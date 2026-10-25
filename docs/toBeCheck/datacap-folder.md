@@ -47,29 +47,29 @@ DataGuard owns every DataCapability (`owner: dataguard`) and houses none.
 
 ## To verify live
 
-- [ ] The product PR's CI green (`gates`, `ci`, `test-scope`), then merged by
+- [x] The product PR's CI green (`gates`, `ci`, `test-scope`), then merged by
       the supervising session; `git ls-files crates/dataguard/data-capabilities`
-      empty on milestone/18.
-- [ ] The next `dev_loop` round on milestone/18 after the merge: its
+      empty on milestone/18. (seen 2026-10-20 01:52 Paris: PR #267 merged with every check green; `crates/dataguard/data-capabilities` holds no file on milestone/18 nor on main_agent)
+- [x] The next `dev_loop` round on milestone/18 after the merge: its
       architecture check (`tree::violations`) lists no `belongs under` line
       (expected 0); `Tree::read` counts 5 DataCapabilities (2 `ai`, 3
       `campaign`), the Micro-UIs' `actions` still resolve (no `triggers …
-      no manifest declares`).
-- [ ] The product's `.github/workflows/gates.yml` does not carry
+      no manifest declares`). (seen 2026-10-25 01:40 Paris: no round ran on milestone/18 after the merge; across every later round 0 `belongs under` and 0 `no manifest declares` (the last on 17 Oct); milestone/18 holds its 5 manifests under ai/ and campaign/)
+- [x] The product's `.github/workflows/gates.yml` does not carry
       `data-capability-placed` until `init-repo` reinstalls it (the asset is
       not overwritten by a plain install): check what the reinstall path does
-      with `gates.yml`, and that the job is green on milestone/18 once there.
+      with `gates.yml`, and that the job is green on milestone/18 once there. (seen 2026-10-24 23:10 Paris: the watch's upgrade (f8d895d, 20 Oct) installed `data-capability-placed`; green on main_agent run 40133015694)
 - [ ] A split of a milestone with a DataCapability: every slice's
       `technical` names `crates/<namespace>/data-capabilities/<name>/`; a
       reply naming `crates/dataguard/data-capabilities/` is refused by
       `SlicesCarryASpec` with `places … under crates/dataguard/…` and
-      retried once.
+      retried once. (partly seen 2026-10-24: the 6 DataCapability tasks split that day (#447–#449, #482, #483, #524) name `crates/<namespace>/data-capabilities/`, none the DataGuard's; the refusal path not exercised)
 - [ ] A refinement's technical section naming the old folder stops with
       `places none at crates/<namespace>/data-capabilities/<name>/`.
 - [ ] The closure of a `campaign` DataCapability task (`harness trial` or the
       next such task): the sparse patterns carry
       `/crates/campaign/data-capabilities/<name>/`, `/crates/dataguard/server/`
-      and its aggregate, nothing under `crates/dataguard/data-capabilities/`.
-- [ ] `CLAUDE-rules.md` v4 was edited without a version bump: existing
+      and its aggregate, nothing under `crates/dataguard/data-capabilities/`. (not exercised: NO_NARROW since 17 Oct)
+- [x] `CLAUDE-rules.md` v4 was edited without a version bump: existing
       products keep the old wording (*system `dataguard`*) until the owner
-      decides a reinstall; ForgeDesMondes' copy is fixed by the PR.
+      decides a reinstall; ForgeDesMondes' copy is fixed by the PR. (seen 2026-10-25 01:40 Paris: ForgeDesMondes' CLAUDE.md (architecture v7) line 38 says `under its id's system`)

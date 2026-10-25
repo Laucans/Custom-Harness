@@ -44,7 +44,7 @@ The design and the measurements are in `docs/SESSION-CARRIER.md`, section
 4. The written sections are as good as before. A fork still sees the map,
    the hierarchy and its template, but across two messages.
 5. Robots still find the project skills (`/tech-analyst`, `/code`,
-   `/create-test`) and authenticate without the user settings.
+   `/create-test`) and authenticate without the user settings. (seen 2026-10-24: every lane run lends the project skills (`skills: lent 12 from the harness`) and the sessions run authenticated with the lean flags, `tools: Bash, Edit, Read, Skill, Write`; `/tech-analyst` and `/create-test` are no longer called by the dev loop)
 6. A planner/split JSON retry, if one happens, still produces a valid plan.
 
 ## Open follow-up
