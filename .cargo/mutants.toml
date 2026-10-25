@@ -53,7 +53,7 @@ exclude_re = [
   "dispatch/catch_up\\.rs:",
   # The arms that run a paid workflow, here or on a lane: the workflow is
   # tested in `workflows`, the arm only wires the real adapters to it.
-  "router/routes\\.rs:.*replace (fix_here|rules_here|contract_here|run_on_lane|run_main_agent_merge) ",
+  "router/routes\\.rs:.*replace (fix_here|rules_here|contract_here|test_debt_here|run_on_lane|run_main_agent_merge) ",
   "router/routes\\.rs:.* in dispatch$",
   "router/mod\\.rs:.*replace run_route ",
   # The toolchain's wiring to `gh` (the product's pin read on GitHub) and

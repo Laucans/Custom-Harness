@@ -17,9 +17,12 @@
 //! agent-native architecture every target repo follows is not here: it is
 //! the `harness-architecture` crate.
 
+pub mod branch_sync;
 pub mod branching;
 pub mod catch_up;
+pub mod close_merged;
 pub mod contest;
+pub mod contract_ask;
 pub mod decision;
 pub mod delivery;
 pub mod dossier;

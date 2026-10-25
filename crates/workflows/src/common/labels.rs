@@ -187,6 +187,14 @@ pub const REVIEW_PENDING: &str = "harness:review-pending";
 /// [`LOOP`]: the dev loop does not read it.
 pub const TEST_DEBT: &str = "harness:test-debt";
 
+/// A test-debt pull request, labelled by `test_debt` itself.
+///
+/// Posed once its session opened it: what the router reads to land it — merged once green,
+/// closed with the reason otherwise (`test_debt::data::landing`). Never a
+/// session's to pose. Not `harness:test-debt-pr`: a label that another
+/// starts with would make a prefix reading ambiguous.
+pub const TEST_DEBT_PR: &str = "harness:debt-pr";
+
 /// The rules' task: the rules the human validated, written as `rules.json`
 /// (contract P) and proved by tests before any development.
 ///
@@ -241,7 +249,7 @@ pub struct Label {
 /// An existing label is never recolored or re-described: a human may have
 /// adjusted it, and the only thing the harness needs is that the name
 /// exists.
-pub const ALL: [Label; 23] = [
+pub const ALL: [Label; 24] = [
     Label {
         name: ROADMAP,
         color: "5319e7",
@@ -343,6 +351,11 @@ pub const ALL: [Label; 23] = [
         description: "Code cargo-mutants can break without a test failing",
     },
     Label {
+        name: TEST_DEBT_PR,
+        color: "5319e7",
+        description: "A test-debt PR: the harness merges it once green, or closes it",
+    },
+    Label {
         name: RULES,
         color: "b60205",
         description: "The rules and their tests, written before any development",
@@ -421,6 +434,7 @@ mod tests {
             WRITE_SIDE,
             REVIEW_PENDING,
             TEST_DEBT,
+            TEST_DEBT_PR,
         ];
         for label in all {
             assert!(label.starts_with("harness:"), "{label} outside namespace");

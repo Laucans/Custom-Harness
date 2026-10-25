@@ -27,6 +27,18 @@ pub enum Outcome {
         /// The failing checks, one readable line each.
         checks: Vec<String>,
     },
+    /// A PR red past its repairs: nothing merged, no repair asked — a
+    /// decision on the milestone was asked (`milestone_merge::escalate`), or
+    /// a human holds it. Told once, when asked.
+    Escalated {
+        /// The pull request, `#99`.
+        pr: String,
+        /// The failing checks, one readable line each.
+        checks: Vec<String>,
+        /// Whether the decision was asked now (`false`: asked already, or a
+        /// human's, or the owner answered).
+        asked: bool,
+    },
     /// A PR's checks were green, but GitHub says it conflicts with the base,
     /// and the base could not be merged into the milestone branch: nothing
     /// merged, told every tick it holds — a catch-up resolves it, never a

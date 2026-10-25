@@ -37,7 +37,9 @@ struct Answered {
     #[serde(default)]
     task_brief: String,
     #[serde(default)]
-    task_architecture: String,
+    task_goal: String,
+    #[serde(default)]
+    task_acceptance: Vec<String>,
     #[serde(default)]
     breaking: bool,
 }
@@ -49,8 +51,11 @@ pub struct TaskDraft {
     pub title: String,
     /// What it does, under `## Scope`.
     pub brief: String,
-    /// Its `## Architecture` lines (`unit:`, `id:`, `system:`, `side:`…).
-    pub architecture: String,
+    /// What a consumer gets, a sentence or two: its `## Business Goal`.
+    pub goal: String,
+    /// Given/when/then criteria: its `## Acceptance Criteria`. Its
+    /// `## Architecture` is the harness's to derive (`producer::item`).
+    pub acceptance: Vec<String>,
 }
 
 /// What the session decided of the request.
@@ -226,7 +231,13 @@ fn change(answered: Answered, id: &str, current: u32, duplicate: bool) -> Result
                 title.to_string()
             },
             brief: answered.task_brief.trim().to_string(),
-            architecture: answered.task_architecture.trim().to_string(),
+            goal: answered.task_goal.trim().to_string(),
+            acceptance: answered
+                .task_acceptance
+                .iter()
+                .map(|criterion| criterion.trim().to_string())
+                .filter(|criterion| !criterion.is_empty())
+                .collect(),
         },
         summary,
         breaking: answered.breaking,
@@ -241,7 +252,8 @@ mod tests {
       "manifest": {"capability": "session.listScenes", "system": "session", "version": 2, "output": {"scenes": "[]"}},
       "fixture_path": "mock/fixtures/session.listScenes.json", "fixture": {"scenes": []},
       "summary": "scenes carry their media ids", "task_title": "session.listScenes v2",
-      "task_brief": "Add mediaIds to every scene.", "task_architecture": "unit: Capability\nside: harness:read-side",
+      "task_brief": "Add mediaIds to every scene.", "task_goal": "Scenes show their media.",
+      "task_acceptance": ["given a scene with media, when listed, then mediaIds holds them", " "],
       "breaking": false}"#;
 
     fn evolved(text: &str, id: &str, current: u32) -> Result<Change, String> {
@@ -308,7 +320,12 @@ mod tests {
             Some("mock/fixtures/session.listScenes.json")
         );
         assert_eq!(change.task.title, "session.listScenes v2");
-        assert!(change.task.architecture.contains("unit: Capability"));
+        assert_eq!(change.task.goal, "Scenes show their media.");
+        assert_eq!(
+            change.task.acceptance.len(),
+            1,
+            "an empty criterion is dropped"
+        );
         assert!(!change.breaking);
     }
 

@@ -9,13 +9,14 @@ use std::rc::Rc;
 use async_trait::async_trait;
 use harness_architecture::{generated, mock_handlers};
 use harness_core::domain::prompts::splice;
-use harness_core::domain::{Outcome, Verdict};
+use harness_core::domain::{Halt, Outcome, Verdict, markers};
 use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_record};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 use harness_core::traces::Event;
 
 use crate::common::review;
+use crate::contract_manager::data::request as contract;
 use crate::pr_fix::data::state::FixState;
 
 /// Reads, for free, what the paid step needs to know: which checks broke,
@@ -58,6 +59,10 @@ impl Action<FixState> for ReadBreakage {
             ctx.traces
                 .say(&format!("#{num}: its agent review asks for changes"));
         }
+        // What the head was before the session: a repair that pushed
+        // nothing is told. Unread, nothing is told.
+        let head = ctx.state.pr().head.clone();
+        ctx.state.head_before = self.gh.branch_sha(&head).await.ok().flatten();
         ctx.state.comments = comments;
         ctx.state.failing = failing;
         ctx.state.review_blocking = blocking;
@@ -108,6 +113,21 @@ fn comments_block(comments: &str) -> String {
     }
 }
 
+/// Whether a repair's answer says it pushed its repair: its
+/// `AGENT_LOOP_OK` line says `pushed` (`AGENT_LOOP_OK: pushed <sha>`, as the
+/// prompt asks), and not that nothing was. Every session ends on the
+/// marker — a bare one, or one that says it pushed nothing, is no leave to
+/// push what it left committed.
+fn said_pushed(text: &str) -> bool {
+    markers::ok_line(text).is_some_and(|line| {
+        let line = line.to_lowercase();
+        line.contains("pushed")
+            && !line.contains("not pushed")
+            && !line.contains("nothing")
+            && !line.contains("no push")
+    })
+}
+
 /// Sends the prompt that asks for the repair.
 ///
 /// One attempt, no retry: unlike a reply that must parse
@@ -143,7 +163,17 @@ impl SessionAction<FixState> for AskForFix {
             ],
         );
         let task = format!("#{}", pr.num);
-        ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await?;
+        match ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await {
+            Ok(reply) => {
+                open.state.answered_ok = Some(said_pushed(&reply.text));
+            }
+            // A contract another milestone produces: the stage after asks
+            // its change, and the PR waits on it (`publish::RaiseContract`).
+            Err(Halt::Halted(reason)) if contract::asked(&reason).is_some() => {
+                open.state.contract_stop = Some(reason);
+            }
+            Err(halt) => return Err(halt),
+        }
         Ok(Verdict::Continue)
     }
 }
@@ -352,5 +382,14 @@ mod tests {
         let block = failing_block(&["ci — FAILURE".to_string(), "fmt — ERROR".to_string()]);
         assert_eq!(block.lines().count(), 2);
         assert!(block.starts_with("  - ci"));
+    }
+
+    #[test]
+    fn only_an_ok_that_says_it_pushed_lets_the_harness_push() {
+        assert!(said_pushed("done.\nAGENT_LOOP_OK: pushed 1a2b3c"));
+        assert!(!said_pushed("AGENT_LOOP_OK: needs a human, nothing pushed"));
+        assert!(!said_pushed("AGENT_LOOP_OK: not pushed — out of scope"));
+        assert!(!said_pushed("AGENT_LOOP_OK: done"));
+        assert!(!said_pushed("I pushed it."), "no marker");
     }
 }

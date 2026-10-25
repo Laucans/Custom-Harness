@@ -13,7 +13,7 @@ use harness_core::execution::{Gate, Stage, StageBody};
 
 use crate::prompts;
 use crate::test_debt::action::actions::{AskForTests, ReadDebt};
-use crate::test_debt::action::publish::ConsumeRequest;
+use crate::test_debt::action::publish::{ConsumeRequest, LabelThePr};
 use crate::test_debt::checks::gates::NamesAFile;
 use crate::test_debt::config::Config;
 use crate::test_debt::data::state::DebtState;
@@ -23,6 +23,8 @@ use crate::test_debt::ports::Ports;
 pub const CONTEXT: &str = "context";
 /// The paid stage name: the tests that catch the mutants.
 pub const COVER: &str = "cover";
+/// The free stage name: the PR the session opened, labelled for the router.
+pub const LAND: &str = "land";
 
 pub(crate) const COVER_PROMPT: &str = r#"Issue #{num} is test debt: `cargo mutants` rewrote parts of `{file}` and
 every test still passed. What the mutation runs found, oldest first:
@@ -30,8 +32,10 @@ every test still passed. What the mutation runs found, oldest first:
 {findings}
 </findings>
 
-This checkout is on `{branch}`, the integration branch. Branch off it:
-  git checkout -b test/debt-{num}
+This checkout is on `{branch}`, the integration branch. Branch off it,
+on this attempt's own branch (never another name — an earlier attempt's
+branch may still be on the remote):
+  git checkout -b {head}
 
 1. See what is missed today — the findings above may be stale:
      cargo mutants --workspace --file {file}
@@ -45,14 +49,15 @@ This checkout is on `{branch}`, the integration branch. Branch off it:
 3. Prove it: rerun `cargo mutants --workspace --file {file}` until it reports
    no missed mutant, then run the project's own gates — format, lint, the
    tests — until they pass.
-4. Land it:
+4. Open the pull request, and STOP THERE:
      git add <the test files you changed, by name>
      git commit -m "test(<scope>): catch the mutants of {file}"
-     git push -u origin test/debt-{num}
-     gh pr create --base {branch} --title "test: the mutants of {file}" --body "Closes #{num}"
-     gh pr checks --watch
-     gh pr merge --squash
-   then `gh issue close {num}` if the merge did not close it.
+     git push -u origin {head}
+     gh pr create --base {branch} --head {head} --title "test: the mutants of {file}" --body "Closes #{num}"
+   Say its number in your reply and END YOUR TURN: the harness watches its
+   CI, merges it once green and closes the issue — or closes the PR with the
+   reason. Never wait on it (no `gh pr checks`, no sleep loop) and never
+   merge it: a session merges no pull request.
 
 Hard rules, and they are the point of this run:
 - **Tests only.** Never change the code under test to make a mutant
@@ -63,8 +68,9 @@ Hard rules, and they are the point of this run:
   a comment beside it, and the PR body says so.
 - **Never weaken a gate.** Never delete, skip or `#[ignore]` a test, never
   edit the CI workflow, never touch a `harness:*` label.
-- **Never merge red.** If the PR's checks fail and tests alone cannot make
-  them green, leave the PR open, say why, and stop.
+- **Never merge red, never merge at all.** The harness merges the PR once
+  every check is green; a red one is closed with the reason, the issue left
+  for the next rotation.
 - **No secret in your output.** Name a credential, never its value.
 
 End your answer with the mutants caught, the ones left and why, the gates
@@ -118,10 +124,26 @@ pub fn cover(ports: &Ports, config: &Config) -> Stage<DebtState> {
     }
 }
 
-/// Context then cover, in order.
+/// The free stage after the session: the PR it opened labelled
+/// `harness:debt-pr`, the label the router lands it by.
+#[must_use]
+pub fn land(ports: &Ports) -> Stage<DebtState> {
+    Stage {
+        name: LAND.to_string(),
+        pre: None,
+        post: None,
+        body: StageBody::Local {
+            actions: vec![Box::new(LabelThePr {
+                gh: Rc::clone(&ports.gh),
+            })],
+        },
+    }
+}
+
+/// Context, cover, then land, in order.
 #[must_use]
 pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<DebtState>> {
-    vec![context(ports), cover(ports, config)]
+    vec![context(ports), cover(ports, config), land(ports)]
 }
 
 #[cfg(test)]
@@ -136,12 +158,12 @@ mod tests {
             .iter()
             .map(|stage| stage.name.clone())
             .collect();
-        assert_eq!(names, [CONTEXT, COVER]);
+        assert_eq!(names, [CONTEXT, COVER, LAND]);
     }
 
     #[test]
     fn the_prompt_carries_every_placeholder_the_action_fills() {
-        for placeholder in ["{num}", "{file}", "{branch}", "{findings}"] {
+        for placeholder in ["{num}", "{file}", "{branch}", "{head}", "{findings}"] {
             assert!(
                 COVER_PROMPT.contains(placeholder),
                 "{placeholder} missing from COVER_PROMPT"
@@ -164,5 +186,17 @@ mod tests {
                 "{forbidden:?} missing from COVER_PROMPT"
             );
         }
+    }
+
+    #[test]
+    fn the_cover_prompt_never_merges_nor_waits_and_ends_at_the_pr() {
+        assert!(!COVER_PROMPT.contains("gh pr merge"), "{COVER_PROMPT}");
+        assert!(!COVER_PROMPT.contains("checks --watch"));
+        assert!(
+            !COVER_PROMPT.contains("test/debt-{num}"),
+            "one branch per attempt"
+        );
+        assert!(COVER_PROMPT.contains("END YOUR TURN"));
+        assert!(COVER_PROMPT.contains("--head {head}"));
     }
 }

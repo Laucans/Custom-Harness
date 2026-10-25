@@ -76,15 +76,58 @@ pub struct Decided {
     pub confidence: u8,
 }
 
-/// The decision a session answered, for issue `number`, with or without a
-/// PR.
+/// What a decision may do on the issue it is about: its number, its PR, and
+/// the integration branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scope<'a> {
+    /// The issue decided on.
+    pub number: u64,
+    /// Its pull request, when it has one.
+    pub pr: Option<&'a harness_core::domain::Pr>,
+    /// The integration branch (`main_agent`).
+    pub integration: &'a str,
+    /// The rules' task: its PR into the integration branch is the one a
+    /// decision may merge as it is (`review::decided_to_merge`).
+    pub rules: bool,
+}
+
+impl Scope<'_> {
+    /// Whether the PR lands on the integration branch and is not the rules'
+    /// task's: a milestone's landing PR, never merged red nor cut by a
+    /// decision — a merge would put a red milestone on the integration
+    /// branch, a cut would close the milestone.
+    #[must_use]
+    pub fn lands_on_integration(&self) -> bool {
+        !self.rules && self.pr.is_some_and(|pr| pr.base == self.integration)
+    }
+
+    /// The actions this scope allows, as the prompt lists them.
+    #[must_use]
+    pub fn actions(&self) -> &'static str {
+        if self.pr.is_none() {
+            "`answer`, `wait` or `cut`"
+        } else if self.lands_on_integration() {
+            "`repair`, `wait` or `answer` — this PR lands a milestone on the integration \
+             branch: never `merge` it red, never `cut` the milestone"
+        } else {
+            "`answer`, `merge`, `repair`, `wait` or `cut`"
+        }
+    }
+}
+
+/// The decision a session answered, within `scope`.
 ///
 /// # Errors
 ///
 /// No JSON object, an action it does not have, a `merge` or a `repair`
-/// without a PR, a `wait` naming no issue or the issue itself, an empty
-/// summary.
-pub fn parse(text: &str, has_pr: bool, number: u64) -> Result<Decided, String> {
+/// without a PR, a `merge` or a `cut` of a PR landing on the integration
+/// branch, a `wait` naming no issue or the issue itself, an empty summary,
+/// and an `answer` or a `repair` that tells a session to sync a branch with
+/// the integration branch itself or push to a milestone's branch
+/// (`common::branch_sync`): the harness catches branches up.
+pub fn parse(text: &str, scope: &Scope<'_>) -> Result<Decided, String> {
+    let number = scope.number;
+    let has_pr = scope.pr.is_some();
     let answered: Answered =
         json_reply::parse_object(text).map_err(|e: ParseError| e.to_string())?;
     let action = match answered.action.trim().to_lowercase().as_str() {
@@ -116,8 +159,32 @@ pub fn parse(text: &str, has_pr: bool, number: u64) -> Result<Decided, String> {
             action.name()
         ));
     }
+    if scope.lands_on_integration() && matches!(action, Action::Merge | Action::Cut) {
+        return Err(format!(
+            "`{}` of a PR that lands a milestone on `{}`: `repair` it, or `wait` on the issue \
+             it needs — never merge it red, never cut the milestone",
+            action.name(),
+            scope.integration
+        ));
+    }
     if answered.summary.trim().is_empty() {
         return Err("the decision has no summary".to_string());
+    }
+    if matches!(action, Action::Answer | Action::Repair)
+        && let Some(clause) = crate::common::branch_sync::prescribed(
+            &format!("{}\n{}", answered.summary, answered.answer),
+            scope.integration,
+            scope.pr.map(|pr| crate::common::branch_sync::Own {
+                head: &pr.head,
+                base: &pr.base,
+            }),
+        )
+    {
+        return Err(format!(
+            "it prescribes a branch sync: \"{clause}\" — the harness catches milestone branches \
+             up and refreshes task PRs itself; answer `wait` on the issue that produces what \
+             is missing instead"
+        ));
     }
     Ok(Decided {
         action,
@@ -176,31 +243,51 @@ pub fn section(question: Option<&Question>, kind: &str, decided: &Decided) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use harness_core::domain::Pr;
     use proptest::prelude::*;
+
+    fn task_pr() -> &'static Pr {
+        static PR: std::sync::OnceLock<Pr> = std::sync::OnceLock::new();
+        PR.get_or_init(|| Pr {
+            num: "40".to_string(),
+            head: "feat/pjs".to_string(),
+            base: "milestone/3-x".to_string(),
+            ..Pr::default()
+        })
+    }
+
+    fn scope(has_pr: bool, number: u64) -> Scope<'static> {
+        Scope {
+            number,
+            pr: has_pr.then(task_pr),
+            integration: "main_agent",
+            rules: false,
+        }
+    }
 
     #[test]
     fn a_decision_reads_back_and_one_without_a_pr_cannot_touch_one() {
         let text = r#"I looked. ```json
 {"action": "repair", "summary": " fix the null check ", "answer": "- keep the API", "confidence": 9}
 ```"#;
-        let read = parse(text, true, 15).expect("read");
+        let read = parse(text, &scope(true, 15)).expect("read");
         assert_eq!(read.action, Action::Repair);
         assert_eq!(read.summary, "fix the null check");
         assert_eq!(read.confidence, 5, "clamped");
         assert!(
-            parse(text, false, 15)
+            parse(text, &scope(false, 15))
                 .expect_err("no PR")
                 .contains("needs a pull request")
         );
-        assert!(parse(r#"{"action":"vote","summary":"x"}"#, true, 15).is_err());
-        assert!(parse(r#"{"action":"cut","summary":" "}"#, true, 15).is_err());
+        assert!(parse(r#"{"action":"vote","summary":"x"}"#, &scope(true, 15)).is_err());
+        assert!(parse(r#"{"action":"cut","summary":" "}"#, &scope(true, 15)).is_err());
         assert_eq!(
-            parse(r#"{"action":"proceed","summary":"go"}"#, false, 15)
+            parse(r#"{"action":"proceed","summary":"go"}"#, &scope(false, 15))
                 .expect("an alias")
                 .action,
             Action::Answer
         );
-        assert!(parse("no json", true, 15).is_err());
+        assert!(parse("no json", &scope(true, 15)).is_err());
     }
 
     #[test]
@@ -226,31 +313,40 @@ mod tests {
         for on in ["20", r#""20""#, r##""#20""##, r#"" #20 ""#] {
             let text = format!(r##"{{"action":"Wait","on":{on},"summary":"#20 first"}}"##);
             assert_eq!(
-                parse(&text, false, 15).expect("read").action,
+                parse(&text, &scope(false, 15)).expect("read").action,
                 Action::Wait { on: 20 },
                 "{on}"
             );
         }
         assert_eq!(Action::Wait { on: 20 }.name(), "wait");
         assert!(
-            parse(r#"{"action":"wait","summary":"x"}"#, true, 15)
+            parse(r#"{"action":"wait","summary":"x"}"#, &scope(true, 15))
                 .expect_err("no issue")
                 .contains("names no issue")
         );
         assert!(
-            parse(r#"{"action":"wait","on":"soon","summary":"x"}"#, true, 15)
-                .expect_err("no number")
-                .contains("names no issue")
+            parse(
+                r#"{"action":"wait","on":"soon","summary":"x"}"#,
+                &scope(true, 15)
+            )
+            .expect_err("no number")
+            .contains("names no issue")
         );
         assert!(
-            parse(r#"{"action":"wait","on":15,"summary":"x"}"#, true, 15)
-                .expect_err("itself")
-                .contains("itself")
+            parse(
+                r#"{"action":"wait","on":15,"summary":"x"}"#,
+                &scope(true, 15)
+            )
+            .expect_err("itself")
+            .contains("itself")
         );
         assert_eq!(
-            parse(r#"{"action":"answer","on":15,"summary":"x"}"#, true, 15)
-                .expect("read")
-                .action,
+            parse(
+                r#"{"action":"answer","on":15,"summary":"x"}"#,
+                &scope(true, 15)
+            )
+            .expect("read")
+            .action,
             Action::Answer,
             "`on` means nothing to another action"
         );
@@ -283,7 +379,58 @@ mod tests {
     proptest! {
         #[test]
         fn reading_any_answer_never_panics(text in ".{0,300}", has_pr in any::<bool>(), number in any::<u64>()) {
-            let _ = parse(&text, has_pr, number);
+            let _ = parse(&text, &scope(has_pr, number));
         }
+    }
+
+    #[test]
+    fn a_landing_decision_may_only_repair_wait_or_answer() {
+        let landing = Pr {
+            num: "423".to_string(),
+            head: "milestone/22-fiche".to_string(),
+            base: "main_agent".to_string(),
+            ..Pr::default()
+        };
+        let on = Scope {
+            number: 22,
+            pr: Some(&landing),
+            integration: "main_agent",
+            rules: false,
+        };
+        assert!(on.lands_on_integration());
+        assert!(on.actions().contains("never `merge`"));
+        for action in ["merge", "cut"] {
+            let text = format!(r#"{{"action":"{action}","summary":"as it is"}}"#);
+            assert!(
+                parse(&text, &on)
+                    .expect_err(action)
+                    .contains("never merge it red"),
+                "{action}"
+            );
+        }
+        assert_eq!(
+            parse(r#"{"action":"repair","summary":"fix R7"}"#, &on)
+                .expect("a repair")
+                .action,
+            Action::Repair
+        );
+        // The rules' task's PR into the integration branch may be merged.
+        let rules = Scope { rules: true, ..on };
+        assert!(!rules.lands_on_integration());
+        assert!(parse(r#"{"action":"merge","summary":"faithful"}"#, &rules).is_ok());
+    }
+
+    #[test]
+    fn an_answer_prescribing_a_catch_up_does_not_parse() {
+        let told = r#"{"action":"repair","summary":"bring the base","answer":"Merge origin/main_agent into the branch, then fix R103."}"#;
+        assert!(
+            parse(told, &scope(true, 486))
+                .expect_err("a sync")
+                .contains("prescribes a branch sync")
+        );
+        let waits = r#"{"action":"answer","summary":"wait for the harness","answer":"Do not merge main_agent: the harness's catch-up brings it."}"#;
+        assert!(parse(waits, &scope(true, 486)).is_ok());
+        let own = r#"{"action":"repair","summary":"resolve","answer":"Merge origin/milestone/3-x into the branch and resolve Cargo.lock, then push."}"#;
+        assert!(parse(own, &scope(true, 486)).is_ok(), "its own base");
     }
 }

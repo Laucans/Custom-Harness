@@ -12,7 +12,7 @@ use std::rc::Rc;
 use harness_core::execution::{Gate, Stage, StageBody};
 
 use crate::pr_fix::action::actions::{AskForFix, ReadBreakage, RecordAttempt};
-use crate::pr_fix::action::publish::ConsumeRequest;
+use crate::pr_fix::action::publish::{ConsumeRequest, PushWhatWasCommitted, RaiseContract};
 use crate::pr_fix::checks::gates::SomethingIsRed;
 use crate::pr_fix::config::Config;
 use crate::pr_fix::data::state::FixState;
@@ -23,6 +23,8 @@ use crate::prompts;
 pub const CONTEXT: &str = "context";
 /// The paid repair stage name.
 pub const FIX: &str = "fix";
+/// The free stage name: a contract stop asked, what was committed pushed.
+pub const AFTER: &str = "after";
 
 pub(crate) const FIX_PROMPT: &str = r#"Pull request #{num} — "{title}" ({head} -> {base}) needs a repair: its
 CI went red, its agent review (the last `🤖 Review notes` comment below,
@@ -72,6 +74,13 @@ Hard rules, and they are the point of this run:
 - **No secret in your output.** Name a credential, never its value, and do
   not echo an environment file.
 
+A contract another milestone produces (plan/graph.json, gate
+`contracts-untouched`) that this PR cannot meet is not yours to edit: push
+nothing and end with `AGENT_LOOP_STOP: contract <id> — <what this PR
+needs of it>`, alone on its last line. The harness asks the contract
+manager for the change, this PR waits on it, and a repair follows once its
+base holds the new version.
+
 If the failure cannot be fixed inside this PR's scope — it needs a human
 decision, a credential you do not have, or a change in another PR — push
 nothing and say so plainly, naming what you found and what it would take.
@@ -79,7 +88,8 @@ An honest "this needs a human, here is why" is a successful run; a commit
 that hides the problem is not.
 
 End your answer with what you changed, the gates you ran with their real
-output, and whether you pushed."#;
+output, and whether you pushed; when you pushed the repair, the last line
+is `AGENT_LOOP_OK: pushed <the commit's sha>`."#;
 
 /// The free stage: read what broke, then take the request. Costs nothing, so
 /// no gate guards it.
@@ -134,10 +144,34 @@ pub fn fix(ports: &Ports, config: &Config) -> Stage<FixState> {
     }
 }
 
-/// Context then fix, in order.
+/// The free stage after the session: a contract it stopped on asked and
+/// the PR made to wait, then what it committed pushed when it answered
+/// `AGENT_LOOP_OK`.
+#[must_use]
+pub fn after(ports: &Ports, config: &Config) -> Stage<FixState> {
+    Stage {
+        name: AFTER.to_string(),
+        pre: None,
+        post: None,
+        body: StageBody::Local {
+            actions: vec![
+                Box::new(RaiseContract {
+                    gh: Rc::clone(&ports.gh),
+                    integration: config.integration.clone(),
+                }),
+                Box::new(PushWhatWasCommitted {
+                    gh: Rc::clone(&ports.gh),
+                    git: Rc::clone(&ports.git),
+                }),
+            ],
+        },
+    }
+}
+
+/// Context, fix, then after, in order.
 #[must_use]
 pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<FixState>> {
-    vec![context(ports), fix(ports, config)]
+    vec![context(ports), fix(ports, config), after(ports, config)]
 }
 
 #[cfg(test)]
@@ -152,7 +186,7 @@ mod tests {
             .iter()
             .map(|stage| stage.name.clone())
             .collect();
-        assert_eq!(names, [CONTEXT, FIX]);
+        assert_eq!(names, [CONTEXT, FIX, AFTER]);
     }
 
     #[test]
@@ -187,5 +221,18 @@ mod tests {
                 "{forbidden:?} missing from FIX_PROMPT"
             );
         }
+    }
+
+    #[test]
+    fn the_prompt_names_the_contract_stop_and_the_ok_marker_it_is_read_by() {
+        assert!(FIX_PROMPT.contains("`AGENT_LOOP_STOP: contract <id> —"));
+        assert!(FIX_PROMPT.contains("`AGENT_LOOP_OK: pushed <the commit's sha>`"));
+        assert!(
+            crate::contract_manager::data::request::asked(
+                "AGENT_LOOP_STOP: contract campaign.saveEntity — a source field"
+            )
+            .is_some(),
+            "the stop the prompt asks is the one the harness reads"
+        );
     }
 }

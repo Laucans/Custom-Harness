@@ -55,6 +55,8 @@ pub struct FakeRepos {
     /// What each `merge_file` answers, in order; past the end, a clean
     /// merge printing `merged <ours>`.
     merged_files: Rc<RefCell<Vec<Ran>>>,
+    /// What `unpushed` answers: the local commits no remote has.
+    unpushed: Rc<Vec<String>>,
 }
 
 impl FakeRepos {
@@ -186,6 +188,15 @@ impl FakeRepos {
         }
     }
 
+    /// The same `git`, holding these local commits no remote has.
+    #[must_use]
+    pub fn with_unpushed(self, commits: &[&str]) -> Self {
+        Self {
+            unpushed: Rc::new(commits.iter().map(|c| (*c).to_string()).collect()),
+            ..self
+        }
+    }
+
     /// The conflicts of the merge asked last.
     fn current_conflicts(&self) -> Vec<(String, String)> {
         if self.rounds.is_empty() {
@@ -313,7 +324,7 @@ impl Repo for FakeRepo {
         Ok(Vec::new())
     }
     async fn unpushed(&self) -> Outcome<Vec<String>> {
-        Ok(Vec::new())
+        Ok(self.repos.unpushed.as_ref().clone())
     }
     async fn branches_at_risk(&self, _upstream: &str) -> Outcome<Vec<String>> {
         Ok(Vec::new())

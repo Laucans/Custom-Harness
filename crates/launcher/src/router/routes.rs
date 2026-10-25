@@ -114,6 +114,10 @@ pub(super) async fn dispatched(
         Route::Resume { contest, pr, lift } => {
             run_resume(gh, contest, pr, lift, args.dry_run, log).await
         }
+        route @ (Route::CloseMerged { .. }
+        | Route::ContractLanded { .. }
+        | Route::MergeDebt { .. }
+        | Route::DropDebtPr { .. }) => run_follow_up(args, here, gh, route, pulse, log).await,
         Route::DevLoop { milestone } | Route::DevTask { milestone, .. } => {
             run_dev_loop(here, gh, milestone, args, log)
                 .await
@@ -163,7 +167,7 @@ pub(super) async fn dispatched(
             run_milestone_merge(gh, (here, &args.target_repo_url), task, pr, base, log).await
         }
         Route::MergeMainAgent { milestone } => {
-            run_main_agent_merge(args, here, milestone, log).await
+            run_main_agent_merge(args, here, milestone, &busy.numbers, log).await
         }
         Route::Refinement { issue } => {
             refine_here(args, here, gh, Phase::Business, issue, log).await
@@ -177,20 +181,30 @@ pub(super) async fn dispatched(
         Route::Decide { issue } => decide_here(args, here, issue, log).await,
         Route::Rules { issue } => rules_here(args, here, issue, log).await,
         Route::ContractChange { issue } => contract_here(args, here, issue, log).await,
-        Route::TestDebt { issue } => report_failure(
-            "test_debt",
-            crate::dispatch::test_debt::run(
-                issue,
-                here,
-                &args.target_repo_url,
-                &args.branch,
-                &args.permission_mode,
-                args.dry_run,
-            )
-            .await,
-            log,
-        ),
+        Route::TestDebt { issue } => test_debt_here(args, here, issue, log).await,
     }
+}
+
+/// One test-debt attempt in this process, on its own writable checkout.
+async fn test_debt_here(
+    args: &WatchArgs,
+    here: &Path,
+    issue: u64,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    report_failure(
+        "test_debt",
+        crate::dispatch::test_debt::run(
+            issue,
+            here,
+            &args.target_repo_url,
+            &args.branch,
+            &args.permission_mode,
+            args.dry_run,
+        )
+        .await,
+        log,
+    )
 }
 
 /// One decision in this process, on the shared checkout.
@@ -231,7 +245,7 @@ async fn fix_here(
         crate::dispatch::pr_fix::run(
             pr,
             here,
-            &args.target_repo_url,
+            (&args.target_repo_url, &args.branch),
             &args.permission_mode,
             route_workspace(args),
             args.dry_run,
@@ -435,6 +449,10 @@ pub(super) fn lane_work(route: &Route) -> Option<(RouteKind, u64, String)> {
         Route::TestDebt { issue } => plain(RouteKind::TestDebt, *issue),
         Route::CatchUp { .. }
         | Route::Resume { .. }
+        | Route::CloseMerged { .. }
+        | Route::ContractLanded { .. }
+        | Route::MergeDebt { .. }
+        | Route::DropDebtPr { .. }
         | Route::MergeIntoMilestone { .. }
         | Route::MergeMainAgent { .. }
         | Route::DevLoop { .. }
@@ -543,6 +561,26 @@ pub(super) async fn run_milestone_merge(
     base: String,
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
+    milestone_merge_attempt(gh, (here, target_repo_url), task, pr, base, log)
+        .await
+        .err()
+}
+
+/// Whether a merge attempt merged: a stale PR refreshed, one pending, red
+/// or under repair merged nothing.
+const fn landed(attempt: &Attempt) -> bool {
+    matches!(attempt, Attempt::Merged)
+}
+
+/// [`run_milestone_merge`], answering whether the PR merged ([`landed`]).
+async fn milestone_merge_attempt(
+    gh: &dyn GitHub,
+    (here, target_repo_url): (&Path, &str),
+    task: u64,
+    pr: String,
+    base: String,
+    log: &Logbook,
+) -> Result<bool, (&'static str, Halt)> {
     let told = (format!("#{pr}"), base);
     let merged = async {
         let issue = gh.issue(task).await?;
@@ -550,15 +588,22 @@ pub(super) async fn run_milestone_merge(
         let attempt = harness_workflows::milestone_merge::run(gh, &issue, &pr, log).await?;
         Ok::<_, Halt>((attempt, pr))
     };
-    match merged.await {
-        Ok((Attempt::Repairing, _)) => {
+    let (attempt, held) = match merged.await {
+        Ok(read) => read,
+        Err(halt) => {
+            log.error(&format!("watch: milestone_merge -> {}", halt.reason()));
+            return Err(("milestone_merge", halt));
+        }
+    };
+    let merged = landed(&attempt);
+    match attempt {
+        Attempt::Repairing => {
             log.say(&format!(
                 "watch: milestone_merge -> #{task} waits: its repair takes {} first",
                 told.1
             ));
-            None
         }
-        Ok((Attempt::Stale(base), held)) => {
+        Attempt::Stale(base) => {
             let branch = told.1;
             let caught = crate::dispatch::catch_up::locally(
                 here,
@@ -569,9 +614,8 @@ pub(super) async fn run_milestone_merge(
             )
             .await;
             refreshed_before_landing(gh, task, &pr, &branch, &caught, log).await;
-            None
         }
-        Ok((Attempt::Merged, _)) => {
+        Attempt::Merged => {
             let (pr, branch) = told;
             log.say(&format!(
                 "watch: milestone_merge -> #{task} merged into {branch}"
@@ -588,34 +632,28 @@ pub(super) async fn run_milestone_merge(
                 &format!("task #{task}: reviewed and green — merged into {branch}, closed"),
                 log,
             );
-            None
         }
         // The route read the checks green a moment ago; the merge reads
         // them again and refuses what changed since. Nothing is posed here:
         // the train reads the PR again next tick, and a red one stays where
         // it is — reviewed clean, it is no repair route's until a label or
         // a review asks for the repair.
-        Ok((Attempt::Pending, _)) => {
+        Attempt::Pending => {
             log.say(&format!(
                 "watch: milestone_merge -> #{task} waits: a check of PR {} is still running",
                 told.0
             ));
-            None
         }
-        Ok((Attempt::Red(checks), _)) => {
+        Attempt::Red(checks) => {
             log.warn(&format!(
                 "watch: milestone_merge -> #{task} refused: {} failing check(s) on PR {} — {}",
                 checks.len(),
                 told.0,
                 checks.join("; ")
             ));
-            None
-        }
-        Err(halt) => {
-            log.error(&format!("watch: milestone_merge -> {}", halt.reason()));
-            Some(("milestone_merge", halt))
         }
     }
+    Ok(merged)
 }
 
 /// Follows a settled contest through (`common::contest::resume`): a few
@@ -643,6 +681,182 @@ async fn run_resume(
                 halt.reason()
             ));
             Some(("resume", halt))
+        }
+    }
+}
+
+/// The free follow-ups H2 added: a task merged outside the train closed, a
+/// PR whose contract landed resumed, a test-debt PR merged or dropped.
+async fn run_follow_up(
+    args: &WatchArgs,
+    here: &Path,
+    gh: &dyn GitHub,
+    route: Route,
+    pulse: &mut Pulse,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    match route {
+        Route::CloseMerged { task, pr, branch } => {
+            run_close_merged(gh, here, task, pr, branch, args.dry_run, log).await
+        }
+        Route::ContractLanded { request, pr } => {
+            run_contract_landed(gh, request, pr, args.dry_run, log).await
+        }
+        Route::MergeDebt { issue, pr } => {
+            let base = args.branch.clone();
+            match milestone_merge_attempt(gh, (here, &args.target_repo_url), issue, pr, base, log)
+                .await
+            {
+                Ok(merged) => {
+                    after_debt_merge(pulse, merged, crate::dispatch::dev_loop::now_seconds());
+                    None
+                }
+                Err(failed) => Some(failed),
+            }
+        }
+        Route::DropDebtPr { issue, pr, why } => {
+            run_drop_debt(gh, issue, pr, why, args.dry_run, log).await
+        }
+        _ => None,
+    }
+}
+
+/// Holds the next test-debt merge from `now` when this one merged
+/// (`routing::hold_debt_merges`): a debt PR refreshed, pending, red or under
+/// repair merged nothing, and holds nothing.
+const fn after_debt_merge(pulse: &mut Pulse, merged: bool, now: u64) {
+    if merged {
+        pulse.debt_merged_at = Some(now);
+    }
+}
+
+/// Closes a task whose PR was merged outside the merge train
+/// (`common::close_merged`): the PR's `Closes` line written when it lacks
+/// it, the task closed, `TaskDelivered`. A dry run says what it would do.
+async fn run_close_merged(
+    gh: &dyn GitHub,
+    here: &Path,
+    task: u64,
+    pr: u64,
+    branch: String,
+    dry_run: bool,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    let delivered = harness_workflows::common::close_merged::Delivered {
+        task,
+        pr,
+        branch: branch.clone(),
+    };
+    if dry_run {
+        log.say(&format!(
+            "watch: close merged -> dry run, nothing written: {delivered:?}"
+        ));
+        return None;
+    }
+    match harness_workflows::common::close_merged::close_delivered(gh, &delivered).await {
+        Ok(()) => {
+            log.say(&format!(
+                "watch: #{task} delivered by PR #{pr}, merged into {branch} outside the merge \
+                 train — closed"
+            ));
+            log.event(&Event::TaskDelivered {
+                task,
+                pr: format!("#{pr}"),
+                branch: branch.clone(),
+            });
+            record_run(
+                here,
+                "milestone-merge",
+                task,
+                &format!("task #{task}: PR #{pr} merged into {branch} by hand — closed"),
+                log,
+            );
+            None
+        }
+        Err(halt) => {
+            log.error(&format!(
+                "watch: close merged -> #{task}: {}",
+                halt.reason()
+            ));
+            Some(("close_merged", halt))
+        }
+    }
+}
+
+/// Resumes a PR whose contract change landed
+/// (`common::contest::resume_contract`). A dry run says what it would do.
+async fn run_contract_landed(
+    gh: &dyn GitHub,
+    request: u64,
+    pr: String,
+    dry_run: bool,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    let landed = harness_workflows::common::contest::ContractLanded { request, pr };
+    if dry_run {
+        log.say(&format!(
+            "watch: contract landed -> dry run, nothing written: {landed:?}"
+        ));
+        return None;
+    }
+    match harness_workflows::common::contest::resume_contract(gh, &landed, log).await {
+        Ok(()) => None,
+        Err(halt) => {
+            log.error(&format!(
+                "watch: contract landed -> #{request}: {}",
+                halt.reason()
+            ));
+            Some(("contract_landed", halt))
+        }
+    }
+}
+
+/// Closes a test-debt PR that cannot land, with the reason on the PR and on
+/// its issue (`close_issue` closes a PR: the issues endpoint serves both).
+/// The issue stays open: the next rotation labels it again.
+async fn run_drop_debt(
+    gh: &dyn GitHub,
+    issue: u64,
+    pr: String,
+    why: String,
+    dry_run: bool,
+    log: &Logbook,
+) -> Option<(&'static str, Halt)> {
+    if dry_run {
+        log.say(&format!(
+            "watch: test debt -> dry run, PR #{pr} of #{issue} not closed: {why}"
+        ));
+        return None;
+    }
+    let dropped = async {
+        let number: u64 = pr
+            .parse()
+            .map_err(|_| Halt::Failed(format!("PR {pr:?} has no number")))?;
+        gh.post_issue_comment(
+            number,
+            &format!(
+                "Closed by the harness: {why}. One request, one attempt — the next mutants \
+                 rotation labels #{issue} again if the file still owes tests."
+            ),
+        )
+        .await?;
+        gh.close_issue(number).await?;
+        gh.post_issue_comment(
+            issue,
+            &format!("PR #{pr} was closed without merging: {why}. This issue stays open."),
+        )
+        .await
+    };
+    match dropped.await {
+        Ok(()) => {
+            log.warn(&format!(
+                "watch: test debt -> PR #{pr} of #{issue} closed: {why}"
+            ));
+            None
+        }
+        Err(halt) => {
+            log.error(&format!("watch: test debt -> PR #{pr}: {}", halt.reason()));
+            Some(("test_debt", halt))
         }
     }
 }
@@ -697,6 +911,7 @@ pub(super) async fn run_main_agent_merge(
     args: &WatchArgs,
     here: &Path,
     milestone: u64,
+    repairing: &[u64],
     log: &Logbook,
 ) -> Option<(&'static str, Halt)> {
     match crate::dispatch::main_agent_merge::run(
@@ -704,6 +919,7 @@ pub(super) async fn run_main_agent_merge(
         here,
         &args.target_repo_url,
         &args.branch,
+        repairing,
     )
     .await
     {
@@ -739,6 +955,26 @@ pub(super) async fn run_main_agent_merge(
                         checks.len(),
                         checks.join("; ")
                     ));
+                    None
+                }
+                // Past its repairs: a decision asked on the milestone, once,
+                // never a third repair asked every tick.
+                MergeReport::Escalated { pr, checks, asked } => {
+                    if *asked {
+                        log.event(&Event::RepairsExhausted {
+                            task: milestone,
+                            pr: pr.clone(),
+                            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES)
+                                .unwrap_or(u64::MAX),
+                        });
+                    } else {
+                        log.debug(&format!(
+                            "watch: main_agent_merge -> PR {pr} of #{milestone} is red past its \
+                             repairs ({}) — its decision is asked, a human's, or its repair \
+                             still runs",
+                            checks.join("; ")
+                        ));
+                    }
                     None
                 }
                 // Neither stops the watch: a conflict waits for a catch-up
@@ -1114,5 +1350,142 @@ mod merge_route_tests {
             "{}",
             halt.reason()
         );
+    }
+
+    #[test]
+    fn only_a_merge_lands_and_only_a_landed_debt_merge_holds_the_next() {
+        let stale = Attempt::Stale(harness_workflows::common::branching::BaseHead {
+            sha: "abc".to_string(),
+            rebuild: Vec::new(),
+        });
+        assert!(landed(&Attempt::Merged));
+        for attempt in [
+            stale,
+            Attempt::Pending,
+            Attempt::Red(vec!["rust".to_string()]),
+            Attempt::Repairing,
+        ] {
+            assert!(!landed(&attempt), "{attempt:?}");
+        }
+        let mut pulse = Pulse::default();
+        after_debt_merge(&mut pulse, false, 10_000);
+        assert_eq!(
+            pulse.debt_merged_at, None,
+            "a refreshed debt PR holds nothing"
+        );
+        after_debt_merge(&mut pulse, true, 10_000);
+        assert_eq!(pulse.debt_merged_at, Some(10_000));
+    }
+
+    fn watch(dry_run: bool) -> WatchArgs {
+        let line: &[&str] = if dry_run {
+            &["harness", "watch", "--dry-run"]
+        } else {
+            &["harness", "watch"]
+        };
+        match crate::cli::Cli::try_parse_from(line) {
+            Ok(crate::cli::Cli {
+                command: Some(crate::cli::Command::Watch(args)),
+                ..
+            }) => args,
+            other => panic!("a watch command line: {other:?}"),
+        }
+    }
+
+    fn follow_ups() -> [Route; 4] {
+        [
+            Route::CloseMerged {
+                task: 465,
+                pr: 470,
+                branch: "milestone/24-x".to_string(),
+            },
+            Route::ContractLanded {
+                request: 503,
+                pr: "500".to_string(),
+            },
+            Route::MergeDebt {
+                issue: 7,
+                pr: "40".to_string(),
+            },
+            Route::DropDebtPr {
+                issue: 9,
+                pr: "42".to_string(),
+                why: "its checks failed: rust".to_string(),
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_on_a_dry_run_writes_nothing_and_says_so() {
+        let here = Path::new("/nonexistent");
+        for route in follow_ups() {
+            if matches!(route, Route::MergeDebt { .. }) {
+                continue;
+            }
+            let lines = Rc::new(Lines::default());
+            let log = Logbook::new(Rc::clone(&lines) as Rc<dyn Sink>, Verbosity::Normal);
+            let mut pulse = Pulse::default();
+            let failed = run_follow_up(
+                &watch(true),
+                here,
+                &NoGitHub,
+                route.clone(),
+                &mut pulse,
+                &log,
+            )
+            .await;
+            assert!(failed.is_none(), "{route:?}");
+            assert!(
+                lines.0.borrow().iter().any(|line| line.contains("dry run")),
+                "{route:?}: {:?}",
+                lines.0.borrow()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_follow_up_github_refuses_is_the_route_s_failure_and_holds_no_debt_merge() {
+        let here = Path::new("/nonexistent");
+        let names: Vec<&str> = {
+            let mut names = Vec::new();
+            for route in follow_ups() {
+                let mut pulse = Pulse::default();
+                let failed = run_follow_up(
+                    &watch(false),
+                    here,
+                    &NoGitHub,
+                    route,
+                    &mut pulse,
+                    &Logbook::null(),
+                )
+                .await;
+                let Some((name, halt)) = failed else {
+                    panic!("a refused follow-up is the route's failure");
+                };
+                assert!(halt.reason().contains("no call should leave this test"));
+                assert_eq!(pulse.debt_merged_at, None);
+                names.push(name);
+            }
+            names
+        };
+        assert_eq!(
+            names,
+            [
+                "close_merged",
+                "contract_landed",
+                "milestone_merge",
+                "test_debt"
+            ]
+        );
+        let unnumbered = run_drop_debt(
+            &NoGitHub,
+            9,
+            "x".to_string(),
+            "red".to_string(),
+            false,
+            &Logbook::null(),
+        )
+        .await;
+        assert!(matches!(unnumbered, Some(("test_debt", Halt::Failed(_)))));
     }
 }

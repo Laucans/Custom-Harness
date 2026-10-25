@@ -14,6 +14,10 @@ pub struct Config {
     pub decide: SessionSpec,
     /// The human's prompt edits, read once per run (see [`crate::prompts`]).
     pub prompts: Rc<PromptBook>,
+    /// The integration branch (`main_agent`): what a decision never tells a
+    /// session to merge into its branch, and the base of the PRs it never
+    /// merges nor cuts.
+    pub integration: String,
 }
 
 #[cfg(test)]
@@ -30,6 +34,7 @@ pub(crate) mod fake {
     pub fn in_dir(decide_dir: PathBuf) -> Config {
         Config {
             prompts: std::rc::Rc::default(),
+            integration: "main_agent".to_string(),
             decide_dir,
             decide: SessionSpec {
                 model: "opus".to_string(),

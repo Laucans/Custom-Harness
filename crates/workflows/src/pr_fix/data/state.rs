@@ -21,6 +21,16 @@ pub struct FixState {
     /// and the repairs are not used up: a reason to repair, by bringing the
     /// base in.
     pub conflicting: bool,
+    /// The PR head's sha before the session, when it could be read: what
+    /// tells a repair that pushed nothing.
+    pub head_before: Option<String>,
+    /// The repair session's answer, once it answered: whether its
+    /// `AGENT_LOOP_OK` says it pushed — the one answer whose local commits
+    /// the harness pushes for it. `None`: no session answered.
+    pub answered_ok: Option<bool>,
+    /// The session stopped on a contract another milestone produces
+    /// (`AGENT_LOOP_STOP: contract <id> — <need>`): the stop's reason.
+    pub contract_stop: Option<String>,
 }
 
 impl FixState {

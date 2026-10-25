@@ -74,9 +74,11 @@ Answer with ONLY a JSON object, these keys and no prose around it:
 - "task_title": `{id} v<n>: <what changes>`;
 - "task_brief": what the producer builds — fields, behaviour, tests; for a
   duplicate, what differs from the original;
-- "task_architecture": the task's `## Architecture` lines, one per line:
-  `unit: Capability` or `unit: DataCapability`, `id: {id}`, `system: <system>`,
-  `side: harness:read-side` or `side: harness:write-side`;
+- "task_goal": what a consumer gets from the new version, a sentence or
+  two — the task's `## Business Goal`;
+- "task_acceptance": the checks that say it is built, an array of
+  given/when/then sentences — its `## Acceptance Criteria` (the harness
+  writes its `## Architecture` itself: the unit, the system, `produces`);
 - "breaking": true or false.
 
 `breaking` is true when what was built against version {version} stops

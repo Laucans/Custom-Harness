@@ -381,6 +381,9 @@ mod tests {
             prs_waiting: Vec::new(),
             rules_on_pr: Vec::new(),
             settled: Vec::new(),
+            tasks_merged: Vec::new(),
+            contracts_landed: Vec::new(),
+            debt_landings: Vec::new(),
         }
     }
 

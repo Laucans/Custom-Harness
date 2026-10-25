@@ -37,38 +37,107 @@ pub enum Asked {
     },
 }
 
+/// The most slices one stop may name: a guard against a session that would
+/// re-plan the milestone in a stop, not a target.
+pub const MAX_SLICES: usize = 8;
+
+/// What follows `AGENT_LOOP_STOP`, its markdown and colon trimmed.
+fn after_stop(reason: &str) -> Option<&str> {
+    let (_, after) = reason.split_once("AGENT_LOOP_STOP")?;
+    Some(after.trim_start_matches(|c: char| c == ':' || c == '`' || c == '*' || c.is_whitespace()))
+}
+
 /// The missing task a stop names: `AGENT_LOOP_STOP: task <slice JSON>`.
 /// `None` when the stop asks something else.
 #[must_use]
 pub fn asked(reason: &str) -> Option<Asked> {
-    let (_, after) = reason.split_once("AGENT_LOOP_STOP")?;
-    let said = after
-        .trim_start_matches(|c: char| c == ':' || c == '`' || c == '*' || c.is_whitespace())
-        .strip_prefix("task ")?
-        .trim();
+    let said = after_stop(reason)?.strip_prefix("task ")?.trim();
     if said.is_empty() {
         return None;
     }
-    let unwritable = |why: String| Asked::Unwritable {
-        said: said.to_string(),
-        why,
+    Some(match json_reply::parse_object::<TaskItem>(said) {
+        Ok(item) => judged(item, said),
+        Err(error) => Asked::Unwritable {
+            said: said.to_string(),
+            why: format!("the stop carries no slice that reads ({error})"),
+        },
+    })
+}
+
+/// Every missing task a stop names.
+///
+/// `task <slice>` as a list of one, or
+/// `tasks [<slice>, …]` — each one whole or unwritable, the same title
+/// (case and spacing aside) named once. `None` when the stop asks
+/// something else.
+///
+/// `ForgeDesMondes`' #486 found four missing units over four rounds, one a
+/// stop ($4.88, each session re-reading the context): one stop now names
+/// them all. More than [`MAX_SLICES`] is one unwritable answer.
+#[must_use]
+pub fn asked_all(reason: &str) -> Option<Vec<Asked>> {
+    let rest = after_stop(reason)?;
+    let Some(list) = rest.strip_prefix("tasks ") else {
+        return asked(reason).map(|one| vec![one]);
     };
-    let mut item: TaskItem = match json_reply::parse_object(said) {
-        Ok(item) => item,
+    let said = list.trim();
+    if said.is_empty() {
+        return None;
+    }
+    let slices: Vec<serde_json::Value> = match json_reply::parse_array(said) {
+        Ok(slices) => slices,
         Err(error) => {
-            return Some(unwritable(format!(
-                "the stop carries no slice that reads ({error})"
-            )));
+            return Some(vec![Asked::Unwritable {
+                said: said.to_string(),
+                why: format!("the stop carries no list of slices that reads ({error})"),
+            }]);
         }
     };
-    // A slice index points into split's array; a lone slice has none.
+    if slices.len() > MAX_SLICES {
+        return Some(vec![Asked::Unwritable {
+            said: said.to_string(),
+            why: format!(
+                "too many slices in one stop ({} — at most {MAX_SLICES})",
+                slices.len()
+            ),
+        }]);
+    }
+    let mut titles: Vec<String> = Vec::new();
+    let mut found = Vec::new();
+    for slice in slices {
+        let text = slice.to_string();
+        let asked = match serde_json::from_value::<TaskItem>(slice) {
+            Ok(item) => {
+                let title = folded(&item.title);
+                if !title.is_empty() && titles.contains(&title) {
+                    continue;
+                }
+                titles.push(title);
+                judged(item, &text)
+            }
+            Err(error) => Asked::Unwritable {
+                said: text,
+                why: format!("a slice that does not read ({error})"),
+            },
+        };
+        found.push(asked);
+    }
+    Some(found)
+}
+
+/// A slice read, judged whole or not.
+fn judged(mut item: TaskItem, said: &str) -> Asked {
+    // A slice index points into split's array; a stop's slices have none.
     item.depends_on.clear();
     let gaps = gaps(&item);
-    Some(if gaps.is_empty() {
+    if gaps.is_empty() {
         Asked::Task(Box::new(item))
     } else {
-        unwritable(gaps.join("; "))
-    })
+        Asked::Unwritable {
+            said: said.to_string(),
+            why: gaps.join("; "),
+        }
+    }
 }
 
 /// What keeps a slice from being opened as it is: split's own measure, and
@@ -135,9 +204,13 @@ pub fn with_id(architecture: &str, id: &str) -> String {
 
 /// Whether `issue`, a sub-issue of the milestone, already is the missing task.
 ///
-/// An open agent task under the same title, or one known by the same id. A
-/// person's task of the same name is not reused — opening the agent task is
-/// the point.
+/// An open agent task under the same title; or one known by the same id
+/// **that has not started** — no PR under review, not delivered. Two
+/// changes to one unit asked under different titles once the first is in
+/// review are two tasks, chained by their own blockers (`ForgeDesMondes`'
+/// #448 was parked on #473, a different change to the same id). A
+/// person's task of the same name is not reused — opening the agent task
+/// is the point.
 #[must_use]
 pub fn is_the_same(issue: &Issue, item: &TaskItem) -> bool {
     if !issue.is_open() || !issue.has(labels::AGENT) {
@@ -146,7 +219,8 @@ pub fn is_the_same(issue: &Issue, item: &TaskItem) -> bool {
     if folded(&issue.title) == folded(&item.title) {
         return true;
     }
-    let Some(id) = id(item) else {
+    let started = issue.has(labels::REVIEW_PENDING) || issue.has(labels::WAITING_MERGE);
+    let Some(id) = id(item).filter(|_| !started) else {
         return false;
     };
     sections::parse(&issue.body)
@@ -319,5 +393,102 @@ mod tests {
             &sibling("other", by_id, &[labels::AGENT], "open"),
             &nameless
         ));
+    }
+
+    fn slice(title: &str, id: &str) -> String {
+        format!(
+            r#"{{"title": "{title}", "branch": "feat/{id}", "brief": "b", "unit": "data-capability", "system": "campaign", "aggregate": "Entity", "produces": ["campaign.{id}"], "goal": "g", "acceptance": ["given a, when b, then c"]}}"#
+        )
+    }
+
+    fn titles(found: &[Asked]) -> Vec<String> {
+        found
+            .iter()
+            .map(|asked| match asked {
+                Asked::Task(item) => item.title.clone(),
+                Asked::Unwritable { why, .. } => format!("unwritable: {why}"),
+            })
+            .collect()
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_list_of_whole_slices_reads_back_whole(n in 1usize..=MAX_SLICES) {
+            let slices: Vec<String> = (0..n).map(|k| slice(&format!("Save {k}"), &format!("save{k}"))).collect();
+            let stop = format!("AGENT_LOOP_STOP: tasks [{}] (/code)", slices.join(", "));
+            let found = asked_all(&stop).expect("a list");
+            let expected: Vec<String> = (0..n).map(|k| format!("Save {k}")).collect();
+            proptest::prop_assert_eq!(titles(&found), expected);
+        }
+
+        #[test]
+        fn titles_compare_case_and_space_aside(title in "[A-Za-z]{1,8}( [A-Za-z]{1,8}){0,3}") {
+            let spaced = format!("  {}  ", title.to_uppercase().replace(' ', "   "));
+            proptest::prop_assert_eq!(folded(&title), folded(&spaced));
+        }
+    }
+
+    #[test]
+    fn one_task_object_is_a_list_of_one() {
+        let found = asked_all(BATTLEMAP).expect("one");
+        assert_eq!(found.len(), 1);
+        assert!(matches!(&found[0], Asked::Task(_)));
+        assert_eq!(asked_all("AGENT_LOOP_STOP: contract a.b — c"), None);
+    }
+
+    #[test]
+    fn duplicate_titles_in_one_stop_open_once() {
+        let stop = format!(
+            "AGENT_LOOP_STOP: tasks [{}, {}, {}]",
+            slice("Save entity", "save"),
+            slice("save   ENTITY", "other"),
+            slice("List entities", "list")
+        );
+        assert_eq!(
+            titles(&asked_all(&stop).expect("a list")),
+            ["Save entity", "List entities"]
+        );
+    }
+
+    #[test]
+    fn nine_slices_are_unwritable() {
+        let slices: Vec<String> = (0..9)
+            .map(|k| slice(&format!("T{k}"), &format!("t{k}")))
+            .collect();
+        let found =
+            asked_all(&format!("AGENT_LOOP_STOP: tasks [{}]", slices.join(","))).expect("x");
+        assert_eq!(found.len(), 1);
+        assert!(
+            matches!(&found[0], Asked::Unwritable { why, .. } if why.contains("too many slices"))
+        );
+    }
+
+    #[test]
+    fn a_same_id_different_title_is_the_same_task_only_until_it_started() {
+        // ForgeDesMondes' #448 and #473: two changes to one id.
+        let item = match asked(&format!(
+            "AGENT_LOOP_STOP: task {}",
+            slice("Add source", "saveEntity")
+        )) {
+            Some(Asked::Task(item)) => *item,
+            other => panic!("{other:?}"),
+        };
+        let mut existing = Issue {
+            number: 473,
+            state: "open".to_string(),
+            title: "Save entity v2".to_string(),
+            labels: vec![labels::AGENT.to_string()],
+            body: "## Architecture\n\nunit: data-capability\nproduces: campaign.saveEntity"
+                .to_string(),
+            ..Issue::default()
+        };
+        assert!(
+            is_the_same(&existing, &item),
+            "not started: the same unit's task"
+        );
+        existing.labels.push(labels::REVIEW_PENDING.to_string());
+        assert!(!is_the_same(&existing, &item), "in review: another task");
+        existing.title = "add   SOURCE".to_string();
+        assert!(is_the_same(&existing, &item), "the same title always is");
     }
 }

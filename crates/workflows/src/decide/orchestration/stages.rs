@@ -54,6 +54,13 @@ Decide with what is already decided: the design dossier, the rules, the
 milestone's plan. Prefer what keeps the gates green and the plan intact.
 
 What you may do here: {actions}.
+The harness catches branches up itself: a milestone branch takes
+`{integration}` once its head is green, and a task's pull request is
+refreshed with its milestone before it lands. Never prescribe a merge, a
+pull, a rebase, a cherry-pick or a catch-up of `{integration}` into any
+branch, nor a push to a `milestone/*` branch — a repair merges only its own
+pull request's base, to resolve a conflict. When the branch lacks something
+already landed, or about to land, `wait` on the issue that produces it.
 - `answer`: the question is answered; the task goes on from your answer,
   which the next session reads under `## Decision`. For a session that
   stopped on an ambiguity, answer it the way the design already points to.
@@ -87,7 +94,7 @@ number of the issue waited for."#;
 
 /// The free stage: read the case, then take the request.
 #[must_use]
-pub fn context(ports: &Ports) -> Stage<DecideState> {
+pub fn context(ports: &Ports, config: &Config) -> Stage<DecideState> {
     Stage {
         name: CONTEXT.to_string(),
         pre: None,
@@ -96,6 +103,7 @@ pub fn context(ports: &Ports) -> Stage<DecideState> {
             actions: vec![
                 Box::new(ReadCase {
                     gh: Rc::clone(&ports.gh),
+                    integration: config.integration.clone(),
                 }),
                 Box::new(ConsumeRequest {
                     gh: Rc::clone(&ports.gh),
@@ -152,7 +160,7 @@ pub fn apply(ports: &Ports) -> Stage<DecideState> {
 /// Context, decide, apply, in order.
 #[must_use]
 pub fn table(ports: &Ports, config: &Config) -> Vec<Stage<DecideState>> {
-    vec![context(ports), decide(ports, config), apply(ports)]
+    vec![context(ports, config), decide(ports, config), apply(ports)]
 }
 
 #[cfg(test)]
@@ -181,6 +189,7 @@ mod tests {
             "{pr}",
             "{review}",
             "{actions}",
+            "{integration}",
         ] {
             assert!(DECIDE_PROMPT.contains(placeholder), "{placeholder}");
         }
@@ -190,6 +199,8 @@ mod tests {
             "ONLY a JSON object",
             "`cut`",
             "`repair`",
+            "Never prescribe a merge",
+            "nor a push to a `milestone/*` branch",
         ] {
             assert!(DECIDE_PROMPT.contains(said), "{said}");
         }

@@ -15,10 +15,10 @@
 //! task asks it, blocking the stopped one, whose `## Decision` keeps the
 //! request (`kind: port`) for its next session.
 //!
-//! **Without a human gate** (`--no-human-gate`) no person is waited on: a
-//! third stop asks for a decision once more, and a port asked is a decision
-//! too — `decide` approves or refuses it. Every one is written under the
-//! task's `## Decision` and commented by `decide`, which is what documents it.
+//! **Without a human gate** (`--no-human-gate`) no person is waited on for
+//! a stop: a third stop asks for a decision once more, written under the
+//! task's `## Decision` and commented by `decide`, which is what documents
+//! it. A port asked is a person's either way: the Ports pane approves it.
 //!
 //! **A stop on what has not landed is no decision either.** When the reason
 //! names an issue, a milestone's branch, or an id or a path the plan's graph
@@ -50,8 +50,8 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
 use crate::common::decision::Question;
-use crate::common::{labels, sections};
-use crate::contract_manager::data::request::{self as contract, Request};
+use crate::common::{contract_ask, labels, sections};
+use crate::contract_manager::data::request as contract;
 use crate::dev_loop::data::missing::{self, Asked};
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::{tasks, waits};
@@ -146,7 +146,7 @@ impl RaiseDecision {
         };
         let reason = one_line(halt.reason());
         // Whole, not cut: a missing task's slice is longer than a question.
-        let task_asked = missing::asked(halt.reason());
+        let task_asked = missing::asked_all(halt.reason());
         let issue = self.gh.issue(number).await?;
         let asked = sections::parse(&issue.body)
             .get(sections::DECISION)
@@ -158,22 +158,37 @@ impl RaiseDecision {
             Some("wait") => q.round,
             _ => 1,
         });
-        let port = port_asked(&reason).filter(|_| !self.autonomous);
+        // A port is a person's to approve, with or without a human gate: a
+        // new dependency outside the product — a provider, a cost, an
+        // account — is no decision the harness takes (ForgeDesMondes' #53,
+        // 2026-10-18: `port archive-storage` asked a decision, and no
+        // "Approve the port" issue reached the Ports pane).
+        let port = port_asked(&reason);
         if let Some((id, need)) = contract::asked(&reason) {
-            // A contract another milestone still builds is the contract
-            // manager's, with or without a human gate — it is the harness's
-            // own work. One the task may evolve itself — an aggregate, whose
-            // invariants are the writer's (contract I), or a contract whose
-            // producer has landed on the integration branch — is answered
-            // here: ForgeDesMondes' #157 asked `Session` changed, an
-            // aggregate landed with #18, and the manager, which reads
-            // capability and data-capability manifests only, would have
-            // halted on it every tick.
-            if let Some(why) = self.contract_is_the_tasks_own(ctx, &id).await {
+            // A contract another milestone builds — landed or not — is the
+            // contract manager's, with or without a human gate: it is the
+            // harness's own work (`common::contract_ask`). One the task may
+            // evolve itself — an aggregate, whose invariants are the writer's
+            // (contract I), or its own milestone's — is answered here:
+            // ForgeDesMondes' #157 asked `Session` changed, an aggregate, and
+            // the manager, which reads capability and data-capability
+            // manifests only, would have halted on it every tick.
+            let requester = contract_ask::Requester {
+                issue: number,
+                milestone: ctx.state.milestone.number.parse::<u64>().ok(),
+                body: issue.body.clone(),
+                task: true,
+            };
+            if let contract_ask::Asked::TasksOwn(why) = contract_ask::ask(
+                self.gh.as_ref(),
+                &requester,
+                (&id, &need),
+                &self.integration_branch,
+                &ctx.traces,
+            )
+            .await?
+            {
                 self.contract_answered(ctx, number, &issue.body, &id, &need, &why)
-                    .await?;
-            } else {
-                self.contract_to_evolve(ctx, number, &issue.body, &id, &need)
                     .await?;
             }
         } else if let Some(asked) = task_asked {
@@ -199,7 +214,7 @@ impl RaiseDecision {
             // which is no issue a dependency can point at) is no wait: the
             // stop asks a decision as before, the round is not lost.
             if let Err(refused) = self
-                .wait_for(ctx, number, &issue.body, on, round, &reason)
+                .wait_for(ctx, number, &issue.body, &[on], round, &reason)
                 .await
             {
                 ctx.traces.warn(&format!(
@@ -276,68 +291,48 @@ impl RaiseDecision {
         None
     }
 
-    /// Parks the task until `on` lands: a GitHub blocker, written once, the
-    /// stop kept under `## Decision` (`kind: wait`, carrying `round` so the
-    /// stops decided before it still count), and nothing to decide.
+    /// Parks the task until every issue of `on` lands: a GitHub blocker
+    /// each, written once, the stop kept under `## Decision` (`kind: wait`,
+    /// carrying `round` so the stops decided before it still count), and
+    /// nothing to decide.
     async fn wait_for(
         &self,
         ctx: &Context<Loop>,
         number: u64,
         body: &str,
-        on: u64,
+        on: &[u64],
         round: u32,
         reason: &str,
     ) -> Outcome<()> {
         let blocked_by = self.gh.blocked_by(number).await?;
-        if !blocked_by.iter().any(|blocker| blocker.number == on) {
-            self.gh.add_blocked_by(number, on).await?;
+        for blocker in on {
+            if !blocked_by.iter().any(|known| known.number == *blocker) {
+                self.gh.add_blocked_by(number, *blocker).await?;
+            }
         }
+        let named: Vec<String> = on.iter().map(|n| format!("#{n}")).collect();
         let question = Question {
             kind: Some("wait".to_string()),
             blocks: reason.to_string(),
             round,
             decided_by: Some("harness".to_string()),
-            verdict: Some(format!("wait — until #{on} lands")),
+            verdict: Some(format!(
+                "wait — until {} land{}",
+                named.join(", "),
+                if on.len() == 1 { "s" } else { "" }
+            )),
             ..Question::default()
         };
         let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
         self.gh.set_body(number, &kept).await?;
-        ctx.traces.event(&Event::TaskWaits {
-            task: number,
-            on,
-            why: reason.to_string(),
-        });
+        for blocker in on {
+            ctx.traces.event(&Event::TaskWaits {
+                task: number,
+                on: *blocker,
+                why: reason.to_string(),
+            });
+        }
         Ok(())
-    }
-
-    /// A contract asked: kept under the task's `## Decision` (`kind:
-    /// contract`), and the contract manager's to evolve, in a
-    /// `harness:contract-change` issue blocking the task.
-    /// Why the contract `id` is the task's own to evolve, if it is: an
-    /// aggregate (its invariants are the writer's), the task's own
-    /// milestone's, or one whose producer has landed. `None` when another
-    /// milestone still builds it, or the graph does not know it.
-    async fn contract_is_the_tasks_own(&self, ctx: &Context<Loop>, id: &str) -> Option<String> {
-        let graph = self
-            .gh
-            .file_text(graph::PATH, &self.integration_branch)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|text| Graph::parse(&text).ok())?;
-        let entry = graph.ids.get(id)?;
-        if entry.kind == harness_architecture::graph::Kind::Aggregate {
-            return Some(format!(
-                "`{id}` is an aggregate: its invariants are the writer's"
-            ));
-        }
-        let producer = entry.producer?;
-        if ctx.state.milestone.number.parse::<u64>().ok() == Some(producer) {
-            return Some(format!("`{id}` is this milestone's own (#{producer})"));
-        }
-        let found = self.gh.issue(producer).await.ok()?;
-        (!tasks::still_blocks(&found))
-            .then(|| format!("`{id}`'s producer, milestone #{producer}, has landed"))
     }
 
     /// Tells the task its contract request is its own to carry out: the
@@ -367,62 +362,6 @@ impl RaiseDecision {
         ctx.traces.say(&format!(
             "#{number}: asked a change of `{id}` — {why}: told to evolve it in the task"
         ));
-        Ok(())
-    }
-
-    async fn contract_to_evolve(
-        &self,
-        ctx: &Context<Loop>,
-        number: u64,
-        body: &str,
-        id: &str,
-        need: &str,
-    ) -> Outcome<()> {
-        let question = Question {
-            kind: Some("contract".to_string()),
-            blocks: format!("contract {id} — {need}"),
-            ..Question::default()
-        };
-        let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
-        self.gh.set_body(number, &kept).await?;
-        if !self
-            .gh
-            .labels()
-            .await?
-            .iter()
-            .any(|l| l == labels::CONTRACT_CHANGE)
-        {
-            let label = labels::ALL
-                .iter()
-                .find(|l| l.name == labels::CONTRACT_CHANGE);
-            self.gh
-                .create_label(
-                    labels::CONTRACT_CHANGE,
-                    label.map_or("bfdadc", |l| l.color),
-                    label.map_or("", |l| l.description),
-                )
-                .await?;
-        }
-        let request = Request {
-            id: id.to_string(),
-            task: number,
-            milestone: ctx.state.milestone.number.parse::<u64>().ok(),
-            need: need.to_string(),
-        };
-        let issue = self
-            .gh
-            .create_issue(
-                &request.title(),
-                &request.render(),
-                &[labels::CONTRACT_CHANGE],
-            )
-            .await?;
-        self.gh.add_blocked_by(number, issue).await?;
-        ctx.traces.event(&Event::ContractChangeAsked {
-            issue,
-            task: number,
-            id: id.to_string(),
-        });
         Ok(())
     }
 
@@ -474,62 +413,77 @@ impl RaiseDecision {
         Ok(())
     }
 
-    /// A missing task named: opened under the milestone — or found there,
-    /// named by an earlier stop — and the task parked on it. One the
-    /// harness cannot write goes to a person, or, without a human gate, is
-    /// asked as a decision.
+    /// The missing tasks a stop named: each opened under the milestone — or
+    /// found there, named by an earlier stop — and the task parked on all of
+    /// them, in one round. What the harness cannot write goes to a person in
+    /// one task listing them all, or, without a human gate, is asked as a
+    /// decision when nothing could be opened — otherwise its words stay in
+    /// the `## Decision` the wait keeps, and the next stop asks it again.
     async fn missing_task(
         &self,
         ctx: &Context<Loop>,
         issue: &Issue,
-        asked: Asked,
+        asked: Vec<Asked>,
         round: u32,
         reason: &str,
     ) -> Outcome<()> {
         let number = issue.number;
         let milestone = ctx.state.milestone.number.parse::<u64>().ok();
-        let (item, milestone) = match (asked, milestone) {
-            (Asked::Task(item), Some(milestone)) => (item, milestone),
-            (Asked::Task(item), None) => {
-                let said = item.title.clone();
-                return self
-                    .unwritable(
-                        ctx,
-                        issue,
-                        &said,
-                        "the task's milestone is not known, so the missing task would belong to none",
-                        round,
-                        reason,
-                    )
-                    .await;
+        let mut writable = Vec::new();
+        let mut unwritable: Vec<(String, String)> = Vec::new();
+        for one in asked {
+            match (one, milestone) {
+                (Asked::Task(item), Some(_)) => writable.push(*item),
+                (Asked::Task(item), None) => unwritable.push((
+                    item.title.clone(),
+                    "the task's milestone is not known, so the missing task would belong to none"
+                        .to_string(),
+                )),
+                (Asked::Unwritable { said, why }, _) => unwritable.push((said, why)),
             }
-            (Asked::Unwritable { said, why }, _) => {
-                return self
-                    .unwritable(ctx, issue, &said, &why, round, reason)
-                    .await;
+        }
+        let mut on: Vec<u64> = Vec::new();
+        if let Some(milestone) = milestone
+            && !writable.is_empty()
+        {
+            let siblings = self.gh.sub_issues(milestone).await?;
+            for item in &writable {
+                let found = siblings.iter().find(|sibling| {
+                    sibling.number != number && missing::is_the_same(sibling, item)
+                });
+                let task = if let Some(found) = found {
+                    ctx.traces.say(&format!(
+                        "#{number}: the missing task is #{} already — parked on it",
+                        found.number
+                    ));
+                    found.number
+                } else {
+                    let opened = self.open_missing(number, milestone, item).await?;
+                    ctx.traces.say(&format!(
+                        "#{number}: opened #{opened} for the missing task ({}) under milestone \
+                         #{milestone}",
+                        item.title
+                    ));
+                    opened
+                };
+                if !on.contains(&task) {
+                    on.push(task);
+                }
             }
-        };
-        let found = self
-            .gh
-            .sub_issues(milestone)
-            .await?
-            .into_iter()
-            .find(|sibling| sibling.number != number && missing::is_the_same(sibling, &item));
-        let on = if let Some(found) = found {
-            ctx.traces.say(&format!(
-                "#{number}: the missing task is #{} already — parked on it",
-                found.number
-            ));
-            found.number
-        } else {
-            let opened = self.open_missing(number, milestone, &item).await?;
-            ctx.traces.say(&format!(
-                "#{number}: opened #{opened} for the missing task ({}) under milestone #{milestone}",
-                item.title
-            ));
-            opened
-        };
-        self.wait_for(ctx, number, &issue.body, on, round, reason)
+        }
+        if !unwritable.is_empty() && (!self.autonomous || on.is_empty()) {
+            self.unwritable(ctx, issue, &unwritable, round, reason)
+                .await?;
+            if on.is_empty() {
+                return Ok(());
+            }
+        }
+        if on.is_empty() {
+            return Ok(());
+        }
+        // The wait keeps the stop's whole reason, the unwritable slices'
+        // words included: the next stop asks them again.
+        self.wait_for(ctx, number, &issue.body, &on, round, reason)
             .await
     }
 
@@ -560,14 +514,14 @@ impl RaiseDecision {
         Ok(opened)
     }
 
-    /// A missing task with no SPEC to write: a person's to open, blocking
-    /// the task — or, without a human gate, a decision asked.
+    /// The missing tasks with no SPEC to write: a person's to open, in one
+    /// task blocking the stopped one — or, without a human gate, a decision
+    /// asked.
     async fn unwritable(
         &self,
         ctx: &Context<Loop>,
         issue: &Issue,
-        said: &str,
-        why: &str,
+        unwritable: &[(String, String)],
         round: u32,
         reason: &str,
     ) -> Outcome<()> {
@@ -577,16 +531,28 @@ impl RaiseDecision {
                 .ask(ctx, number, &issue.body, "stop", round, reason)
                 .await;
         }
+        let listed: Vec<String> = unwritable
+            .iter()
+            .map(|(said, why)| format!("- {why}:\n\n  > {said}"))
+            .collect();
         let body = format!(
             "## What a human must decide or schedule\n\nThe session building #{number} stopped \
-             on a task the plan lacks, and the harness could not open it itself: {why}.\n\n\
-             > {said}\n\n## Missing task\n\nOpen it as a `{agent}` sub-issue of the milestone \
-             with its SPEC (`## Scope` with a `branch:`, `## Architecture`, `## Business Goal`, \
-             `## Acceptance Criteria`) and declare it a dependency of #{number}, or answer under \
+             on {} the plan lacks, and the harness could not open {} itself:\n\n{}\n\n## \
+             Missing task\n\nOpen each as a `{agent}` sub-issue of the milestone with its SPEC \
+             (`## Scope` with a `branch:`, `## Architecture`, `## Business Goal`, `## \
+             Acceptance Criteria`) and declare it a dependency of #{number}, or answer under \
              #{number}'s `## Decision`; then close this issue — #{number} waits on it.",
+            if unwritable.len() == 1 {
+                "a task"
+            } else {
+                "tasks"
+            },
+            if unwritable.len() == 1 { "it" } else { "them" },
+            listed.join("\n"),
             agent = labels::AGENT
         );
-        let title: String = said.chars().take(80).collect();
+        let first = unwritable.first().map_or("", |(said, _)| said.as_str());
+        let title: String = first.chars().take(80).collect();
         let human = self
             .gh
             .create_issue(
@@ -599,10 +565,14 @@ impl RaiseDecision {
             self.gh.create_sub_issue_link(milestone, human).await?;
         }
         self.gh.add_blocked_by(number, human).await?;
+        let whys: Vec<&str> = unwritable.iter().map(|(_, why)| why.as_str()).collect();
         ctx.traces.event(&Event::HumanTaskOpened {
             task: human,
             blocks: number,
-            why: format!("a missing task the harness cannot write: {why}"),
+            why: format!(
+                "a missing task the harness cannot write: {}",
+                whys.join("; ")
+            ),
         });
         Ok(())
     }
@@ -777,7 +747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_a_human_gate_a_third_stop_and_a_port_are_decisions() {
+    async fn without_a_human_gate_a_third_stop_is_a_decision_and_a_port_still_a_person_s() {
         // The owner, on ForgeDesMondes: "I cannot take the decisions — you
         // do it." #41's third stop opened #79 for a person who never comes.
         let third = gh(
@@ -815,12 +785,19 @@ mod tests {
         .on_halt(&mut ctx(false), asked)
         .await
         .expect("handed over");
+        // A port stays a person's, gate or no gate (ForgeDesMondes' #53):
+        // the "Approve the port" issue the Ports pane reads, no decision.
         let writes = port.writes();
         assert!(
-            !writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            writes.iter().any(|w| matches!(
+                w,
+                Wrote::CreatedIssue(title, _, labels)
+                    if title.starts_with("Approve the port payments for #11")
+                        && labels == &[labels::HUMAN.to_string()]
+            )),
             "{writes:?}"
         );
-        assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        assert!(!writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
         let Wrote::Body(11, body) = &writes[0] else {
             panic!("{writes:?}");
         };
@@ -1331,7 +1308,7 @@ mod tests {
             writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
             "the manager's: {writes:?}"
         );
-        // The same capability once #20 has landed: the task's own.
+        // The same capability once #20 has landed.
         let gh = board("pay", &[labels::MILESTONE, labels::WAITING_MERGE], "open");
         let mut files = gh.files.clone();
         files.insert(
@@ -1359,15 +1336,17 @@ mod tests {
         )
         .await
         .expect("handed over");
+        // Landed, it stays the manager's: a consumer editing a landed
+        // manifest is refused by `contracts-untouched` (ForgeDesMondes' #482).
         let writes = gh.writes();
         assert!(
-            !writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
-            "landed: the task's own: {writes:?}"
+            writes.iter().any(|w| matches!(w, Wrote::CreatedIssue(..))),
+            "landed: still the manager's: {writes:?}"
         );
         assert!(
-            writes
-                .iter()
-                .any(|w| matches!(w, Wrote::Body(11, body) if body.contains("has landed"))),
+            !writes.iter().any(
+                |w| matches!(w, Wrote::Body(11, body) if body.contains("decided-by: harness"))
+            ),
             "{writes:?}"
         );
     }
@@ -1736,7 +1715,7 @@ mod tests {
         assert_eq!(labels, &[labels::HUMAN.to_string()]);
         assert!(body.contains("## Missing task"), "{body}");
         assert!(
-            body.contains("could not open it itself: the stop carries no slice that reads"),
+            body.contains("could not open it itself:\n\n- the stop carries no slice that reads"),
             "says why: {body}"
         );
         assert!(
@@ -1807,5 +1786,87 @@ mod tests {
             "{}",
             opened[0].1
         );
+    }
+
+    fn many(titles: &[&str]) -> Halt {
+        let slices: Vec<String> = titles
+            .iter()
+            .enumerate()
+            .map(|(k, title)| {
+                if title.is_empty() {
+                    r#"{"title": "half a slice"}"#.to_string()
+                } else {
+                    format!(
+                        r#"{{"title": "{title}", "branch": "feat/unit-{k}", "brief": "b", "unit": "data-capability", "system": "table", "aggregate": "BattlemapInstance", "produces": ["table.unit{k}"], "goal": "g", "acceptance": ["given a, when b, then c"]}}"#
+                    )
+                }
+            })
+            .collect();
+        Halt::Halted(format!(
+            "AGENT_LOOP_STOP: tasks [{}] (/code)",
+            slices.join(", ")
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_stop_naming_three_missing_tasks_opens_them_and_waits_on_all() {
+        let gh = gh("## Scope\n\nbranch: feat/pay\n\npay");
+        let mut context = ctx(false);
+        raise(&gh, true)
+            .on_halt(&mut context, many(&["Unit A", "Unit B", "Unit C"]))
+            .await
+            .expect("handed over");
+        let writes = gh.writes();
+        assert_eq!(created(&writes).len(), 3, "{writes:?}");
+        for blocker in 1..=3 {
+            assert!(
+                writes.contains(&Wrote::BlockedByLink(11, blocker)),
+                "{writes:?}"
+            );
+        }
+        let bodies: Vec<&String> = writes
+            .iter()
+            .filter_map(|w| match w {
+                Wrote::Body(11, body) => Some(body),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bodies.len(), 1, "one body write: {writes:?}");
+        assert!(
+            bodies[0].contains("wait — until #1, #2, #3 land"),
+            "{}",
+            bodies[0]
+        );
+        assert!(!writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_mixed_stop_opens_the_writable_and_hands_the_rest_to_a_person() {
+        let gated = gh("## Scope\n\nbranch: feat/pay\n\npay");
+        raise(&gated, false)
+            .on_halt(&mut ctx(false), many(&["Unit A", ""]))
+            .await
+            .expect("handed over");
+        let writes = gated.writes();
+        let opened = created(&writes);
+        assert_eq!(opened.len(), 2, "{writes:?}");
+        assert_eq!(opened[0].0, "Unit A");
+        assert!(
+            opened[1].0.starts_with("Missing task for #11"),
+            "{:?}",
+            opened[1]
+        );
+        assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
+        assert!(writes.contains(&Wrote::BlockedByLink(11, 2)));
+        // Without a human gate, what was opened is waited on and the rest
+        // stays in the stop's words: no decision paid.
+        let free = gh("## Scope\n\nbranch: feat/pay\n\npay");
+        raise(&free, true)
+            .on_halt(&mut ctx(false), many(&["Unit A", ""]))
+            .await
+            .expect("handed over");
+        let writes = free.writes();
+        assert_eq!(created(&writes).len(), 1, "{writes:?}");
+        assert!(!writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
     }
 }

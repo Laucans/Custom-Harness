@@ -59,6 +59,6 @@ mod tests {
         assert_eq!(built.issue, 7);
         assert_eq!(built.lock_name, "7");
         assert_eq!(built.remaining.get(), 1, "one attempt per run");
-        assert_eq!(built.round.stages.len(), 2, "context then cover");
+        assert_eq!(built.round.stages.len(), 3, "context, cover, land");
     }
 }

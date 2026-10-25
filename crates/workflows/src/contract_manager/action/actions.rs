@@ -177,7 +177,7 @@ impl SessionAction<ManagerState> for AskManager {
             let retry = format!(
                 "Your answer does not read as a change: {why}. Answer again with ONLY the JSON \
                  object — path, manifest (version above {version}), fixture_path, fixture, \
-                 summary, task_title, task_brief, task_architecture, breaking — no prose."
+                 summary, task_title, task_brief, task_goal, task_acceptance, breaking — no prose."
             );
             ask_and_record(open, &retry, &self.stage, 1, &task, self.spending.as_ref()).await?;
         }

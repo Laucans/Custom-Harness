@@ -71,6 +71,9 @@ pub fn candidates<'a>(board: &'a [Issue], open: &'a [Pr]) -> Vec<(&'a Issue, &'a
 ///
 /// The caller passes `open` without the PRs that wait
 /// (`contest::not_waiting`): a waiting PR is neither escalated nor merged.
+/// `repairing` holds the PRs a lane repairs now, by number: one is not
+/// escalated while its repair runs — its last repair's marker is posted
+/// before the session, the checks still red from the push before.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from any read of a PR's comments, checks
@@ -79,9 +82,17 @@ pub async fn ready_to_merge<'a>(
     gh: &dyn GitHub,
     board: &'a [Issue],
     open: &'a [Pr],
+    repairing: &[u64],
 ) -> Outcome<(Option<(&'a Issue, &'a Pr)>, Vec<(u64, String)>)> {
     let mut escalated = Vec::new();
     for (task, pr) in candidates(board, open) {
+        if pr
+            .num
+            .parse::<u64>()
+            .is_ok_and(|number| repairing.contains(&number))
+        {
+            continue;
+        }
         let comments = gh.pr_comments(&pr.num).await?;
         match review::status(&comments) {
             review::Status::Clean => {}
@@ -116,6 +127,63 @@ pub async fn ready_to_merge<'a>(
         return Ok((Some((task, pr)), escalated));
     }
     Ok((None, escalated))
+}
+
+/// Escalates the PRs labelled `harness:pr-fix` past their repairs that no
+/// other path escalates; answers the (task, PR) pairs asked now.
+///
+/// The repair cap covers every `harness:pr-fix` PR (`pr_fix::data::candidates::due`),
+/// and past it a red or conflicting PR is repaired no more. A task's PR
+/// under review is [`ready_to_merge`]'s to escalate, a milestone's landing
+/// PR `main_agent_merge`'s, a rules' PR the rules train's (its red stand
+/// re-taps the rules' task). The rest — a task's PR with no
+/// `harness:to-review` (`ForgeDesMondes`' #498) — is escalated here on the
+/// task its body closes (`delivery::closed_task`), [`escalate`] asking once.
+/// The caller passes `to_fix` without the PRs a lane repairs now and those
+/// that wait (`contest::not_waiting`): neither is escalated.
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from a read of a PR, its comments or its
+/// task, or from the escalation's writes.
+pub async fn exhausted_repairs(
+    gh: &dyn GitHub,
+    to_fix: &[Pr],
+    to_review: &[Pr],
+    log: &Logbook,
+) -> Outcome<Vec<(u64, String)>> {
+    let mut escalated = Vec::new();
+    for pr in to_fix {
+        let covered = to_review.iter().any(|other| other.num == pr.num)
+            || crate::common::branching::milestone_number(&pr.head).is_some()
+            || pr.head.starts_with("rules/");
+        let Ok(number) = pr.num.parse::<u64>() else {
+            continue;
+        };
+        if covered {
+            continue;
+        }
+        let comments = gh.pr_comments(&pr.num).await?;
+        if review::repairs(&comments) < review::MAX_FIXES {
+            continue;
+        }
+        let red = !gh.pr_failing_checks(&pr.num).await?.is_empty()
+            || gh.pr_mergeable(&pr.num).await? == Some(false);
+        if !red {
+            continue;
+        }
+        let Some(task) = delivery::closed_task(&gh.issue(number).await?.body) else {
+            log.debug(&format!(
+                "watch: PR {} is red past its repairs and closes no task — nobody to ask",
+                pr.reference()
+            ));
+            continue;
+        };
+        let owner = gh.issue(task).await?;
+        if escalate(gh, &owner, pr, &comments).await? {
+            escalated.push((task, pr.reference()));
+        }
+    }
+    Ok(escalated)
 }
 
 /// The first of [`candidates`], when there is one.
@@ -287,53 +355,95 @@ pub async fn run(gh: &dyn GitHub, task: &Issue, pr: &Pr, log: &Logbook) -> Outco
             halt.reason()
         )),
     }
+    ensure_closes(gh, task, pr, log).await?;
     gh.merge_pr(&pr.num).await?;
-    if tasks::review_pending(task) {
-        gh.remove_label(task.number, labels::REVIEW_PENDING).await?;
-    }
-    if task.has(labels::NEEDS_DECISION) {
-        gh.remove_label(task.number, labels::NEEDS_DECISION).await?;
-    }
-    gh.post_issue_comment(
-        task.number,
-        &format!(
-            "{} — reviewed and every check green, merged by `milestone_merge`.",
-            delivery::merged_note(&pr.base, &pr.reference())
-        ),
+    crate::common::close_merged::close(
+        gh,
+        task,
+        &pr.base,
+        &pr.reference(),
+        "reviewed and every check green, merged by `milestone_merge`.",
     )
     .await?;
-    gh.close_issue(task.number).await?;
     Ok(Attempt::Merged)
+}
+
+/// Writes `Closes #<task>` on the PR's body before the harness merges it,
+/// when the body lacks it (`delivery::with_closes`): the merged PR is then
+/// the proof the milestone's landing reads (`delivery::every_task_merged`).
+/// A body that cannot be read is said and merged as it is — the checks are
+/// green, and the sweep (`common::close_merged`) proves it by its head.
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from the body's write.
+async fn ensure_closes(gh: &dyn GitHub, task: &Issue, pr: &Pr, log: &Logbook) -> Outcome<()> {
+    let Ok(number) = pr.num.parse::<u64>() else {
+        return Ok(());
+    };
+    match gh.issue(number).await {
+        Ok(read) => {
+            if let Some(body) = delivery::with_closes(&read.body, task.number) {
+                gh.set_body(number, &body).await?;
+                log.say(&format!(
+                    "{}: its body lacked `Closes #{}` — written before the merge",
+                    pr.reference(),
+                    task.number
+                ));
+            }
+        }
+        Err(halt) => log.debug(&format!(
+            "{}: its body cannot be read ({}) — merged without checking its Closes line",
+            pr.reference(),
+            halt.reason()
+        )),
+    }
+    Ok(())
 }
 
 /// How many times `decide` is asked about one task's PR before a human is.
 const REVIEW_DECISIONS: u32 = 2;
 
-/// Asks for a decision on `task`, once; answers whether it asked now.
+/// Asks for a decision on the issue that owns `pr`, once; answers whether
+/// it asked now.
 ///
-/// Its PR's review stayed blocking, or its branch conflicting, after every
-/// repair it gets: `needs-decision` on the task, with the PR named — the
-/// `decide` workflow takes it at the next tick (merge as it is, repair once
-/// more, wait, or cut the task) and tells the human what it decided.
+/// `owner` is the task whose PR it is, or the milestone whose landing PR it
+/// is (`main_agent_merge`): one escalation for every PR, the landing ones
+/// included (`ForgeDesMondes`' #423: a red landing PR repaired 21 to 25
+/// times, ~$9, nothing ever escalating it). Its review stayed blocking, a
+/// check red, or its branch conflicting, after every repair it gets:
+/// `needs-decision` on the owner, with the PR named — the `decide` workflow
+/// takes it at the next tick (merge as it is, repair once more, wait, or
+/// cut the task; a PR into the integration branch is never merged nor cut
+/// by a decision) and tells the human what it decided.
 ///
 /// A decided `wait` is never a round: the question is asked again at the
 /// same round once the wait settles. Past `REVIEW_DECISIONS` rounds, or
 /// [`contest::MAX_WAITS`] decided waits on the PR (`comments`, its
 /// comments as read), the PR is a human's, told what was decided — the
 /// repairs and waits counted from the PR's own markers, and the last
-/// decision quoted.
+/// decision quoted. **An owner's answer to the question is never asked
+/// over** (`ForgeDesMondes`' #157, 2026-10-20: the owner answered, `decide`
+/// paid nothing, and "still blocked after 2 repairs" posed the label again
+/// nine times in 1 h 40): the PR is the owner's until the answer is taken
+/// off.
 ///
 /// # Errors
 /// [`harness_core::domain::Halt`] from the label or the comment write.
-pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr, comments: &str) -> Outcome<bool> {
+pub async fn escalate(gh: &dyn GitHub, owner: &Issue, pr: &Pr, comments: &str) -> Outcome<bool> {
+    let task = owner;
     if task.has(labels::NEEDS_DECISION) || task.has(labels::HUMAN) {
         return Ok(false);
     }
     let why = format!(
         "PR {} still does not merge after {} repair attempts — its review blocks \
-         it, or its branch conflicts with the milestone's.",
+         it, a check stays red, or its branch conflicts with {}.",
         pr.reference(),
-        crate::common::review::MAX_FIXES
+        crate::common::review::MAX_FIXES,
+        if pr.base.is_empty() {
+            "its base".to_string()
+        } else {
+            format!("`{}`", pr.base)
+        }
     );
     // The question is written under `## Decision` as the stop handler
     // writes its own: an answer the owner gave to an earlier question (a
@@ -346,6 +456,12 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr, comments: &str) ->
         .get(crate::common::sections::DECISION)
         .and_then(|text| crate::common::decision::Question::parse(text))
         .filter(|q| q.kind.as_deref() == Some("review"));
+    if asked
+        .as_ref()
+        .is_some_and(crate::common::decision::Question::decided_by_owner)
+    {
+        return Ok(false);
+    }
     let last_verdict = asked.as_ref().and_then(|q| q.verdict.clone());
     // A wait decided is not a repair bought (ForgeDesMondes' #486,
     // 2026-10-24: two "wait on #517" verdicts read as two rounds, and a
@@ -395,9 +511,13 @@ pub async fn escalate(gh: &dyn GitHub, task: &Issue, pr: &Pr, comments: &str) ->
     gh.post_issue_comment(
         task.number,
         &format!(
-            "{why} The harness decides at the next tick — repair it once more, merge it \
-             as it is, wait, or cut the task — and says what it decided; answer under \
-             `## Decision` first to decide it yourself."
+            "{why} The harness decides at the next tick — {} — and says what it decided; \
+             answer under `## Decision` first to decide it yourself.",
+            if task.has(labels::MILESTONE) {
+                "repair it once more, or wait: a landing PR is never merged red nor cut"
+            } else {
+                "repair it once more, merge it as it is, wait, or cut the task"
+            }
         ),
     )
     .await?;
@@ -676,7 +796,7 @@ mod tests {
             failing_checks: HashMap::from([("90".to_string(), vec!["rust — FAILURE".to_string()])]),
             ..FakeGitHub::default()
         };
-        let (found, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        let (found, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
         assert!(found.is_none());
         assert_eq!(escalated, [(272, "#90".to_string())]);
         // Pending (red not yet), or repairs left: no decision.
@@ -689,7 +809,7 @@ mod tests {
             failing_checks: HashMap::from([("90".to_string(), vec!["rust — FAILURE".to_string()])]),
             ..FakeGitHub::default()
         };
-        let (_, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        let (_, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
         assert!(escalated.is_empty(), "repairs left: the repair route's");
     }
 
@@ -721,7 +841,7 @@ mod tests {
             pr_checks: HashMap::from([("105".to_string(), false), ("233".to_string(), true)]),
             ..FakeGitHub::default()
         };
-        let (found, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        let (found, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
         let (task, its_pr) = found.expect("one merges");
         assert_eq!(
             (task.number, its_pr.num.as_str()),
@@ -749,7 +869,7 @@ mod tests {
             pr_mergeable: HashMap::from([("90".to_string(), Some(false))]),
             ..FakeGitHub::default()
         };
-        let (found, escalated) = ready_to_merge(&gh, &board, &open).await.expect("read");
+        let (found, escalated) = ready_to_merge(&gh, &board, &open, &[]).await.expect("read");
         assert_eq!(found.map(|(t, _)| t.number), Some(225));
         assert_eq!(escalated, [(51, "#105".to_string())]);
         assert!(
@@ -765,7 +885,7 @@ mod tests {
             pr_checks: HashMap::from([("105".to_string(), false)]),
             ..FakeGitHub::default()
         };
-        let (found, escalated) = ready_to_merge(&gh, &board[..1], &open[..1])
+        let (found, escalated) = ready_to_merge(&gh, &board[..1], &open[..1], &[])
             .await
             .expect("read");
         assert!(found.is_none() && escalated.is_empty());
@@ -1191,5 +1311,218 @@ mod tests {
             [] as [Wrote; 0],
             "nothing written while pending"
         );
+    }
+
+    #[tokio::test]
+    async fn a_repair_labelled_pr_past_its_cap_with_no_other_path_is_escalated_on_its_task() {
+        // ForgeDesMondes #498's shape: a task PR labelled for repair, never
+        // `harness:to-review`, red past its two repairs.
+        let fixes = format!("{}\n", review::FIX_MARKER).repeat(review::MAX_FIXES);
+        let red = |num: &str| (num.to_string(), vec!["rust — FAILURE".to_string()]);
+        let gh = FakeGitHub {
+            pr_comment_bodies: ["98", "97", "96", "95", "94", "93", "90"]
+                .iter()
+                .map(|num| ((*num).to_string(), fixes.clone()))
+                .chain([("92".to_string(), format!("{}\n", review::FIX_MARKER))])
+                .collect(),
+            failing_checks: HashMap::from([
+                red("98"),
+                red("97"),
+                red("96"),
+                red("95"),
+                red("92"),
+                red("90"),
+                ("94".to_string(), Vec::new()),
+                ("93".to_string(), Vec::new()),
+            ]),
+            pr_mergeable: HashMap::from([
+                ("94".to_string(), Some(false)),
+                ("93".to_string(), Some(true)),
+            ]),
+            issues: vec![
+                Issue {
+                    number: 98,
+                    body: "Fixes #498".to_string(),
+                    ..Issue::default()
+                },
+                Issue {
+                    number: 94,
+                    body: "Closes #494".to_string(),
+                    ..Issue::default()
+                },
+                Issue {
+                    number: 93,
+                    body: "Closes #493".to_string(),
+                    ..Issue::default()
+                },
+                Issue {
+                    number: 95,
+                    body: "no closing line".to_string(),
+                    ..Issue::default()
+                },
+                task(498, &[labels::AGENT], "feat/a"),
+                task(494, &[labels::AGENT], "feat/b"),
+                task(493, &[labels::AGENT], "feat/c"),
+            ],
+            ..FakeGitHub::default()
+        };
+        let to_fix = [
+            pr("98", "feat/a"),
+            pr("97", "feat/under-review"),
+            Pr {
+                num: "96".to_string(),
+                head: "milestone/22-fiche".to_string(),
+                ..Pr::default()
+            },
+            pr("95", "feat/orphan"),
+            pr("94", "feat/b"),
+            pr("93", "feat/c"),
+            pr("92", "feat/one-repair"),
+            pr("90", "rules/12"),
+            pr("x", "feat/unnumbered"),
+        ];
+        let escalated = exhausted_repairs(
+            &gh,
+            &to_fix,
+            &[pr("97", "feat/under-review")],
+            &Logbook::null(),
+        )
+        .await
+        .expect("read");
+        assert_eq!(
+            escalated,
+            [(498, "#98".to_string()), (494, "#94".to_string())],
+            "red or conflicting past the cap; not under review, not a landing PR, not \
+             green (#93), not within the cap (#92), not orphaned (#95), not a \
+             rules' PR (#90)"
+        );
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(498, labels::NEEDS_DECISION.to_string()))
+        );
+        assert!(
+            !gh.writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::Label(493 | 495, _)))
+        );
+    }
+
+    #[tokio::test]
+    async fn an_owner_s_answer_to_the_review_question_is_never_asked_over() {
+        // ForgeDesMondes #157, 2026-10-20: the owner answered, decide paid
+        // nothing, and "still blocked after 2 repairs" posed the label again
+        // nine times in 1 h 40.
+        let mut answered = task(157, &[labels::AGENT], "feat/create-session");
+        answered.body.push_str(
+            "\n## Decision\n\nkind: review\nblocks: PR #279 still does not merge\nround: 1\n\
+             decided-by: owner\nverdict: I repair it by hand\n",
+        );
+        let gh = FakeGitHub::default();
+        assert!(
+            !escalate(&gh, &answered, &pr("279", "feat/create-session"), "")
+                .await
+                .expect("read")
+        );
+        assert_eq!(gh.writes(), [] as [Wrote; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_landing_pr_asks_its_milestone_repair_or_wait_never_merge_or_cut() {
+        let milestone = Issue {
+            number: 22,
+            state: "open".to_string(),
+            title: "Fiche entite".to_string(),
+            labels: vec![labels::MILESTONE.to_string()],
+            body: "the milestone".to_string(),
+            ..Issue::default()
+        };
+        let landing = Pr {
+            num: "423".to_string(),
+            head: "milestone/22-fiche-entite".to_string(),
+            base: "main_agent".to_string(),
+            ..Pr::default()
+        };
+        let gh = FakeGitHub::default();
+        assert!(
+            escalate(&gh, &milestone, &landing, "")
+                .await
+                .expect("asked")
+        );
+        let writes = gh.writes();
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Body(22, body) if body.contains("kind: review") && body.contains("`main_agent`")
+        )));
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(22, said) if said.contains("never merged red nor cut")
+        )));
+        assert!(writes.contains(&Wrote::Label(22, labels::NEEDS_DECISION.to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_pr_under_repair_on_a_lane_is_neither_escalated_nor_merged() {
+        use crate::common::review;
+        let board = vec![task(
+            272,
+            &[labels::AGENT, labels::REVIEW_PENDING],
+            "feat/upload",
+        )];
+        let open = [pr("90", "feat/upload")];
+        let fixes = format!("{}\n", review::FIX_MARKER).repeat(review::MAX_FIXES);
+        let gh = FakeGitHub {
+            pr_comment_bodies: vec![(
+                "90".to_string(),
+                format!("{fixes}{}\n{}\n", review::MARKER, review::CLEAN),
+            )],
+            pr_checks: HashMap::from([("90".to_string(), false)]),
+            failing_checks: HashMap::from([("90".to_string(), vec!["rust — FAILURE".to_string()])]),
+            ..FakeGitHub::default()
+        };
+        let (found, escalated) = ready_to_merge(&gh, &board, &open, &[90])
+            .await
+            .expect("read");
+        assert!(found.is_none() && escalated.is_empty());
+        assert_eq!(gh.writes(), [] as [Wrote; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_pr_body_without_its_closes_line_gets_it_before_the_merge() {
+        let gh = FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), true)]),
+            issues: vec![Issue {
+                number: 68,
+                body: "## Plan\n- the list".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        };
+        run(&gh, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
+            .await
+            .expect("merged");
+        let writes = gh.writes();
+        let body_at = writes
+            .iter()
+            .position(|w| *w == Wrote::Body(68, "## Plan\n- the list\n\nCloses #64\n".to_string()))
+            .expect("the line is written");
+        let merged_at = writes
+            .iter()
+            .position(|w| *w == Wrote::MergedPr("68".to_string()))
+            .expect("merged");
+        assert!(body_at < merged_at, "{writes:?}");
+        // A body that carries it is left as it is.
+        let gh = FakeGitHub {
+            pr_checks: HashMap::from([("68".to_string(), true)]),
+            issues: vec![Issue {
+                number: 68,
+                body: "Closes #64".to_string(),
+                ..Issue::default()
+            }],
+            ..FakeGitHub::default()
+        };
+        run(&gh, &waiting(), &pr("68", "chore/rust"), &Logbook::null())
+            .await
+            .expect("merged");
+        assert!(!gh.writes().iter().any(|w| matches!(w, Wrote::Body(68, _))));
     }
 }

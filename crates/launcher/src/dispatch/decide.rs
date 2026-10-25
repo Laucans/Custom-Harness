@@ -34,6 +34,7 @@ pub async fn run(
     permission_mode: &str,
     dry_run: bool,
 ) -> Outcome<Verdict> {
+    let integration = checkout.branch.to_string();
     let run_id = spending::run_id_for(issue);
     let sink = Rc::new(
         Both::new(
@@ -73,6 +74,8 @@ pub async fn run(
             effort: "high".to_string(),
         },
         prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
+        // The checkout's branch is the integration branch (`shared_checkout`).
+        integration,
     };
 
     let workflow = run::build(

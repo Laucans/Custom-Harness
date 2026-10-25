@@ -142,9 +142,7 @@ fn delivery(board: &mut Board, event: &Event, at: &str) {
             format!("repairs:#{task}"),
             Level::Info,
             format!("#{task}: PR {pr} still blocked after {fixes} repair(s)"),
-            "the harness decides now — merge as it is, repair once more, or cut the task — \
-             and tells you what it decided"
-                .to_string(),
+            "the harness decides now and tells you what it decided".to_string(),
             at,
             Some(issue(*task)),
         )),

@@ -59,12 +59,7 @@ impl Apply {
                 self.decide_stage
             )));
         };
-        decision::parse(
-            &reply.text,
-            ctx.state.pr.is_some(),
-            ctx.state.issue().number,
-        )
-        .map_err(|why| {
+        decision::parse(&reply.text, &ctx.state.scope()).map_err(|why| {
             Halt::Failed(format!(
                 "the decision did not read, even after one retry: {why} — DecisionParses should \
                  have stopped the round"
@@ -200,10 +195,14 @@ impl Apply {
             }
             (Act::Wait { on }, pr) => {
                 // The blocker holds the task until `on` lands, for free; one
-                // already there is not posted twice.
-                let blocked_by = self.gh.blocked_by(issue.number).await?;
-                if !blocked_by.iter().any(|blocker| blocker.number == on) {
-                    self.gh.add_blocked_by(issue.number, on).await?;
+                // already there is not posted twice. A milestone gets none:
+                // its blockers are what its split reads
+                // (`routing::splittable`) — its landing PR's marker holds it.
+                if !issue.has(labels::MILESTONE) {
+                    let blocked_by = self.gh.blocked_by(issue.number).await?;
+                    if !blocked_by.iter().any(|blocker| blocker.number == on) {
+                        self.gh.add_blocked_by(issue.number, on).await?;
+                    }
                 }
                 // The wait is a fact of the PR too: no repair, decision or
                 // merge on it while `on` blocks (`common::contest::waiting`),
@@ -795,6 +794,54 @@ mod tests {
                 && !writes.contains(&Wrote::Label(40, labels::PR_FIX.to_string())),
             "a wait neither merges nor repairs: {writes:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_wait_on_a_milestone_s_landing_pr_marks_the_pr_and_blocks_no_milestone() {
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            labels: vec![labels::AI_DECIDED.to_string()],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"wait","on":503,"summary":"the contract change lands first"}"#,
+            Some(Pr {
+                num: "423".to_string(),
+                head: "milestone/22-fiche".to_string(),
+                base: "main_agent".to_string(),
+                ..Pr::default()
+            }),
+            &[labels::MILESTONE],
+        );
+        context.state.integration = "main_agent".to_string();
+        apply(&gh).run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(w, Wrote::BlockedByLink(..))),
+            "a milestone's blockers are its split's: {writes:?}"
+        );
+        assert!(writes.iter().any(|w| matches!(
+            w,
+            Wrote::Comment(423, said) if said.starts_with(&contest::waits_on_marker(503))
+        )));
+        // A merge of that PR never reads, so nothing is carried out.
+        let refused = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(
+            r#"{"action":"merge","summary":"as it is"}"#,
+            Some(Pr {
+                num: "423".to_string(),
+                head: "milestone/22-fiche".to_string(),
+                base: "main_agent".to_string(),
+                ..Pr::default()
+            }),
+            &[labels::MILESTONE],
+        );
+        context.state.integration = "main_agent".to_string();
+        assert!(apply(&refused).run(&mut context).await.is_err());
+        assert_eq!(refused.writes(), [] as [Wrote; 0]);
     }
 
     #[tokio::test]

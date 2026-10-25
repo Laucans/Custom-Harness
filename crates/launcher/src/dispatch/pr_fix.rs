@@ -15,6 +15,7 @@
 use std::path::Path;
 use std::rc::Rc;
 
+use harness_adapters::shell::git::GitCli;
 use harness_adapters::shell::github::GhCli;
 use harness_core::domain::workspace::Workspace;
 use harness_core::domain::{Halt, Outcome, Slug, Verdict};
@@ -43,7 +44,7 @@ const FIX_WORKSPACE_ID: &str = "router-prfix";
 pub async fn run(
     pr_ref: &str,
     here: &Path,
-    target_repo_url: &str,
+    (target_repo_url, integration): (&str, &str),
     permission_mode: &str,
     workspace: Option<&str>,
     dry_run: bool,
@@ -110,10 +111,12 @@ pub async fn run(
         sessions: Rc::clone(&built.sessions),
         spending: Rc::clone(&built.spending),
         locks: Rc::clone(&built.locks),
+        git: Rc::new(GitCli::new(workspace.root())),
     };
     let config = Config {
         prompts: shared::prompts(workspace, &log, &shared::trace_dir(sink.path()))?,
         fix_dir: workspace.state_root().join(".llocal/pr-fix-locks"),
+        integration: integration.to_string(),
         // Sonnet for the first two repairs of a PR, opus once they failed
         // (the owner's rule, 2026-10-20): 65 repairs on opus, 55 % enough
         // on their own; most are a conflict or tests for survivors.

@@ -11,9 +11,13 @@ use crate::common::review;
 ///
 /// Those carrying `harness:pr-fix` (`to_fix`) **and** a check that
 /// concluded in failure — the label alone would send a paid session at a PR
-/// still building — or a branch that conflicts with its base, within the
-/// repair cap: a milestone's landing PR the catch-up could not bring up
-/// (`common::catch_up`) is labelled for its conflict, its checks green. And
+/// still building — or a branch that conflicts with its base, **within the
+/// repair cap either way**: a milestone's landing PR the catch-up could not
+/// bring up (`common::catch_up`) is labelled for its conflict, its checks
+/// green, and a red one labelled every tick (`main_agent_merge`) was
+/// repaired 21 to 25 times (`ForgeDesMondes`' #423, ~$9) — past the cap, a
+/// decision is asked instead (`milestone_merge::escalate`); a decided
+/// repair counts the cap anew (`review::repairs`). And
 /// those carrying `harness:to-review` (`to_review`) whose review blocks, or
 /// whose branch conflicts, or a check failed, within the cap: a task's PR
 /// ends its session at the push, and nobody else poses `harness:pr-fix` on
@@ -26,9 +30,11 @@ use crate::common::review;
 pub async fn due(gh: &dyn GitHub, to_fix: &[Pr], to_review: &[Pr]) -> Outcome<Vec<Pr>> {
     let mut found: Vec<Pr> = Vec::new();
     for candidate in to_fix {
+        if !repairs_left(gh, candidate).await? {
+            continue;
+        }
         if !gh.pr_failing_checks(&candidate.num).await?.is_empty()
-            || (gh.pr_mergeable(&candidate.num).await? == Some(false)
-                && repairs_left(gh, candidate).await?)
+            || gh.pr_mergeable(&candidate.num).await? == Some(false)
         {
             found.push(candidate.clone());
         }
@@ -101,10 +107,44 @@ mod tests {
             .expect("read");
         assert_eq!(
             nums(&found),
-            ["1", "2"],
-            "red whatever its repairs; conflicting with a repair left; not past the cap, \
-             not mergeable, not unknown"
+            ["2"],
+            "conflicting with a repair left; red or conflicting past the cap, mergeable or \
+             unknown: not due"
         );
+    }
+
+    #[tokio::test]
+    async fn a_labelled_red_pr_past_its_repairs_is_not_due() {
+        let gh = FakeGitHub {
+            failing_checks: HashMap::from([
+                ("423".to_string(), vec!["rules-hold".to_string()]),
+                ("424".to_string(), vec!["rules-hold".to_string()]),
+            ]),
+            pr_comment_bodies: vec![
+                ("423".to_string(), fixes(review::MAX_FIXES)),
+                ("424".to_string(), fixes(review::MAX_FIXES - 1)),
+            ],
+            ..FakeGitHub::default()
+        };
+        let found = due(&gh, &[pr("423"), pr("424")], &[]).await.expect("read");
+        assert_eq!(nums(&found), ["424"], "the landing PR #423 stops at two");
+    }
+
+    #[tokio::test]
+    async fn a_decided_repair_counts_the_cap_anew() {
+        let decided = format!(
+            "{}\n{}\n{}",
+            fixes(review::MAX_FIXES),
+            review::DECIDED_MARKER,
+            fixes(review::MAX_FIXES - 1)
+        );
+        let gh = FakeGitHub {
+            failing_checks: HashMap::from([("7".to_string(), vec!["rust".to_string()])]),
+            pr_comment_bodies: vec![("7".to_string(), decided)],
+            ..FakeGitHub::default()
+        };
+        let found = due(&gh, &[pr("7")], &[]).await.expect("read");
+        assert_eq!(nums(&found), ["7"], "one repair left after the decision");
     }
 
     #[tokio::test]

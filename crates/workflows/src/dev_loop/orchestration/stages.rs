@@ -198,11 +198,14 @@ milestone #{milestone}, declared as a dependency of #{num}. A task the plan lack
 not a human's: when this task cannot be finished without another unit's
 work that no task of milestone #{milestone} builds (a projection, a
 DataCapability, a migration outside your unit), never build it here nor
-open an issue for it: stop with `AGENT_LOOP_STOP: task ` followed, on that
-same line, by one JSON object, the slice as /split writes it: title, branch
+open an issue for it. Find EVERY such missing unit first — read the whole
+SPEC against the code before you stop, not the first gap only — then stop
+once: `AGENT_LOOP_STOP: tasks [` followed, on that same line, by one JSON
+object per missing unit and `]` (`AGENT_LOOP_STOP: task ` and one object
+when there is one), each the slice as /split writes it: title, branch
 (`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
-goal, acceptance (given/when/then criteria). The harness opens it under the
-milestone and parks this task until it lands. If an assumption would make
+goal, acceptance (given/when/then criteria). The harness opens them under
+the milestone and parks this task until they land. If an assumption would make
 the task useless or harmful when wrong — a paid service, a schema decision
 later tasks depend on, a credential only the human holds — that is
 ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
@@ -298,11 +301,14 @@ milestone #{milestone}, declared as a dependency of #{num}. A task the plan lack
 not a human's: when this task cannot be finished without another unit's
 work that no task of milestone #{milestone} builds (a projection, a
 DataCapability, a migration outside your unit), never build it here nor
-open an issue for it: stop with `AGENT_LOOP_STOP: task ` followed, on that
-same line, by one JSON object, the slice as /split writes it: title, branch
+open an issue for it. Find EVERY such missing unit first — read the whole
+SPEC against the code before you stop, not the first gap only — then stop
+once: `AGENT_LOOP_STOP: tasks [` followed, on that same line, by one JSON
+object per missing unit and `]` (`AGENT_LOOP_STOP: task ` and one object
+when there is one), each the slice as /split writes it: title, branch
 (`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
-goal, acceptance (given/when/then criteria). The harness opens it under the
-milestone and parks this task until it lands. If an assumption would make
+goal, acceptance (given/when/then criteria). The harness opens them under
+the milestone and parks this task until they land. If an assumption would make
 the task useless or harmful when wrong — a paid service, a schema decision
 later tasks depend on, a credential only the human holds — that is
 ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
@@ -673,6 +679,9 @@ mod tests {
                 "{said}"
             );
             assert!(said.contains("`AGENT_LOOP_STOP: task `"));
+            // ForgeDesMondes' #486: four gaps over four rounds, one a stop.
+            assert!(said.contains("`AGENT_LOOP_STOP: tasks [`"), "{said}");
+            assert!(said.contains("Find EVERY such missing unit first"));
             assert!(said.contains("the slice as /split writes it"));
             assert!(said.contains("no task of milestone #{milestone} builds"));
         }
@@ -783,6 +792,19 @@ mod tests {
             !skill.contains("Wait for `ci` with `gh pr checks`, then"),
             "the step that had every session wait"
         );
+    }
+
+    #[test]
+    fn the_create_test_skill_every_code_session_runs_ends_at_the_pr() {
+        // ForgeDesMondes' #452 and #207: write-side sessions polled `gh pr
+        // checks --watch` after their PR — the create-test skill they run at
+        // the end of the round said `gh pr checks`, `gh pr merge --squash`.
+        let skill = flat(include_str!(
+            "../../../../../.claude/skills/create-test/SKILL.md"
+        ));
+        assert!(skill.contains("Stop at the open PR"), "{skill}");
+        assert!(!skill.contains("`gh pr checks`, `gh pr merge --squash`"));
+        assert!(skill.contains("never merge it"));
     }
 
     #[test]

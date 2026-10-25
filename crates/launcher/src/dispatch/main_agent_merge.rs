@@ -15,7 +15,8 @@ use harness_workflows::main_agent_merge::data::report;
 use harness_workflows::main_agent_merge::ports::Ports;
 use harness_workflows::main_agent_merge::run as workflow;
 
-/// Attempts to merge one milestone.
+/// Attempts to merge one milestone. `repairing`: the PRs a lane repairs
+/// now — a landing PR among them is not escalated while its repair runs.
 ///
 /// A `GhCli` built directly from `target_repo_url`/`here`, not through the
 /// shared checkout `planner`/`split`/`refinement` use — this command never
@@ -28,6 +29,7 @@ pub async fn run(
     here: &Path,
     target_repo_url: &str,
     base_branch: &str,
+    repairing: &[u64],
 ) -> Outcome<report::Outcome> {
     let gh: Rc<dyn GitHub> = if target_repo_url.is_empty() {
         Rc::new(GhCli::new(here))
@@ -42,6 +44,7 @@ pub async fn run(
     let ports = Ports { gh };
     let config = Config {
         base_branch: base_branch.to_string(),
+        repairing: repairing.to_vec(),
     };
     workflow::build(&ports, &config, &workflow::Request { milestone })
         .execute()

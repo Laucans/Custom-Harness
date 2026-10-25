@@ -3,7 +3,7 @@
 use harness_architecture::graph::{self, Graph};
 use harness_core::domain::Outcome;
 
-use crate::common::{branching, delivery, labels};
+use crate::common::{branching, contest, delivery, labels, review};
 use crate::main_agent_merge::config::Config;
 use crate::main_agent_merge::data::audit;
 use crate::main_agent_merge::data::merge_train;
@@ -73,15 +73,10 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
                 Ok(Some(false)) => {
                     // What landed on the base may resolve it; when GitHub
                     // can merge it in, the push reruns the checks.
-                    return Ok(
-                        match ports.gh.merge_branch(&branch, &config.base_branch).await {
-                            Ok(()) => MergeOutcome::WaitingOnChecks,
-                            Err(halt) => MergeOutcome::Conflicting {
-                                pr: pr.reference(),
-                                why: halt.reason().to_string(),
-                            },
-                        },
-                    );
+                    return match ports.gh.merge_branch(&branch, &config.base_branch).await {
+                        Ok(()) => Ok(MergeOutcome::WaitingOnChecks),
+                        Err(halt) => conflicting(ports, config, &issue, &pr, halt).await,
+                    };
                 }
             }
             if let Err(halt) = ports.gh.merge_pr(&pr.num).await {
@@ -123,13 +118,7 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             if checks.is_empty() {
                 return Ok(MergeOutcome::WaitingOnChecks);
             }
-            if let Ok(number) = pr.num.parse::<u64>() {
-                ports.gh.add_label(number, labels::PR_FIX).await?;
-            }
-            Ok(MergeOutcome::Red {
-                pr: pr.reference(),
-                checks,
-            })
+            red(ports, config, &issue, &pr, checks).await
         }
     } else {
         let title = format!("Milestone #{milestone}: {}", issue.title);
@@ -140,6 +129,87 @@ pub async fn run(ports: &Ports, config: &Config, milestone: u64) -> Outcome<Merg
             .await?;
         Ok(MergeOutcome::OpenedPr(url))
     }
+}
+
+/// A red landing PR: its repair asked within the cap (`harness:pr-fix`);
+/// past it, a decision asked on the milestone (`milestone_merge::escalate`)
+/// — never a third repair asked every tick (`ForgeDesMondes`' #423: 21 to 25
+/// repairs). Nothing is escalated while its repair still runs on a lane,
+/// nor while it waits on an issue (`common::contest::held`).
+async fn red(
+    ports: &Ports,
+    config: &Config,
+    milestone: &harness_core::domain::Issue,
+    pr: &harness_core::domain::Pr,
+    checks: Vec<String>,
+) -> Outcome<MergeOutcome> {
+    let comments = ports.gh.pr_comments(&pr.num).await?;
+    let number = pr.num.parse::<u64>().ok();
+    if review::repairs(&comments) < review::MAX_FIXES {
+        if let Some(number) = number {
+            ports.gh.add_label(number, labels::PR_FIX).await?;
+        }
+        return Ok(MergeOutcome::Red {
+            pr: pr.reference(),
+            checks,
+        });
+    }
+    let asked = past_its_repairs(ports, config, milestone, pr, &comments).await?;
+    Ok(MergeOutcome::Escalated {
+        pr: pr.reference(),
+        checks,
+        asked,
+    })
+}
+
+/// A landing PR whose base cannot be merged in: told conflicting within
+/// its repairs — the catch-up labels it for one (`common::catch_up`) — and,
+/// past them, a decision asked on the milestone as for a red one: the
+/// repair route takes it no more (`pr_fix::data::candidates::due`), and a
+/// conflict told every tick asks nobody anything.
+async fn conflicting(
+    ports: &Ports,
+    config: &Config,
+    milestone: &harness_core::domain::Issue,
+    pr: &harness_core::domain::Pr,
+    halt: harness_core::domain::Halt,
+) -> Outcome<MergeOutcome> {
+    let comments = ports.gh.pr_comments(&pr.num).await?;
+    if review::repairs(&comments) < review::MAX_FIXES {
+        return Ok(MergeOutcome::Conflicting {
+            pr: pr.reference(),
+            why: halt.reason().to_string(),
+        });
+    }
+    let asked = past_its_repairs(ports, config, milestone, pr, &comments).await?;
+    Ok(MergeOutcome::Escalated {
+        pr: pr.reference(),
+        checks: vec![format!(
+            "conflicts with {}: {}",
+            config.base_branch,
+            halt.reason()
+        )],
+        asked,
+    })
+}
+
+/// Asks the decision on a landing PR past its repairs — never while a lane
+/// repairs it, nor while it waits (`common::contest::held`); answers
+/// whether it asked now.
+async fn past_its_repairs(
+    ports: &Ports,
+    config: &Config,
+    milestone: &harness_core::domain::Issue,
+    pr: &harness_core::domain::Pr,
+    comments: &str,
+) -> Outcome<bool> {
+    let repairing = pr
+        .num
+        .parse::<u64>()
+        .is_ok_and(|n| config.repairing.contains(&n));
+    Ok(!repairing
+        && !contest::held(ports.gh.as_ref(), pr, comments).await?
+        && crate::milestone_merge::escalate(ports.gh.as_ref(), milestone, pr, comments).await?)
 }
 
 /// The plan's graph on the base branch, when the plan wrote one.
@@ -463,6 +533,84 @@ mod tests {
         );
     }
 
+    fn red_landing(comments: &str) -> FakeGitHub {
+        FakeGitHub {
+            issues: vec![issue(4, "open", "Territory tooling", &[labels::MILESTONE])],
+            subs: vec![(4, vec![task(11, "closed")])],
+            merged: merged_closing(&[11]),
+            prs: vec![(
+                "milestone/4-territory-tooling".to_string(),
+                Pr {
+                    num: "99".to_string(),
+                    base: "main_agent".to_string(),
+                    head: "milestone/4-territory-tooling".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            pr_checks: HashMap::from([("99".to_string(), false)]),
+            failing_checks: HashMap::from([("99".to_string(), vec!["rules-hold".to_string()])]),
+            pr_comment_bodies: vec![("99".to_string(), comments.to_string())],
+            ..FakeGitHub::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn red_within_the_cap_is_labelled_past_it_escalated() {
+        use crate::common::fake_github::Wrote;
+        use crate::common::review;
+        let used = review::FIX_MARKER.repeat(review::MAX_FIXES);
+        let gh = Rc::new(red_landing(&used));
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert_eq!(
+            outcome,
+            MergeOutcome::Escalated {
+                pr: "#99".to_string(),
+                checks: vec!["rules-hold".to_string()],
+                asked: true,
+            }
+        );
+        let writes = gh.writes();
+        assert!(
+            !writes.contains(&Wrote::Label(99, labels::PR_FIX.to_string())),
+            "no third repair: {writes:?}"
+        );
+        assert!(writes.contains(&Wrote::Label(4, labels::NEEDS_DECISION.to_string())));
+        // While its repair still runs on a lane, nothing is asked.
+        let gh = Rc::new(red_landing(&used));
+        let config = Config {
+            repairing: vec![99],
+            ..config_fake::config()
+        };
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config, 4)
+            .await
+            .expect("a verdict");
+        assert!(matches!(
+            outcome,
+            MergeOutcome::Escalated { asked: false, .. }
+        ));
+        assert!(
+            !gh.writes()
+                .iter()
+                .any(|w| matches!(w, Wrote::Label(..) | Wrote::Body(..))),
+            "{:?}",
+            gh.writes()
+        );
+        // Nor while it waits on a contract change its repair stopped on.
+        let gh = Rc::new(red_landing(&format!(
+            "{used}{}",
+            crate::common::contest::contract_wait_marker(503)
+        )));
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert!(matches!(
+            outcome,
+            MergeOutcome::Escalated { asked: false, .. }
+        ));
+    }
+
     #[tokio::test]
     async fn the_merge_closes_the_tasks_it_integrated() {
         let gh = Rc::new(FakeGitHub {
@@ -582,6 +730,54 @@ mod tests {
                 why: "milestone/4-territory-tooling conflicts with main_agent".to_string(),
             }
         );
+        assert!(gh.writes().is_empty(), "{:?}", gh.writes());
+    }
+
+    #[tokio::test]
+    async fn a_conflicting_landing_pr_past_its_repairs_asks_its_milestone() {
+        use crate::common::fake_github::Wrote;
+        let gh = green_pr(|gh| FakeGitHub {
+            pr_mergeable: HashMap::from([("99".to_string(), Some(false))]),
+            refused_merges: vec!["milestone/4-territory-tooling".to_string()],
+            pr_comment_bodies: vec![(
+                "99".to_string(),
+                review::FIX_MARKER.repeat(review::MAX_FIXES),
+            )],
+            ..gh
+        });
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config_fake::config(), 4)
+            .await
+            .expect("a verdict");
+        assert!(
+            matches!(&outcome, MergeOutcome::Escalated { pr, checks, asked: true }
+                if pr == "#99" && checks[0].starts_with("conflicts with main_agent")),
+            "{outcome:?}"
+        );
+        assert!(
+            gh.writes()
+                .contains(&Wrote::Label(4, labels::NEEDS_DECISION.to_string()))
+        );
+        // Under repair on a lane: nothing asked.
+        let gh = green_pr(|gh| FakeGitHub {
+            pr_mergeable: HashMap::from([("99".to_string(), Some(false))]),
+            refused_merges: vec!["milestone/4-territory-tooling".to_string()],
+            pr_comment_bodies: vec![(
+                "99".to_string(),
+                review::FIX_MARKER.repeat(review::MAX_FIXES),
+            )],
+            ..gh
+        });
+        let config = Config {
+            repairing: vec![99],
+            ..config_fake::config()
+        };
+        let outcome = run(&ports_fake::with(Rc::clone(&gh)), &config, 4)
+            .await
+            .expect("a verdict");
+        assert!(matches!(
+            outcome,
+            MergeOutcome::Escalated { asked: false, .. }
+        ));
         assert!(gh.writes().is_empty(), "{:?}", gh.writes());
     }
 

@@ -42,6 +42,67 @@ impl Action<DebtState> for ConsumeRequest {
     }
 }
 
+/// Labels the PR the session opened `harness:debt-pr`.
+///
+/// Found by the
+/// attempt's branch, the router lands what carries it
+/// (`test_debt::data::landing`). The workflow poses it, never the session —
+/// a session touches no `harness:*` label. No PR on the branch (nothing was
+/// missed any more, or the session stopped short) is said, not a failure.
+pub struct LabelThePr {
+    /// What reads the PR and labels it.
+    pub gh: Rc<dyn GitHub>,
+}
+
+#[async_trait(?Send)]
+impl Action<DebtState> for LabelThePr {
+    async fn run(&self, ctx: &mut Context<DebtState>) -> Outcome<Verdict> {
+        if ctx.settings.dry_run || ctx.state.file.is_none() || ctx.state.head.is_empty() {
+            return Ok(Verdict::Continue);
+        }
+        let head = ctx.state.head.clone();
+        let pr = match self.gh.pr(&head).await {
+            Ok(pr) if pr.is_open() && pr.head == head => pr,
+            _ => {
+                ctx.traces.say(&format!(
+                    "{}: no open PR on {head} — nothing to land",
+                    ctx.state.issue().reference()
+                ));
+                return Ok(Verdict::Continue);
+            }
+        };
+        let Ok(number) = pr.num.parse::<u64>() else {
+            return Ok(Verdict::Continue);
+        };
+        // A board made before the label existed gets it here: `init-repo`
+        // installs it on the next upgrade, the PR is labelled now.
+        if !self
+            .gh
+            .labels()
+            .await?
+            .iter()
+            .any(|l| l == labels::TEST_DEBT_PR)
+        {
+            let label = labels::ALL.iter().find(|l| l.name == labels::TEST_DEBT_PR);
+            self.gh
+                .create_label(
+                    labels::TEST_DEBT_PR,
+                    label.map_or("5319e7", |l| l.color),
+                    label.map_or("", |l| l.description),
+                )
+                .await?;
+        }
+        self.gh.add_label(number, labels::TEST_DEBT_PR).await?;
+        ctx.traces.say(&format!(
+            "{}: PR {} labelled {} — the harness merges it once green",
+            ctx.state.issue().reference(),
+            pr.reference(),
+            labels::TEST_DEBT_PR
+        ));
+        Ok(Verdict::Continue)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,6 +124,7 @@ mod tests {
                 }),
                 file: file.map(str::to_string),
                 findings: String::new(),
+                head: String::new(),
             },
             Logbook::null(),
         )
@@ -97,5 +159,47 @@ mod tests {
             .expect("nothing to do");
             assert!(gh.writes().is_empty(), "dry_run={dry_run} file={file:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_pr_on_the_attempt_s_branch_is_labelled_and_none_is_said() {
+        use harness_core::domain::Pr;
+        let gh = Rc::new(FakeGitHub {
+            prs: vec![(
+                "test/debt-7-2".to_string(),
+                Pr {
+                    num: "40".to_string(),
+                    head: "test/debt-7-2".to_string(),
+                    state: "OPEN".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(false, Some("crates/a/src/lib.rs"));
+        context.state.head = "test/debt-7-2".to_string();
+        LabelThePr {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+        }
+        .run(&mut context)
+        .await
+        .expect("labelled");
+        let writes = gh.writes();
+        assert!(
+            matches!(&writes[0], Wrote::CreatedLabel(name, ..) if name == labels::TEST_DEBT_PR),
+            "a board without the label gets it: {writes:?}"
+        );
+        assert_eq!(
+            writes.last(),
+            Some(&Wrote::Label(40, labels::TEST_DEBT_PR.to_string()))
+        );
+        let none = Rc::new(FakeGitHub::default());
+        LabelThePr {
+            gh: Rc::clone(&none) as Rc<dyn GitHub>,
+        }
+        .run(&mut context)
+        .await
+        .expect("said");
+        assert_eq!(none.writes(), [] as [Wrote; 0]);
     }
 }

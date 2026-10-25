@@ -711,8 +711,8 @@ fn pr_fix_line() -> Line {
         "PR fix",
         "harness:pr-fix on a red pull request",
         "Makes one repair attempt on a pull request whose CI went red, whose agent review \
-         blocks it, or whose branch no longer merges into its milestone — two per PR, then \
-         the harness decides whether one more is worth it.",
+         blocks it, or whose branch no longer merges into its base — two per PR, landing PRs \
+         included, then the harness decides whether one more is worth it.",
         vec![
             vec![free(
                 "context",
@@ -733,6 +733,13 @@ fn pr_fix_line() -> Line {
                 )),
                 None,
             ),
+            vec![free(
+                "after",
+                "ask the contract, push",
+                Kind::Arm,
+                "A stop on another milestone's contract opens its change and the PR waits on it; \
+                 what the repair committed is pushed when it says so, set aside otherwise.",
+            )],
         ],
     )
 }
@@ -756,14 +763,21 @@ fn test_debt_line() -> Line {
                 "write the tests",
                 Kind::Builder,
                 "sonnet",
-                "Writes the tests that catch each mutant, proves them, and lands them — never \
-                 a change to the code under test.",
+                "Writes the tests that catch each mutant, proves them, and stops at the open \
+                 pull request — never a change to the code under test, never a merge.",
                 Some(gate(
                     "cover requires",
                     "The issue names the Rust source file whose mutants no test catches.",
                 )),
                 None,
             ),
+            vec![free(
+                "land",
+                "label the PR",
+                Kind::Arm,
+                "Labels the pull request harness:debt-pr: the harness merges it once green, or \
+                 closes it with the reason.",
+            )],
         ],
     )
 }

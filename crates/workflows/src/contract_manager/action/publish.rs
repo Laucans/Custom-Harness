@@ -4,7 +4,6 @@
 //! producer's task opened, the consumers told, the request closed — or, for
 //! an id nobody else produces, the requester told it is its own to change.
 
-use std::fmt::Write as _;
 use std::rc::Rc;
 
 use async_trait::async_trait;
@@ -14,9 +13,12 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
-use crate::common::{labels, sections};
+use crate::common::labels;
 use crate::contract_manager::data::change::{self, Answer, Change};
+use crate::contract_manager::data::producer;
 use crate::contract_manager::data::state::ManagerState;
+use crate::dev_loop::data::missing;
+use crate::split::action::publish::body_and_labels;
 
 /// Writes the new version and carries it to everyone it concerns.
 pub struct Apply {
@@ -209,7 +211,10 @@ impl Apply {
     }
 
     /// The task that builds the new version, under the producer's milestone
-    /// while it is open, else the requester's; its tap open.
+    /// while it is open, else the requester's; its tap open. Written as split
+    /// writes a slice (`producer::item`, `split::action::publish::
+    /// body_and_labels`): a whole SPEC, `produces: <id>`, the labels its
+    /// unit's side carries.
     async fn producer_task(
         &self,
         ctx: &ManagerState,
@@ -218,16 +223,6 @@ impl Apply {
     ) -> Outcome<u64> {
         let id = &change.id;
         let kind = ctx.known.map_or(Kind::Capability, |(kind, _)| kind);
-        let slug: String = id
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() {
-                    c.to_ascii_lowercase()
-                } else {
-                    '-'
-                }
-            })
-            .collect();
         let why = if duplicate {
             format!(
                 "`{id}` duplicates `{}` for #{} (`{}`): {}. Build it, from the original's code, \
@@ -245,35 +240,13 @@ impl Apply {
                 change.version, change.path, change.summary
             )
         };
-        let mut body = format!(
-            "## {}\n\nbranch: feat/{}-v{}\n\n{}\n\n{why}",
-            sections::heading_of(sections::SCOPE),
-            slug.trim_matches('-'),
-            change.version,
-            change.task.brief
-        );
-        if !change.task.architecture.is_empty() {
-            let _ = write!(
-                body,
-                "\n\n## {}\n\n{}",
-                sections::heading_of(sections::ARCHITECTURE),
-                change.task.architecture
-            );
-        }
-        let side = if kind == Kind::DataCapability {
-            vec![
-                labels::AGENT,
-                labels::WRITE_SIDE,
-                labels::DATA_LAYER,
-                labels::READY,
-            ]
-        } else {
-            vec![labels::AGENT, labels::READ_SIDE, labels::READY]
-        };
-        let task = self
-            .gh
-            .create_issue(&change.task.title, &body, &side)
-            .await?;
+        let item = producer::item(change, kind, &why);
+        let declaration = item.declaration();
+        let (body, labels) =
+            body_and_labels(&item, &declaration, labels::AGENT, declaration.side());
+        let rendered = declaration.render();
+        let body = body.replacen(&rendered, &missing::with_id(&rendered, id), 1);
+        let task = self.gh.create_issue(&item.title, &body, &labels).await?;
         let under = if duplicate {
             ctx.request().milestone
         } else {
@@ -547,7 +520,29 @@ mod tests {
             "{}",
             created.1
         );
-        assert!(created.1.contains("## Architecture") && created.1.contains("unit: Capability"));
+        // A whole SPEC, as split writes it: the closure holds the unit, and
+        // the first round runs with no `TaskHasASpec` halt (#434, #503).
+        assert!(created.1.contains("## Architecture") && created.1.contains("unit: capability"));
+        assert!(
+            created.1.contains("produces: session.listScenes"),
+            "{}",
+            created.1
+        );
+        assert!(
+            created.1.contains("id: session.listScenes"),
+            "{}",
+            created.1
+        );
+        assert!(created.1.contains("system: session"), "{}", created.1);
+        let issue = harness_core::domain::Issue {
+            body: created.1.clone(),
+            ..harness_core::domain::Issue::default()
+        };
+        assert!(
+            crate::dev_loop::data::tasks::spec_written(&issue),
+            "{}",
+            created.1
+        );
         assert_eq!(
             created.2,
             &[labels::AGENT, labels::READ_SIDE, labels::READY]

@@ -264,6 +264,39 @@ branch's catch-up goes first): `run_resume` deletes `CONTEST.md` with a
 contents API commit — or, with no lift of its own, merges a task PR's base
 into its head so its checks run again — and marks the PR resumed
 (`Resumed`), no checkout.
+**The follow-ups H2 added, all free and read once a full read**
+(`router::follow_ups`, dispatched by `routes::run_follow_up`):
+- `Route::CloseMerged` (weight 1003, also on a red base: it merges nothing)
+  — each building milestone's merged PRs read once (`merged_prs`), the open
+  agent tasks one of them delivered closed (`common::close_merged`: a
+  `Closes` line, or a title confirmed by the PR's head; no lane on the
+  task), the PR's `Closes` line written first when it lacked it,
+  `TaskDelivered`.
+- `Route::ContractLanded` (1003) — a PR waiting on a contract change its
+  repair stopped on (`PrWait::Contract`), the change closed and the PR's base
+  holding the manifest (`contest::contract_landed`): resumed — the change's
+  last word quoted on the PR, its repairs counted anew, `harness:pr-fix`.
+- `Route::DropDebtPr` (995) and `Route::MergeDebt` (985, not on a red base)
+  — the PRs labelled `harness:debt-pr` (`test_debt::data::landing::ready`):
+  a red, conflicting or out-of-bounds one closed with the reason
+  (`close_issue` closes a PR: the issues endpoint serves both), a red one
+  held while the base is red; the first
+  green one merged into the integration branch and its issue closed
+  (`milestone_merge::run`), at most one per `routing::DEBT_MERGE_EVERY` —
+  `Pulse::debt_merged_at`, set only when the attempt merged (`landed`: a
+  stale debt PR refreshed holds nothing), `routing::hold_debt_merges` drops
+  the merges meanwhile.
+A landing PR red or conflicting past its repairs is
+`MergeOutcome::Escalated` from `MergeMainAgent`: `RepairsExhausted`
+recorded once, when the decision was asked; a `harness:pr-fix` PR past its
+cap no merge path covers is escalated by `repairs_due`
+(`milestone_merge::exhausted_repairs`), `RepairsExhausted` the same way; the lanes' numbers (`Busy::numbers`) go in as
+`main_agent_merge::Config::repairing`, and the train's `ready_to_merge` gets
+the same `running`: a PR a lane repairs is never escalated under it.
+`decide` gets the integration branch as `Config::integration` (the shared
+checkout's branch), `pr_fix` gets it as `Config::integration` and a `GitCli`
+on its checkout as its `Git` port (`dispatch/pr_fix.rs`, the composition
+root).
 `--dry-run` reads and says, writes nothing.
 
 Three rules, and they are not symmetric:

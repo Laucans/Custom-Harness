@@ -13,6 +13,9 @@ pub struct DebtState {
     /// What the mutation runs found, oldest first: the body, then each later
     /// run's comment.
     pub findings: String,
+    /// The branch this attempt pushes (`landing::branch`): one per attempt,
+    /// never a name a dropped PR's branch still holds on the remote.
+    pub head: String,
 }
 
 impl DebtState {

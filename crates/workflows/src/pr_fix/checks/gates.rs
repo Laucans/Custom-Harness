@@ -52,6 +52,7 @@ mod tests {
                 comments: String::new(),
                 review_blocking: false,
                 conflicting: false,
+                ..FixState::default()
             },
             Logbook::null(),
         )

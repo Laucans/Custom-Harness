@@ -14,8 +14,8 @@ use harness_core::execution::{Action, Context, Open, SessionAction, ask_and_reco
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::spending::Spending;
 
-use crate::test_debt::data::debt;
 use crate::test_debt::data::state::DebtState;
+use crate::test_debt::data::{debt, landing};
 
 /// Reads, for free, what the paid step needs: the file the issue is about,
 /// and everything the mutation runs said about it.
@@ -45,6 +45,12 @@ impl Action<DebtState> for ReadDebt {
             comments.len()
         ));
         ctx.state.findings = debt::findings(&issue.body, &comments);
+        let pushed = self
+            .gh
+            .branches(&format!("{}{}", landing::BRANCH_PREFIX, issue.number))
+            .await?;
+        ctx.state.head =
+            landing::branch(issue.number, landing::next_attempt(issue.number, &pushed));
         ctx.state.file = Some(file);
         Ok(Verdict::Continue)
     }
@@ -78,6 +84,7 @@ impl SessionAction<DebtState> for AskForTests {
                 ("num", &num),
                 ("file", &file),
                 ("branch", &self.branch),
+                ("head", &open.state.head),
                 ("findings", &findings),
             ],
         );

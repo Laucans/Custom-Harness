@@ -21,6 +21,12 @@
 //! to date with its base, so its checks run on the settled rules, and marks
 //! the PR resumed, which counts its repairs anew (`review::repairs`). Only
 //! a settled contest resets the repairs: a decided wait does not.
+//!
+//! **A repair that stopped on a contract waits on its change** (H2,
+//! `CONTRACT_WAIT`): until a resumed marker follows the change — posted once
+//! it is closed and the PR's base holds the manifest ([`contract_landed`],
+//! [`resume_contract`]), which counts the PR's repairs anew too. Both kinds
+//! of marker count in [`MAX_WAITS`].
 
 use harness_core::domain::{Issue, Outcome, Pr};
 use harness_core::ports::shell::github::GitHub;
@@ -41,6 +47,15 @@ pub const WAITS_ON: &str = "<!-- harness-waits-on: #";
 /// number and ` -->`.
 pub const RESUMED: &str = "<!-- harness-resumed: #";
 
+/// What opens the marker a repair leaves when it stopped on a contract.
+///
+/// The contract is another milestone's (`common::contract_ask`); the marker is
+/// followed by the contract change's number and ` -->`. The PR waits until
+/// the change is closed **and** its base holds the manifest
+/// ([`contract_landed`]); a resumed marker on it then clears it and counts
+/// the PR's repairs anew.
+pub const CONTRACT_WAIT: &str = "<!-- harness-waits-on-contract: #";
+
 /// How many decided waits one PR gets before a human decides: a decision
 /// that keeps answering "wait" is not left to loop.
 pub const MAX_WAITS: usize = 2;
@@ -49,6 +64,13 @@ pub const MAX_WAITS: usize = 2;
 #[must_use]
 pub fn waits_on_marker(on: u64) -> String {
     format!("{WAITS_ON}{on} -->")
+}
+
+/// The marker a repair stopped on a contract leaves on the PR, waiting on
+/// the contract change `on`.
+#[must_use]
+pub fn contract_wait_marker(on: u64) -> String {
+    format!("{CONTRACT_WAIT}{on} -->")
 }
 
 /// The marker that clears a wait on `on`.
@@ -86,10 +108,31 @@ pub fn waits_named(comments: &str) -> Vec<u64> {
     found
 }
 
-/// How many times the harness decided the PR waits, in all.
+/// The contract changes a repair stopped on and no resumed marker cleared
+/// since, in the order first named.
+#[must_use]
+pub fn contract_waits(comments: &str) -> Vec<u64> {
+    let resumed = markers(comments, RESUMED);
+    let mut found: Vec<u64> = Vec::new();
+    for (at, on) in markers(comments, CONTRACT_WAIT) {
+        let cleared = resumed
+            .iter()
+            .any(|(later, number)| *number == on && *later > at);
+        if !cleared && !found.contains(&on) {
+            found.push(on);
+        }
+    }
+    found
+}
+
+/// How many times the harness decided the PR waits, in all — a decided
+/// `wait` or a contract its repair stopped on: both count in the cap
+/// ([`MAX_WAITS`]).
 #[must_use]
 pub fn waits_decided(comments: &str) -> usize {
-    markers(comments, WAITS_ON).len()
+    markers(comments, WAITS_ON)
+        .len()
+        .saturating_add(markers(comments, CONTRACT_WAIT).len())
 }
 
 /// Whether the PR was marked resumed on `on` — what keeps a settled
@@ -174,6 +217,13 @@ pub enum PrWait {
         /// The issue waited for.
         issue: u64,
     },
+    /// Its repair stopped on a contract another milestone produces: it
+    /// waits until the contract change is closed and its base holds the
+    /// manifest ([`contract_landed`]).
+    Contract {
+        /// The `harness:contract-change` issue.
+        issue: u64,
+    },
 }
 
 impl PrWait {
@@ -186,6 +236,9 @@ impl PrWait {
                 format!("contest #{issue} settled (its base takes the settled rules first)")
             }
             Self::Decided { issue } => format!("#{issue} (decided)"),
+            Self::Contract { issue } => {
+                format!("contract change #{issue} (until its base holds the new manifest)")
+            }
         }
     }
 }
@@ -231,6 +284,10 @@ pub async fn waiting(
             found.push((pr.clone(), PrWait::Settling { issue: contest }));
             continue;
         }
+        if let Some(on) = contract_waits(&comments).first() {
+            found.push((pr.clone(), PrWait::Contract { issue: *on }));
+            continue;
+        }
         for on in waits_named(&comments) {
             if tasks::still_blocks(&gh.issue(on).await?) {
                 found.push((pr.clone(), PrWait::Decided { issue: on }));
@@ -239,6 +296,149 @@ pub async fn waiting(
         }
     }
     Ok(found)
+}
+
+/// Whether `pr` waits, read from its comments and the open rules' issues.
+///
+/// `comments` are its comments as read: its open contest, a contract change its
+/// repair stopped on not resumed yet, or an issue a decided `wait` named
+/// that still blocks. What keeps a PR's escalation from being paid while it
+/// waits, where the router's own reads of the waits do not reach — a
+/// landing PR past its repairs carries no label the router lists.
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from an issue read.
+pub async fn held(gh: &dyn GitHub, pr: &Pr, comments: &str) -> Outcome<bool> {
+    if !contract_waits(comments).is_empty() {
+        return Ok(true);
+    }
+    for on in waits_named(comments) {
+        if tasks::still_blocks(&gh.issue(on).await?) {
+            return Ok(true);
+        }
+    }
+    let Ok(number) = pr.num.parse::<u64>() else {
+        return Ok(false);
+    };
+    let rules = gh
+        .issues_labelled(crate::common::labels::RULES, "open")
+        .await?;
+    Ok(open_contest(number, &rules).is_some())
+}
+
+/// A contract change a waiting PR can resume from: closed, and the PR's
+/// base holds what it changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractLanded {
+    /// The `harness:contract-change` issue, closed.
+    pub request: u64,
+    /// The PR that waited on it (`500`).
+    pub pr: String,
+}
+
+/// Whether `path` is the manifest of `id` (`<system>.<name>`): under
+/// `crates/<system>/`, in the unit's folder (`kebab(name)`), named as a
+/// manifest is.
+fn is_manifest_of(path: &str, id: &str) -> bool {
+    let Some((system, name)) = id.split_once('.') else {
+        return false;
+    };
+    let folder = format!("/{}/", harness_architecture::skeleton::kebab(name));
+    path.starts_with(&format!("crates/{system}/"))
+        && path.contains(&folder)
+        && crate::main_agent_merge::data::merge_train::is_manifest(path)
+}
+
+/// The PRs of `waiting` whose contract change landed.
+///
+/// Those that wait on a contract change ([`PrWait::Contract`])
+/// and may resume now: the change closed, and the PR's base holds the
+/// manifest of its id — the integration branch changed no manifest of it
+/// since they parted (`changed_files(base, integration)`, after the base's
+/// catch-up). A change handed back changed nothing: its base holds it at
+/// once. A compare GitHub lists in part, or cannot read, is "not yet".
+///
+/// A PR resumed while its base still lacks the change would stop again on
+/// the same contract and ask a second change of it (`ForgeDesMondes`' #482:
+/// the contract manager was asked twice).
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from an issue read.
+pub async fn contract_landed(
+    gh: &dyn GitHub,
+    waiting: &[(Pr, PrWait)],
+    integration: &str,
+) -> Outcome<Vec<ContractLanded>> {
+    let mut found = Vec::new();
+    for (pr, wait) in waiting {
+        let PrWait::Contract { issue } = wait else {
+            continue;
+        };
+        let request = gh.issue(*issue).await?;
+        if request.is_open() {
+            continue;
+        }
+        let id = crate::contract_manager::data::request::Request::parse(&request.body)
+            .map(|asked| asked.id)
+            .unwrap_or_default();
+        let holds = pr.base == integration
+            || matches!(
+                gh.changed_files(&pr.base, integration).await,
+                Ok(Some(files)) if !files.iter().any(|path| is_manifest_of(path, &id))
+            );
+        if holds {
+            found.push(ContractLanded {
+                request: *issue,
+                pr: pr.num.clone(),
+            });
+        }
+    }
+    Ok(found)
+}
+
+/// Resumes a PR whose contract change landed.
+///
+/// The resumed marker — which
+/// clears the wait and counts its repairs anew — with what the contract
+/// manager said closing the change (a new version to build against, or
+/// why nothing changed), so the repair reads it on the PR; then
+/// `harness:pr-fix`, one repair against the new contract.
+///
+/// # Errors
+/// [`harness_core::domain::Halt`] from a read, the comment or the label.
+pub async fn resume_contract(
+    gh: &dyn GitHub,
+    landed: &ContractLanded,
+    log: &Logbook,
+) -> Outcome<()> {
+    let number: u64 = landed.pr.parse().map_err(|_| {
+        harness_core::domain::Halt::Failed(format!(
+            "PR {:?} has no number to comment on",
+            landed.pr
+        ))
+    })?;
+    let said = gh.issue_comments(landed.request).await?.last().map_or_else(
+        || "(the change closed without a word)".to_string(),
+        |last| last.trim().to_string(),
+    );
+    gh.post_issue_comment(
+        number,
+        &format!(
+            "{}\nContract change #{} closed, and this PR's base holds it now. What it \
+             said:\n\n> {}\n\nThe repairs of this PR are counted anew: one repair follows, \
+             against the contract as it stands.",
+            resumed_marker(landed.request),
+            landed.request,
+            said.replace('\n', "\n> ")
+        ),
+    )
+    .await?;
+    gh.add_label(number, crate::common::labels::PR_FIX).await?;
+    log.say(&format!(
+        "watch: contract change #{} landed -> PR #{} resumed, its repairs counted anew",
+        landed.request, landed.pr
+    ));
+    Ok(())
 }
 
 /// `prs` without those that wait.
@@ -577,6 +777,35 @@ mod tests {
             // A resume posted before the wait does not clear it.
             let before = format!("{}\n{waited}", resumed_marker(on));
             prop_assert_eq!(waits_named(&before), vec![on]);
+        }
+
+        #[test]
+        fn a_contract_wait_reads_back_until_its_resume_and_counts_as_a_wait(
+            on in 1u64..100_000,
+            other in 1u64..100_000,
+            decided in 0usize..3,
+        ) {
+            let decided_waits: String =
+                (0..decided).fold(String::new(), |mut all, n| {
+                    all.push_str(&waits_on_marker(900_000 + n as u64));
+                    all.push('\n');
+                    all
+                });
+            let waited = format!("{decided_waits}stopped\n{}\nwhy", contract_wait_marker(on));
+            prop_assert_eq!(contract_waits(&waited), vec![on]);
+            prop_assert!(waits_named(&waited).iter().all(|named| *named != on));
+            prop_assert_eq!(waits_decided(&waited), decided + 1, "both kinds count in the cap");
+            let resumed = format!("{waited}\n{}", resumed_marker(on));
+            prop_assert!(contract_waits(&resumed).is_empty());
+            prop_assert_eq!(waits_decided(&resumed), decided + 1, "a resume is no wait");
+            let twice = format!("{waited}\n{}", contract_wait_marker(on));
+            prop_assert_eq!(contract_waits(&twice), vec![on], "named once");
+            if other != on {
+                let elsewhere = format!("{waited}\n{}", resumed_marker(other));
+                prop_assert_eq!(contract_waits(&elsewhere), vec![on]);
+            }
+            let before = format!("{}\n{waited}", resumed_marker(on));
+            prop_assert_eq!(contract_waits(&before), vec![on], "a resume before clears nothing");
         }
     }
 
@@ -1145,7 +1374,7 @@ mod tests {
         let prs = [pr("516", "feat/scene", "milestone/24-x")];
         let waits = waiting(&gh, &prs, &[], &closed).await.expect("read");
         let open = not_waiting(&prs, &waits);
-        let (_, escalated) = crate::milestone_merge::ready_to_merge(&gh, &[task486()], &open)
+        let (_, escalated) = crate::milestone_merge::ready_to_merge(&gh, &[task486()], &open, &[])
             .await
             .expect("read");
         assert!(escalated.is_empty(), "{escalated:?}");
@@ -1237,5 +1466,162 @@ mod tests {
         .await
         .expect("read");
         assert_eq!(found.len(), 1, "{found:?}");
+    }
+
+    // --- contract waits: landed, resumed --------------------------------
+
+    fn request(number: u64, state: &str, id: &str) -> Issue {
+        Issue {
+            number,
+            state: state.to_string(),
+            body: crate::contract_manager::data::request::Request {
+                id: id.to_string(),
+                task: 482,
+                milestone: Some(22),
+                need: "a source field".to_string(),
+            }
+            .render(),
+            ..Issue::default()
+        }
+    }
+
+    const MANIFEST: &str = "crates/session/src/capabilities/list-scenes/capability.json";
+
+    #[test]
+    fn a_manifest_of_the_id_is_under_its_system_and_its_unit_s_folder() {
+        assert!(is_manifest_of(MANIFEST, "session.listScenes"));
+        assert!(
+            !is_manifest_of(MANIFEST, "campaign.listScenes"),
+            "another system"
+        );
+        assert!(
+            !is_manifest_of(MANIFEST, "session.listCampaigns"),
+            "another unit"
+        );
+        assert!(
+            !is_manifest_of(
+                "crates/session/src/capabilities/list-scenes/handler.rs",
+                "session.listScenes"
+            ),
+            "no manifest"
+        );
+        assert!(!is_manifest_of(MANIFEST, "Session"), "an id with no system");
+    }
+
+    #[tokio::test]
+    async fn a_contract_change_lands_once_closed_and_held_by_the_pr_s_base() {
+        let waiting_on = |pr: Pr, issue: u64| (pr, PrWait::Contract { issue });
+        let task_pr = pr("500", "feat/fiche", "milestone/22-fiche");
+        let landing = pr("423", "milestone/22-fiche", "main_agent");
+        let gh = FakeGitHub {
+            issues: vec![
+                request(503, "open", "session.listScenes"),
+                request(504, "closed", "session.listScenes"),
+                request(505, "closed", "session.listScenes"),
+                request(506, "closed", "session.listScenes"),
+                request(507, "closed", "session.listScenes"),
+            ],
+            changed_files: HashMap::from([
+                (
+                    "milestone/22-fiche...main_agent".to_string(),
+                    Some(vec![MANIFEST.to_string()]),
+                ),
+                (
+                    "milestone/23-x...main_agent".to_string(),
+                    Some(vec!["crates/session/src/lib.rs".to_string()]),
+                ),
+                ("milestone/24-y...main_agent".to_string(), None),
+            ]),
+            broken_compares: vec!["milestone/25-z...main_agent".to_string()],
+            ..FakeGitHub::default()
+        };
+        let waiting = [
+            // Still open: not yet.
+            waiting_on(task_pr.clone(), 503),
+            // Closed, into the integration branch itself: held at once.
+            waiting_on(landing, 504),
+            // Closed, the base still lacks the manifest: not yet.
+            waiting_on(task_pr, 505),
+            // Closed, the base differs on no manifest of it: landed.
+            waiting_on(pr("510", "feat/a", "milestone/23-x"), 506),
+            // A compare listed in part, or unreadable: not yet.
+            waiting_on(pr("511", "feat/b", "milestone/24-y"), 507),
+            waiting_on(pr("512", "feat/c", "milestone/25-z"), 507),
+            // Another kind of wait: never read here.
+            (
+                pr("513", "feat/d", "milestone/23-x"),
+                PrWait::Decided { issue: 503 },
+            ),
+        ];
+        let landed = contract_landed(&gh, &waiting, "main_agent")
+            .await
+            .expect("read");
+        assert_eq!(
+            landed,
+            [
+                ContractLanded {
+                    request: 504,
+                    pr: "423".to_string(),
+                },
+                ContractLanded {
+                    request: 506,
+                    pr: "510".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_landed_change_resumes_its_pr_with_what_the_manager_said() {
+        let gh = FakeGitHub {
+            issue_comments: vec![
+                "working on it".to_string(),
+                "session.listScenes v2 landed:\nsource added".to_string(),
+            ],
+            ..FakeGitHub::default()
+        };
+        let landed = ContractLanded {
+            request: 503,
+            pr: "500".to_string(),
+        };
+        resume_contract(&gh, &landed, &Logbook::null())
+            .await
+            .expect("resumed");
+        let writes = gh.writes();
+        let said = writes
+            .iter()
+            .find_map(|w| match w {
+                Wrote::Comment(500, said) => Some(said.clone()),
+                _ => None,
+            })
+            .expect("a comment on the PR");
+        assert!(said.starts_with(&resumed_marker(503)), "{said}");
+        assert!(
+            said.contains("> session.listScenes v2 landed:\n> source added"),
+            "the last comment, quoted: {said}"
+        );
+        assert!(writes.contains(&Wrote::Label(500, labels::PR_FIX.to_string())));
+        assert_eq!(
+            contract_waits(&format!("{}\n{said}", contract_wait_marker(503))),
+            [] as [u64; 0]
+        );
+        // A change closed without a word says so; a PR with no number halts.
+        let silent = FakeGitHub::default();
+        resume_contract(&silent, &landed, &Logbook::null())
+            .await
+            .expect("resumed");
+        assert!(silent.writes().iter().any(|w| matches!(
+            w,
+            Wrote::Comment(500, said) if said.contains("closed without a word")
+        )));
+        let unnumbered = ContractLanded {
+            request: 503,
+            pr: "x".to_string(),
+        };
+        assert!(
+            resume_contract(&silent, &unnumbered, &Logbook::null())
+                .await
+                .is_err()
+        );
     }
 }

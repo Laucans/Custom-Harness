@@ -58,6 +58,6 @@ mod tests {
         );
         assert_eq!(built.pr_ref, "32");
         assert_eq!(built.remaining.get(), 1, "one attempt per run");
-        assert_eq!(built.round.stages.len(), 2, "context then fix");
+        assert_eq!(built.round.stages.len(), 3, "context, fix, after");
     }
 }

@@ -55,13 +55,14 @@ use harness_core::domain::{Halt, Issue, Outcome, Pr, Slug};
 use harness_core::ports::shell::github::{Activity, GitHub};
 use harness_core::traces::{Event, Logbook, Sink, Verbosity};
 use harness_workflows::common::routing::{self, Pulse, Route, Snapshot};
-use harness_workflows::common::{branching, catch_up, contest, labels, sentinel};
+use harness_workflows::common::{branching, catch_up, close_merged, contest, labels, sentinel};
 use harness_workflows::dev_loop::data::{board, tasks};
 use harness_workflows::main_agent_merge::data::audit;
 use harness_workflows::main_agent_merge::data::merge_train;
 use harness_workflows::milestone_merge::RulesPr;
 use harness_workflows::pr_fix::data::candidates;
 use harness_workflows::pr_review::data::skip_rules;
+use harness_workflows::test_debt::data::landing;
 
 use crate::adapters::sink::Both;
 use crate::adapters::spending;
@@ -286,6 +287,7 @@ async fn tick(
     // catch-ups due at the head just read, once its own checks are green.
     pulse.read_in_full(etag, watching_ci || routing::base_red(&found));
     routing::read_catch_ups(&mut found, pulse, now_seconds(), log);
+    routing::hold_debt_merges(&mut found, pulse, now_seconds());
     // A PR held on a settled contest is told once it stalls; a rules' task
     // held on its faithful PR is released past the bound — before the taps,
     // which read the hold.
@@ -560,14 +562,7 @@ async fn snapshot(
     // The two labelled lists once, for the three reads that need them.
     let to_fix = by_number(gh.open_prs_labelled(labels::PR_FIX).await?);
     let to_review = by_number(gh.open_prs_labelled(labels::TO_REVIEW).await?);
-    let review_backlog_full = open_task_prs(&to_fix, &to_review) >= lanes;
-    if review_backlog_full {
-        log.say(&format!(
-            "watch: {} task PRs open for {lanes} lane(s) — no new task until reviews, repairs \
-             and merges bring them down",
-            open_task_prs(&to_fix, &to_review)
-        ));
-    }
+    let review_backlog_full = backlog_full(&to_fix, &to_review, lanes, log);
     let watching_ci = watching_ci(&to_fix, &to_review);
     // Every PR of the harness's cycle, as read: what holds a task's branch
     // against a second session, whether a lane is on the PR or not.
@@ -619,7 +614,7 @@ async fn snapshot(
     let mut tasks_to_merge = Vec::new();
     let mergeable = contest::not_waiting(&to_review, &prs_waiting);
     for board in &boards {
-        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &mergeable, log).await?);
+        tasks_to_merge.extend(green_task_pr(gh, &board.tasks, &mergeable, running, log).await?);
     }
     let (rules_merge, rules_on_pr) = rules_train(gh, &rules).await?;
     tasks_to_merge.extend(rules_merge);
@@ -627,6 +622,8 @@ async fn snapshot(
     // contest whose PR or milestone is still open.
     let settled =
         contest::settled(gh, &closed_rules, &rules, &task_prs, &milestones, branch).await?;
+    let (tasks_merged, contracts_landed, debt_landings) =
+        follow_ups(gh, &boards, running, &prs_waiting, branch).await?;
     let boards_read = boards;
     let snapshot = Snapshot {
         tasks_to_merge,
@@ -655,6 +652,9 @@ async fn snapshot(
         prs_waiting,
         rules_on_pr,
         settled,
+        tasks_merged,
+        contracts_landed,
+        debt_landings,
     };
     // The tests come first: a development that waits on them says so.
     let idle = routing::rules_first(&snapshot)
@@ -676,6 +676,8 @@ async fn snapshot(
 /// whose contest is open waits, so does one whose contest closed and that
 /// is not resumed yet, and one a decision told to wait — no repair, no
 /// decision on its task, no merge (`common::contest`). Its review runs.
+/// A PR labelled for repair past its cap that no merge path escalates is
+/// escalated here (`milestone_merge::exhausted_repairs`).
 async fn repairs_due(
     gh: &dyn GitHub,
     task_prs: &[Pr],
@@ -686,12 +688,21 @@ async fn repairs_due(
     let closed = gh.issues_labelled(labels::RULES, "closed").await?;
     let waiting = contest::waiting(gh, task_prs, rules, &closed).await?;
     say_waits(&waiting, rules, log);
-    let due = candidates::due(
-        gh,
-        &contest::not_waiting(fixable, &waiting),
-        &contest::not_waiting(reviewable, &waiting),
-    )
-    .await?;
+    let fixable = contest::not_waiting(fixable, &waiting);
+    let reviewable = contest::not_waiting(reviewable, &waiting);
+    let due = candidates::due(gh, &fixable, &reviewable).await?;
+    // Past their repairs, the PRs no merge path escalates (a task PR never
+    // put under review): one decision asked on the task each.
+    let exhausted =
+        harness_workflows::milestone_merge::exhausted_repairs(gh, &fixable, &reviewable, log)
+            .await?;
+    for (task, pr) in exhausted {
+        log.event(&Event::RepairsExhausted {
+            task,
+            pr,
+            fixes: u64::try_from(harness_workflows::common::review::MAX_FIXES).unwrap_or(u64::MAX),
+        });
+    }
     Ok((waiting, by_number(due), closed))
 }
 
@@ -737,6 +748,19 @@ fn say_waits(waiting: &[(Pr, contest::PrWait)], rules: &[Issue], log: &Logbook) 
             issue.number
         ));
     }
+}
+
+/// Whether as many task PRs are open as there are lanes — said when so: no
+/// new task starts until reviews, repairs and merges bring them down.
+fn backlog_full(to_fix: &[Pr], to_review: &[Pr], lanes: usize, log: &Logbook) -> bool {
+    let open = open_task_prs(to_fix, to_review);
+    if open >= lanes {
+        log.say(&format!(
+            "watch: {open} task PRs open for {lanes} lane(s) — no new task until reviews, \
+             repairs and merges bring them down"
+        ));
+    }
+    open >= lanes
 }
 
 /// How many task PRs are open — those into a milestone's branch, the
@@ -850,10 +874,11 @@ async fn green_task_pr(
     gh: &dyn GitHub,
     tasks: &[Issue],
     to_review: &[Pr],
+    running: &[u64],
     log: &Logbook,
 ) -> Outcome<Option<(u64, Pr)>> {
     let (found, escalated) =
-        harness_workflows::milestone_merge::ready_to_merge(gh, tasks, to_review).await?;
+        harness_workflows::milestone_merge::ready_to_merge(gh, tasks, to_review, running).await?;
     for (task, pr) in escalated {
         log.event(&Event::RepairsExhausted {
             task,
@@ -862,6 +887,48 @@ async fn green_task_pr(
         });
     }
     Ok(found.map(|(task, pr)| (task.number, pr.clone())))
+}
+
+/// The free follow-ups a full read finds: the tasks merged outside the
+/// train (one read of each building milestone's merged PRs), the PRs whose
+/// contract change landed (one issue read per PR waiting on one), the
+/// test-debt PRs the harness lands (a few reads per labelled PR).
+async fn follow_ups(
+    gh: &dyn GitHub,
+    boards: &[board::Board],
+    running: &[u64],
+    prs_waiting: &[(Pr, contest::PrWait)],
+    branch: &str,
+) -> Outcome<(
+    Vec<close_merged::Delivered>,
+    Vec<contest::ContractLanded>,
+    Vec<landing::Landing>,
+)> {
+    let tasks_merged = merged_outside_the_train(gh, boards, running).await?;
+    let contracts_landed = contest::contract_landed(gh, prs_waiting, branch).await?;
+    let debt_prs = by_number(gh.open_prs_labelled(labels::TEST_DEBT_PR).await?);
+    let debt_landings = landing::ready(gh, &debt_prs, branch).await?;
+    Ok((tasks_merged, contracts_landed, debt_landings))
+}
+
+/// The open tasks of each board whose PR was merged into the milestone's
+/// branch outside the merge train (`common::close_merged::due`): one
+/// `merged_prs` read per building milestone, a few more per task found.
+async fn merged_outside_the_train(
+    gh: &dyn GitHub,
+    boards: &[board::Board],
+    running: &[u64],
+) -> Outcome<Vec<close_merged::Delivered>> {
+    let mut found = Vec::new();
+    for board in boards {
+        if !board.tasks.iter().any(Issue::is_open) {
+            continue;
+        }
+        let branch = branching::milestone_branch(board.milestone.number, &board.milestone.title);
+        let merged = gh.merged_prs(&branch).await?;
+        found.extend(close_merged::due(gh, &board.tasks, &merged, &branch, running).await?);
+    }
+    Ok(found)
 }
 
 /// The milestones, with the blockers of every split candidate read — what
@@ -961,5 +1028,72 @@ mod tests {
         assert_eq!(pace(1, false), Pace::OneRoute);
         assert_eq!(pace(2, true), Pace::FreeOnly);
         assert_eq!(pace(5, false), Pace::Lanes);
+    }
+
+    #[test]
+    fn the_backlog_is_full_once_as_many_task_prs_are_open_as_lanes() {
+        let pr = |num: &str, base: &str| Pr {
+            num: num.to_string(),
+            base: base.to_string(),
+            ..Pr::default()
+        };
+        let to_fix = [pr("1", "milestone/2-x"), pr("2", "main_agent")];
+        let to_review = [pr("1", "milestone/2-x"), pr("3", "milestone/2-x")];
+        let log = Logbook::null();
+        assert!(
+            backlog_full(&to_fix, &to_review, 2, &log),
+            "two task PRs, two lanes"
+        );
+        assert!(
+            !backlog_full(&to_fix, &to_review, 3, &log),
+            "a landing PR is no task PR"
+        );
+        assert!(backlog_full(&[], &[], 0, &log));
+        assert!(!backlog_full(&[], &[], 1, &log));
+    }
+
+    #[tokio::test]
+    async fn the_follow_up_reads_reach_github_only_for_what_can_be_due() {
+        use crate::testing::NoGitHub;
+        let closed = |number: u64| Issue {
+            number,
+            state: "closed".to_string(),
+            ..Issue::default()
+        };
+        let done = board::Board {
+            tasks: vec![closed(11)],
+            ..board::Board::default()
+        };
+        let building = board::Board {
+            tasks: vec![Issue {
+                number: 12,
+                state: "open".to_string(),
+                ..Issue::default()
+            }],
+            ..board::Board::default()
+        };
+        // A board with no open task reads nothing; one with an open task
+        // reads its milestone's merged PRs, refused here.
+        let nothing = merged_outside_the_train(&NoGitHub, std::slice::from_ref(&done), &[])
+            .await
+            .expect("nothing read");
+        assert_eq!(nothing.len(), 0);
+        assert!(
+            merged_outside_the_train(&NoGitHub, &[done.clone(), building], &[])
+                .await
+                .is_err()
+        );
+        // The debt PRs are always read: refused, the full read fails.
+        assert!(
+            follow_ups(&NoGitHub, &[done], &[], &[], "main_agent")
+                .await
+                .is_err()
+        );
+        // The repairs read the closed rules' issues first.
+        assert!(
+            repairs_due(&NoGitHub, &[], (&[], &[]), &[], &Logbook::null())
+                .await
+                .is_err()
+        );
     }
 }

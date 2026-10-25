@@ -1,4 +1,4 @@
-//! The repair's round: the two steps of the table, nothing prepended.
+//! The repair's round: the three steps of the table, nothing prepended.
 //!
 //! A single round — [`FixRun`](crate::pr_fix::orchestration::workflow::FixRun)
 //! carries `remaining = 1`, one attempt per run — so the generic `Round` of
@@ -15,7 +15,7 @@ use crate::pr_fix::data::state::FixState;
 use crate::pr_fix::orchestration::stages;
 use crate::pr_fix::ports::Ports;
 
-/// Mounts the repair's round: context, then the attempt.
+/// Mounts the repair's round: context, the attempt, what follows it.
 #[must_use]
 pub fn build(ports: &Ports, config: &Config) -> Round<FixState> {
     Round::plain(stages::table(ports, config))
@@ -30,7 +30,7 @@ mod tests {
     #[test]
     fn the_round_is_exactly_the_table() {
         let round = build(&ports_fake::ports(), &config_fake::config());
-        assert_eq!(round.stages.len(), 2);
+        assert_eq!(round.stages.len(), 3);
         assert!(round.tolerance.is_none(), "a repair tolerates nothing");
     }
 }

@@ -62,8 +62,10 @@ use harness_core::traces::{Event, Logbook};
 pub use harness_architecture::graph::Graph;
 
 use crate::common::catch_up::CatchUps;
-use crate::common::contest::{PrWait, Settled};
+use crate::common::close_merged::Delivered;
+use crate::common::contest::{ContractLanded, PrWait, Settled};
 use crate::common::labels;
+use crate::test_debt::data::landing::Landing;
 
 /// What the router decides to run next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,6 +126,45 @@ pub enum Route {
         pr: Option<String>,
         /// The branch to delete `CONTEST.md` on, if any.
         lift: Option<String>,
+    },
+    /// Close a task whose PR was merged into its milestone outside the
+    /// merge train — `common::close_merged`. Free, run in the tick.
+    CloseMerged {
+        /// The task's number.
+        task: u64,
+        /// The merged PR's number.
+        pr: u64,
+        /// The milestone branch it was merged into.
+        branch: String,
+    },
+    /// Resume a PR whose contract change landed — `common::contest::
+    /// resume_contract`: the resumed marker, what the change said, one
+    /// repair asked. Free, run in the tick.
+    ContractLanded {
+        /// The `harness:contract-change` issue, closed.
+        request: u64,
+        /// The PR that waited on it.
+        pr: String,
+    },
+    /// Merge a green test-debt PR into the integration branch and close its
+    /// issue — `milestone_merge::run`, at most one per
+    /// [`DEBT_MERGE_EVERY`]. Free, run in the tick.
+    MergeDebt {
+        /// The test-debt issue.
+        issue: u64,
+        /// The PR.
+        pr: String,
+    },
+    /// Close a test-debt PR that cannot land — red, conflicting, or touching
+    /// what a test-only PR may not — with the reason; its issue stays open
+    /// for the next rotation. Free, run in the tick.
+    DropDebtPr {
+        /// The test-debt issue.
+        issue: u64,
+        /// The PR.
+        pr: String,
+        /// Why, in a sentence.
+        why: String,
     },
     /// Open or merge this milestone's PR into the base branch —
     /// `main_agent_merge`.
@@ -289,6 +330,16 @@ pub struct Snapshot {
     pub rules_on_pr: Vec<u64>,
     /// The settled contests to follow through ([`Route::Resume`]).
     pub settled: Vec<Settled>,
+    /// The tasks of the building milestones whose PR was merged outside the
+    /// merge train, still open ([`Route::CloseMerged`]).
+    pub tasks_merged: Vec<Delivered>,
+    /// The PRs whose contract change landed — closed, their base holding it
+    /// ([`Route::ContractLanded`]).
+    pub contracts_landed: Vec<ContractLanded>,
+    /// The test-debt PRs that land now ([`Route::MergeDebt`],
+    /// [`Route::DropDebtPr`]) — the merges dropped while one was merged less
+    /// than [`DEBT_MERGE_EVERY`] ago ([`hold_debt_merges`]).
+    pub debt_landings: Vec<Landing>,
 }
 
 /// Whether the integration branch is red: its newest head has a failed
@@ -344,8 +395,9 @@ pub fn decide(snapshot: &Snapshot) -> Route {
 /// rest; a free one is a few GitHub calls, run in the tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cost {
-    /// No session: the catch-ups, a settled contest's follow-through and
-    /// the two merges.
+    /// No session: the catch-ups, a settled contest's or a landed
+    /// contract's follow-through, a merged task's close, the merges, a
+    /// test-debt PR's landing.
     Free,
     /// One session or more.
     Paid,
@@ -375,8 +427,11 @@ pub const fn base_weight(route: &Route) -> u32 {
     match route {
         Route::CatchUp { .. } => 1010,
         Route::Resume { .. } => 1005,
+        Route::CloseMerged { .. } | Route::ContractLanded { .. } => 1003,
         Route::MergeIntoMilestone { .. } => 1000,
+        Route::DropDebtPr { .. } => 995,
         Route::MergeMainAgent { .. } => 990,
+        Route::MergeDebt { .. } => 985,
         Route::Planner { .. } => 900,
         Route::Rules { .. } => 880,
         Route::Decide { .. } => 860,
@@ -428,6 +483,10 @@ pub fn schedule(snapshot: &Snapshot, running: &[u64], waited: &dyn Fn(&Route) ->
                 route,
                 Route::CatchUp { .. }
                     | Route::Resume { .. }
+                    | Route::CloseMerged { .. }
+                    | Route::ContractLanded { .. }
+                    | Route::MergeDebt { .. }
+                    | Route::DropDebtPr { .. }
                     | Route::MergeMainAgent { .. }
                     | Route::MergeIntoMilestone { .. }
             ) {
@@ -529,13 +588,95 @@ fn resume_found(settled: &Settled) -> Found {
     )
 }
 
+/// What is followed through for free whatever the base, since it merges
+/// nothing: the settled contests (a file lifted, a PR resumed), the tasks
+/// merged outside the train (closed), the PRs whose contract landed
+/// (resumed), the test-debt PRs that cannot land (closed).
+fn followed_through(snapshot: &Snapshot) -> Vec<Found> {
+    let mut found: Vec<Found> = snapshot.settled.iter().map(resume_found).collect();
+    found.extend(snapshot.tasks_merged.iter().map(|done| {
+        (
+            Route::CloseMerged {
+                task: done.task,
+                pr: done.pr,
+                branch: done.branch.clone(),
+            },
+            done.task,
+            crate::common::branching::milestone_number(&done.branch),
+        )
+    }));
+    found.extend(snapshot.contracts_landed.iter().filter_map(|landed| {
+        landed.pr.parse::<u64>().ok().map(|number| {
+            (
+                Route::ContractLanded {
+                    request: landed.request,
+                    pr: landed.pr.clone(),
+                },
+                number,
+                None,
+            )
+        })
+    }));
+    // A debt PR that cannot land is closed whatever the base — it merges
+    // nothing — except one dropped for its checks while the base is red:
+    // a red integration branch fails every debt PR's CI alike, and closing
+    // them wastes sessions whose tests may be fine.
+    let base_red = snapshot.base_checks == Some(false);
+    found.extend(snapshot.debt_landings.iter().filter_map(|landing| {
+        let Landing::Drop {
+            issue,
+            pr,
+            why,
+            red,
+        } = landing
+        else {
+            return None;
+        };
+        if *red && base_red {
+            return None;
+        }
+        pr.num.parse::<u64>().ok().map(|number| {
+            (
+                Route::DropDebtPr {
+                    issue: *issue,
+                    pr: pr.num.clone(),
+                    why: why.clone(),
+                },
+                number,
+                None,
+            )
+        })
+    }));
+    found
+}
+
+/// The test-debt merge due: the first green one. A test-debt PR moves the
+/// integration branch, and every building milestone takes it — a catch-up,
+/// its PRs' checks run again — so one at a time, paced by
+/// [`hold_debt_merges`].
+fn debt_merge(snapshot: &Snapshot) -> Option<Found> {
+    snapshot
+        .debt_landings
+        .iter()
+        .find_map(|landing| match landing {
+            Landing::Merge { issue, pr } => pr.num.parse::<u64>().ok().map(|n| {
+                (
+                    Route::MergeDebt {
+                        issue: *issue,
+                        pr: pr.num.clone(),
+                    },
+                    n,
+                    None,
+                )
+            }),
+            Landing::Drop { .. } => None,
+        })
+}
+
 /// What is in flight: the catch-ups, the merges, the plan, the rules'
 /// tests, the decisions and contracts asked, the PRs to repair or review.
 fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
-    let mut found: Vec<Found> = Vec::new();
-    // A settled contest is followed through on a red base too: it merges
-    // nothing, it lifts a file and resumes a PR.
-    found.extend(snapshot.settled.iter().map(resume_found));
+    let mut found: Vec<Found> = followed_through(snapshot);
     // Nothing merges on a red base: a merge into a milestone would spread
     // it, a merge into the base would bury it. A catch-up whose landing PR
     // a repair works on waits for it (`catch_up::catch_up`, which reads the
@@ -574,6 +715,7 @@ fn in_flight(snapshot: &Snapshot) -> Vec<Found> {
                     )
                 }),
         );
+        found.extend(debt_merge(snapshot));
     }
     if let Some(lowest) = plannable_roadmap(&snapshot.roadmap)
         && lowest.has(labels::READY)
@@ -862,6 +1004,29 @@ pub struct Pulse {
     /// PR ([`Snapshot::rules_on_pr`]) — what bounds the hold
     /// ([`bound_rules_on_pr`]).
     pub rules_held: std::collections::BTreeMap<u64, u32>,
+    /// When this watch last attempted a test-debt merge that did not fail,
+    /// in seconds ([`hold_debt_merges`]).
+    pub debt_merged_at: Option<u64>,
+}
+
+/// The least time between two test-debt merges, in seconds.
+///
+/// Each moves the integration branch, and every building milestone then takes it (a
+/// catch-up, its task PRs' checks run again) — a debt PR is never worth
+/// that more than once every few hours.
+pub const DEBT_MERGE_EVERY: u64 = 3 * 3600;
+
+/// Holds the test-debt merges while one was merged less than
+/// [`DEBT_MERGE_EVERY`] ago (`now`, in seconds); the drops are never held.
+pub fn hold_debt_merges(snapshot: &mut Snapshot, pulse: &Pulse, now: u64) {
+    let held = pulse
+        .debt_merged_at
+        .is_some_and(|at| now.saturating_sub(at) < DEBT_MERGE_EVERY);
+    if held {
+        snapshot
+            .debt_landings
+            .retain(|landing| matches!(landing, Landing::Drop { .. }));
+    }
 }
 
 /// How many full reads a PR waits on a settled contest before a human is
@@ -1554,6 +1719,9 @@ mod tests {
             prs_waiting: Vec::new(),
             rules_on_pr: Vec::new(),
             settled: Vec::new(),
+            tasks_merged: Vec::new(),
+            contracts_landed: Vec::new(),
+            debt_landings: Vec::new(),
         }
     }
 
@@ -1615,6 +1783,9 @@ mod tests {
             prs_waiting: Vec::new(),
             rules_on_pr: Vec::new(),
             settled: Vec::new(),
+            tasks_merged: Vec::new(),
+            contracts_landed: Vec::new(),
+            debt_landings: Vec::new(),
         };
         // The free merges go first, in the tick; then the plan.
         assert_eq!(
@@ -1916,8 +2087,8 @@ mod tests {
 
     #[test]
     fn a_red_pr_fix_pr_past_its_repairs_waits_too() {
-        // The `to_fix` branch of the repair route is uncapped: a decided
-        // wait is what holds it.
+        // A decided wait holds the `to_fix` branch of the repair route, even
+        // within its repairs.
         let (waiting, _) = waiting_on_its_contest();
         let snapshot = Snapshot {
             prs_to_fix: vec![waiting.clone()],
@@ -2484,6 +2655,178 @@ mod tests {
         assert_eq!(decide(&empty()), Route::Nothing);
     }
 
+    #[test]
+    fn a_merged_task_is_closed_and_a_landed_contract_resumed_in_the_tick_for_free() {
+        let snapshot = Snapshot {
+            tasks_merged: vec![Delivered {
+                task: 464,
+                pr: 469,
+                branch: "milestone/27-x".to_string(),
+            }],
+            contracts_landed: vec![ContractLanded {
+                request: 503,
+                pr: "500".to_string(),
+            }],
+            // A red base holds neither: they merge nothing.
+            base_checks: Some(false),
+            ..empty()
+        };
+        let jobs = schedule(&snapshot, &[], &|_| 0);
+        let free: Vec<&Route> = jobs
+            .iter()
+            .filter(|job| job.cost == Cost::Free)
+            .map(|job| &job.route)
+            .collect();
+        assert_eq!(
+            free,
+            [
+                &Route::CloseMerged {
+                    task: 464,
+                    pr: 469,
+                    branch: "milestone/27-x".to_string(),
+                },
+                &Route::ContractLanded {
+                    request: 503,
+                    pr: "500".to_string(),
+                },
+            ]
+        );
+        assert_eq!(jobs.len(), 2, "nothing paid: {jobs:?}");
+    }
+
+    fn debt(num: &str, issue: u64) -> Pr {
+        Pr {
+            num: num.to_string(),
+            head: format!("test/debt-{issue}-1"),
+            base: "main_agent".to_string(),
+            ..Pr::default()
+        }
+    }
+
+    #[test]
+    fn a_green_debt_pr_merges_one_at_a_time_and_a_dropped_one_is_closed() {
+        let landings = vec![
+            Landing::Merge {
+                issue: 7,
+                pr: debt("40", 7),
+            },
+            Landing::Merge {
+                issue: 8,
+                pr: debt("41", 8),
+            },
+            Landing::Drop {
+                issue: 9,
+                pr: debt("42", 9),
+                why: "its checks failed: rust".to_string(),
+                red: true,
+            },
+        ];
+        let snapshot = Snapshot {
+            debt_landings: landings.clone(),
+            ..empty()
+        };
+        let routes: Vec<Route> = schedule(&snapshot, &[], &|_| 0)
+            .into_iter()
+            .map(|job| job.route)
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                Route::DropDebtPr {
+                    issue: 9,
+                    pr: "42".to_string(),
+                    why: "its checks failed: rust".to_string(),
+                },
+                Route::MergeDebt {
+                    issue: 7,
+                    pr: "40".to_string(),
+                },
+            ],
+            "one merge a time, the drop whatever"
+        );
+        // Merged an hour ago: the next merge waits; a red base holds it too.
+        let mut held = Snapshot {
+            debt_landings: landings.clone(),
+            ..empty()
+        };
+        let pulse = Pulse {
+            debt_merged_at: Some(10_000),
+            ..quiet()
+        };
+        hold_debt_merges(&mut held, &pulse, 10_000 + 3600);
+        let routes_held: Vec<Route> = schedule(&held, &[], &|_| 0)
+            .into_iter()
+            .map(|job| job.route)
+            .collect();
+        assert!(
+            !routes_held
+                .iter()
+                .any(|route| matches!(route, Route::MergeDebt { .. })),
+            "{routes_held:?}"
+        );
+        assert!(
+            routes_held
+                .iter()
+                .any(|route| matches!(route, Route::DropDebtPr { .. })),
+            "a drop is never held"
+        );
+        let mut later = Snapshot {
+            debt_landings: landings.clone(),
+            ..empty()
+        };
+        hold_debt_merges(&mut later, &pulse, 10_000 + DEBT_MERGE_EVERY);
+        assert_eq!(
+            later.debt_landings.len(),
+            3,
+            "past the spacing it merges again"
+        );
+        let red = Snapshot {
+            debt_landings: landings,
+            base_checks: Some(false),
+            ..empty()
+        };
+        assert!(
+            !schedule(&red, &[], &|_| 0)
+                .iter()
+                .any(|job| matches!(job.route, Route::MergeDebt { .. }))
+        );
+    }
+
+    #[test]
+    fn a_red_base_holds_the_drops_for_failing_checks_only() {
+        let landings = vec![
+            Landing::Drop {
+                issue: 9,
+                pr: debt("42", 9),
+                why: "its checks failed: rust".to_string(),
+                red: true,
+            },
+            Landing::Drop {
+                issue: 10,
+                pr: debt("43", 10),
+                why: "it conflicts with `main_agent`".to_string(),
+                red: false,
+            },
+        ];
+        let dropped = |base_checks: Option<bool>| -> Vec<u64> {
+            let snapshot = Snapshot {
+                debt_landings: landings.clone(),
+                base_checks,
+                ..empty()
+            };
+            schedule(&snapshot, &[], &|_| 0)
+                .into_iter()
+                .filter_map(|job| match job.route {
+                    Route::DropDebtPr { issue, .. } => Some(issue),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(dropped(Some(false)), [10], "the red one waits for the base");
+        assert_eq!(dropped(Some(true)), [9, 10]);
+        assert_eq!(dropped(None), [9, 10], "an unread base holds nothing");
+    }
+
     fn quiet() -> Pulse {
         Pulse {
             etag: Some("W/\"abc\"".to_string()),
@@ -2495,6 +2838,7 @@ mod tests {
             catch_ups: CatchUps::default(),
             settling: std::collections::BTreeMap::new(),
             rules_held: std::collections::BTreeMap::new(),
+            debt_merged_at: None,
         }
     }
 

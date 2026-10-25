@@ -3,13 +3,16 @@
 //! Separated from [`crate::pr_fix::config::Config`] on purpose: here, what
 //! is **injected**; there, what this run **is worth**.
 //!
-//! No `git` port: the session commits and pushes with its own tools, the
-//! same way `/code` does today. Taking that over deterministically is its
-//! own piece of work (`todo.md`), not something to half-do here.
+//! The session commits and pushes with its own tools; the `git` port only
+//! reads what it left behind — commits no remote has — and pushes them when
+//! the session answered `AGENT_LOOP_OK` and forgot the push
+//! (`ForgeDesMondes`' #496, 2026-10-24 12:25: the merge done, the checks
+//! green, nothing pushed).
 
 use std::rc::Rc;
 
 use harness_core::ports::agent::SessionFactory;
+use harness_core::ports::shell::git::Repo;
 use harness_core::ports::shell::github::GitHub;
 use harness_core::ports::store::lock::Locks;
 use harness_core::ports::store::spending::Spending;
@@ -24,6 +27,8 @@ pub struct Ports {
     pub spending: Rc<dyn Spending>,
     /// What holds the lock — one repair per PR at a time.
     pub locks: Rc<dyn Locks>,
+    /// The repair's checkout: what it committed and did not push.
+    pub git: Rc<dyn Repo>,
 }
 
 #[cfg(test)]
@@ -64,6 +69,10 @@ pub(crate) mod fake {
             sessions: Rc::new(Rehearsal::new(Logbook::null())),
             spending: Rc::new(Nowhere),
             locks: Rc::new(Grants),
+            git: harness_core::ports::shell::git::Repos::at(
+                &crate::common::fake_git::FakeRepos::default(),
+                std::path::Path::new("/tmp/pr-fix"),
+            ),
         }
     }
 }

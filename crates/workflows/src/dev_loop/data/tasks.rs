@@ -120,13 +120,7 @@ pub fn pr_names_task(pr: &Pr, task: &Issue) -> bool {
     if declared_branch(&task.body).is_some_and(|branch| pr.head == branch) {
         return true;
     }
-    let token = format!("#{}", task.number);
-    pr.title.match_indices(&token).any(|(at, _)| {
-        pr.title
-            .get(at + token.len()..)
-            .and_then(|rest| rest.chars().next())
-            .is_none_or(|next| !next.is_ascii_digit())
-    })
+    crate::common::delivery::title_names(&pr.title, task.number)
 }
 
 /// `human` or `auto` — how the log names the task kind.

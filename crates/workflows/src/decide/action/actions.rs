@@ -34,12 +34,15 @@ fn latest(text: &str, budget: usize) -> String {
 pub struct ReadCase {
     /// What reads the issue's comments and its PR.
     pub gh: Rc<dyn GitHub>,
+    /// The integration branch, kept in the state for the decision's scope.
+    pub integration: String,
 }
 
 #[async_trait(?Send)]
 impl Action<DecideState> for ReadCase {
     async fn run(&self, ctx: &mut Context<DecideState>) -> Outcome<Verdict> {
         let issue = ctx.state.issue().clone();
+        ctx.state.integration.clone_from(&self.integration);
         let question = sections::parse(&issue.body)
             .get(sections::DECISION)
             .and_then(|text| Question::parse(text));
@@ -57,8 +60,15 @@ impl Action<DecideState> for ReadCase {
         // #51 had lost `review-pending` while PR #105 stayed blocked, and a
         // decision that could not see the PR answered nothing the router
         // could act on — asked again every tick.
+        // A milestone's: its landing PR, on its own branch, escalated past
+        // its repairs (`milestone_merge::escalate`).
         let branch = if rules {
             Some(crate::milestone_merge::rules_branch(issue.number))
+        } else if issue.has(labels::MILESTONE) {
+            Some(crate::common::branching::milestone_branch(
+                issue.number,
+                &issue.title,
+            ))
         } else {
             tasks::declared_branch(&issue.body)
         };
@@ -109,19 +119,13 @@ fn values(state: &DecideState) -> Vec<(&'static str, String)> {
         .question
         .as_ref()
         .map_or_else(|| "(none)".to_string(), Question::render);
-    let (pr, review, actions) = state.pr.as_ref().map_or_else(
-        || {
-            (
-                "(none)".to_string(),
-                "(none)".to_string(),
-                "`answer`, `wait` or `cut`".to_string(),
-            )
-        },
+    let actions = state.scope().actions().to_string();
+    let (pr, review) = state.pr.as_ref().map_or_else(
+        || ("(none)".to_string(), "(none)".to_string()),
         |pr| {
             (
                 format!("{} ({} -> {})", pr.reference(), pr.head, pr.base),
                 state.pr_comments.clone(),
-                "`answer`, `merge`, `repair`, `wait` or `cut`".to_string(),
             )
         },
     );
@@ -142,6 +146,7 @@ fn values(state: &DecideState) -> Vec<(&'static str, String)> {
         ("pr", pr),
         ("review", review),
         ("actions", actions),
+        ("integration", state.integration.clone()),
     ]
 }
 
@@ -152,11 +157,9 @@ impl SessionAction<DecideState> for AskDecider {
         let pairs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
         let prompt = splice(&self.template, &pairs);
         let task = open.state.issue().reference();
-        let number = open.state.issue().number;
-        let has_pr = open.state.pr.is_some();
         let reply =
             ask_and_record(open, &prompt, &self.stage, 1, &task, self.spending.as_ref()).await?;
-        if let Err(why) = decision::parse(&reply.text, has_pr, number) {
+        if let Err(why) = decision::parse(&reply.text, &open.state.scope()) {
             let retry = format!(
                 "Your answer does not read as a decision: {why}. Answer again with ONLY the JSON \
                  object — action, summary, answer, confidence, and `on` for a wait — no prose."
@@ -213,6 +216,7 @@ mod tests {
         });
         ReadCase {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            integration: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -248,6 +252,7 @@ mod tests {
         });
         ReadCase {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            integration: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -291,6 +296,7 @@ mod tests {
         });
         ReadCase {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            integration: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -336,6 +342,7 @@ mod tests {
         });
         ReadCase {
             gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            integration: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
@@ -370,11 +377,63 @@ mod tests {
         });
         ReadCase {
             gh: Rc::clone(&closed) as Rc<dyn GitHub>,
+            integration: "main_agent".to_string(),
         }
         .run(&mut context)
         .await
         .expect("read");
         assert!(context.state.pr.is_none());
         assert_eq!(context.state.kind, "spec");
+    }
+
+    #[tokio::test]
+    async fn a_milestone_issue_reads_its_landing_pr_and_the_landing_actions() {
+        let gh = Rc::new(FakeGitHub {
+            prs: vec![(
+                "milestone/22-fiche-entite".to_string(),
+                Pr {
+                    num: "423".to_string(),
+                    head: "milestone/22-fiche-entite".to_string(),
+                    base: "main_agent".to_string(),
+                    state: "OPEN".to_string(),
+                    ..Pr::default()
+                },
+            )],
+            ..FakeGitHub::default()
+        });
+        let mut context = ctx(Issue {
+            number: 22,
+            title: "Fiche entite".to_string(),
+            labels: vec![labels::MILESTONE.to_string()],
+            body: "## Decision\n\nkind: review\nblocks: PR #423 still does not merge\nround: 1"
+                .to_string(),
+            ..Issue::default()
+        });
+        ReadCase {
+            gh: Rc::clone(&gh) as Rc<dyn GitHub>,
+            integration: "main_agent".to_string(),
+        }
+        .run(&mut context)
+        .await
+        .expect("read");
+        assert_eq!(context.state.kind, "review");
+        assert_eq!(
+            context.state.pr.as_ref().map(|p| p.num.as_str()),
+            Some("423")
+        );
+        let spliced = values(&context.state);
+        let get = |k: &str| {
+            spliced
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        };
+        assert!(
+            get("actions").contains("never `merge`"),
+            "{}",
+            get("actions")
+        );
+        assert_eq!(get("integration"), "main_agent");
     }
 }

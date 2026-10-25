@@ -20,6 +20,9 @@ pub struct Config {
     /// The human's prompt edits, read once per run — a stage sends
     /// `prompts.text(KEY, DEFAULT)` (see [`crate::prompts`]).
     pub prompts: std::rc::Rc<harness_core::domain::prompt_book::PromptBook>,
+    /// The integration branch: where the plan's graph is read, to tell a
+    /// contract the PR may evolve from one another milestone produces.
+    pub integration: String,
 }
 
 /// How many repairs a PR gets on the cheaper model before the stronger one
@@ -72,6 +75,7 @@ pub(crate) mod fake {
     pub fn in_dir(fix_dir: PathBuf) -> Config {
         Config {
             prompts: std::rc::Rc::default(),
+            integration: "main_agent".to_string(),
             fix_dir,
             fix: SessionSpec {
                 model: "sonnet".to_string(),

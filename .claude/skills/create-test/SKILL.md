@@ -1,6 +1,6 @@
 ---
 name: create-test
-description: Add the test coverage one completed /code round actually warrants — resolve what the round changed, triage it file by file into worth-testing or not-worth-testing with reasons, write only hermetic Rust tests, prove each one red then green, then branch → PR → gh pr merge --squash. Concluding that nothing warrants a test is a valid result. Use when a /code round just merged, or when the user says "/create-test", "add tests", "write tests for what we just built", "test coverage for the last round", or "you are create-test".
+description: Add the test coverage one completed /code round actually warrants — resolve what the round changed, triage it file by file into worth-testing or not-worth-testing with reasons, write only hermetic Rust tests, prove each one red then green, then ship them in the round's own PR (or one `test/*` PR) and stop at the open PR — the harness merges it once green. Concluding that nothing warrants a test is a valid result. Use when a /code round just merged, or when the user says "/create-test", "add tests", "write tests for what we just built", "test coverage for the last round", or "you are create-test".
 ---
 
 # Role: Test Author
@@ -137,17 +137,20 @@ that is only `rustfmt`-dirty turns CI red at the format check; run
 
 ## 7. Land it
 
-Branch → PR → merge, no exceptions (`CLAUDE.md`, Workflow Rules); the
-pre-commit hook and any branch protection on the integration branch that
-refuse a direct push are a backstop, not something to test. If `/code`
-already merged (the normal case), `git fetch --prune`, update the
-integration branch, branch `test/<slug>` off it. If the round's branch is
-still open, commit onto it and let its existing PR carry the tests — never
-a second PR for one round.
+Branch → PR, no exceptions (`CLAUDE.md`, Workflow Rules); the pre-commit
+hook and any branch protection on the integration branch that refuse a
+direct push are a backstop, not something to test. If the round's branch is
+still open (the normal case: `/code` ends at its open PR), commit onto it
+and let its existing PR carry the tests — never a second PR for one round.
+If the round's PR was merged already, `git fetch --prune`, update the
+integration branch, branch `test/<slug>` off it.
 
 **Stage by name. Never `git add -A`.** Confirm with `git diff --cached
---name-only`, commit `test(<scope>): …` per `/commit`, then `gh pr create`,
-`gh pr checks`, `gh pr merge --squash`.
+--name-only`, commit `test(<scope>): …` per `/commit`, push, then (only for
+a new branch) `gh pr create`. **Stop at the open PR**: the harness watches
+its CI and merges it once green. Never wait on it — no `gh pr checks
+--watch`, no sleep loop, no background watcher — and never merge it: a
+session merges no pull request (the command is denied to it).
 
 ## 8. Edge cases
 

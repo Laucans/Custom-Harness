@@ -24,6 +24,7 @@ pub struct Request {
 pub struct MilestoneMergeRun {
     gh: Rc<dyn GitHub>,
     base_branch: String,
+    repairing: Vec<u64>,
     milestone: u64,
 }
 
@@ -33,6 +34,7 @@ pub fn build(ports: &Ports, config: &Config, request: &Request) -> MilestoneMerg
     MilestoneMergeRun {
         gh: Rc::clone(&ports.gh),
         base_branch: config.base_branch.clone(),
+        repairing: config.repairing.clone(),
         milestone: request.milestone,
     }
 }
@@ -49,6 +51,7 @@ impl MilestoneMergeRun {
             },
             &Config {
                 base_branch: self.base_branch.clone(),
+                repairing: self.repairing.clone(),
             },
             self.milestone,
         )
