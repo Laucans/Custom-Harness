@@ -16,7 +16,7 @@ pub enum Read {
     /// The design stays inside the contract: nothing to raise.
     Holds,
     /// The design could not honour the contract, and this says where.
-    Open(Question),
+    Open(Box<Question>),
     /// The reply had no readable shape. Never read as `Open`: an invented
     /// question would pay an arbitration for nothing — nor as `Holds`
     /// silently: the publish says it in the journal.
@@ -33,7 +33,7 @@ pub fn read(text: &str) -> Read {
         .map(|value| value.trim().to_lowercase());
     match verdict.as_deref() {
         Some("holds") => Read::Holds,
-        Some("open") => Question::parse(text).map_or(Read::Unreadable, Read::Open),
+        Some("open") => Question::parse(text).map_or(Read::Unreadable, |q| Read::Open(Box::new(q))),
         _ => Read::Unreadable,
     }
 }

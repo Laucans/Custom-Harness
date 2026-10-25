@@ -228,6 +228,7 @@ Current contents:
 | `contest` | what a PR waits on, and a settled rules contest followed through — read from the board alone, so a restart reads the same waits back. `waiting`: a PR waits while an open `harness:rules` issue is titled `Rules contested: PR #<n>` (nothing written), while its latest contest is closed and no resumed marker follows it through (`PrWait::Settling` — the window before its base catches up, where a repair would be paid against the old test), or while an issue a decided `wait` named in a `<!-- harness-waits-on: #N -->` marker on the PR still blocks; `<!-- harness-resumed: #N -->` clears it. The router drops a waiting PR from the repairs, the merges and its task's decision; its review runs. `settled`: one page of closed `harness:rules` issues, then, for a contest of an open PR of the harness's cycle not marked resumed on it yet, whose base holds the settled rules (`changed_files(base, integration)` names neither `rules.json` nor `tests/rules/` — after the catch-up) — or a contest about a milestone branch (`Rules contested: … on milestone/<n>`) whose open branch still carries `CONTEST.md` written for that contest (every rule id the file names is in the contest's title or body) and holds the rules, no contest of the branch open — neither one about it nor one of a PR whose head it is. `resume`: `CONTEST.md` deleted through the contents API (`GitHub::delete_file`, a commit on GitHub, no checkout) on the PR's branch when its own diff added it — never a copy it took from its base — or on the milestone branch; with no lift of its own, a task PR's base merged into its head (`merge_branch`, GitHub's update-branch) so its checks run on the settled rules — a landing PR's head moves with its catch-up instead, and a base that does not merge is said in the comment; then the resumed marker on the PR, which counts its repairs anew (`review::repairs`), and `Resumed`. Idempotent: no file left, or a marker there. A settled contest resets the repairs, and so does a landed contract change (below). **A contract wait** (H2): a repair that stopped on a contract another milestone produces leaves `<!-- harness-waits-on-contract: #K -->` (`CONTRACT_WAIT`, `contract_wait_marker`) — `waiting` answers `PrWait::Contract` until a resumed marker for `#K` follows it, whatever `#K`'s state, so the window between the change closing and the PR's base taking it is still a wait. `contract_landed`: for each PR waiting on a contract, `#K` closed **and** the PR's base holds the manifest (`changed_files(base, integration)` names no manifest under `crates/<system>/…/<kebab(name)>/` — a change handed back changed none) → `ContractLanded`; `resume_contract` posts the resumed marker (the repairs counted anew) with the change's last comment quoted, so the next repair reads it on the PR, and poses `harness:pr-fix`. `waits_decided` counts the contract markers too: they count in `MAX_WAITS`. `held(gh, pr, comments)`: whether a PR waits as far as its own comments and the open contests say — what keeps `main_agent_merge` from escalating a landing PR past its repairs while it waits (that PR carries no label the router lists). |
 | `close_merged` | a task whose PR was merged into its milestone outside the merge train — a human, an old session's own merge (#463, #464 held #465) — closes. `due(gh, board, merged, branch, running)`: the open `harness:agent` tasks of a board, no lane on them, with a merged PR proving them — its `Closes #N` line (`delivery::closes`), or a title naming `#N` (`delivery::title_names`, never `#2480` for #248) **confirmed by the PR's head being the task's declared branch** (one `pr` read): a title alone proves nothing; a task whose comments carry the merged note already is left (told once, never re-closed after a human reopens it). `close_delivered`: the PR's body given its `Closes #N` (`delivery::with_closes`) when it lacked it — so the landing's `every_task_merged` reads the same proof — then `close`, the tail the merge train shares (`review-pending` / `needs-decision` off, `delivery::merged_note`, close). Routed as the free `Route::CloseMerged`. |
 | `contract_ask` | a contract change asked by a session that stopped on it — the dev loop's code session or a PR's repair, one path. `ask(gh, requester, (id, need), integration, log)`: `Asked::TasksOwn(why)` for an aggregate or a contract of the requester's own milestone (the caller answers; nothing opened); `Asked::Existing(k)` when an open `harness:contract-change` issue already asks the same id — matched on `Request::parse(body).id`, whoever asked it, so a task PR and its landing PR never make the manager evolve one contract twice; else `Asked::Opened(k)` (label created on a board lacking it, `ContractChangeAsked`). A task requester gets `## Decision` (`kind: contract`) and a blocker on `#k`; a milestone requester (its landing PR's repair) neither — its blockers are its split's. **A landed producer's contract is not the requester's own**: `contracts-untouched` refuses a consumer editing a landed manifest (#482); the manager opens the producer task under the requester's milestone. |
+| `missing_task` | the tasks the plan lacks, opened — one opener for the loop's stop handler (`dev_loop::action::stop`) and `decide`'s `task` approval (V, #219: four approvals in words opened nothing). `open_or_find(gh, number, milestone, items, log)`: each slice opened with split's renderer under the milestone (`## Scope` with its `branch:` and a line back to the waiting task, `id:` under `unit:`), or found among the milestone's sub-issues (`missing::is_the_same`: same title, same `branch:`, or same id not started); the tasks to wait on, each once. `block_on(gh, number, on)`: a blocker on each, written once. |
 | `branch_sync` | (pure) whether a decision tells a session to sync a branch itself: `prescribed(text, integration, own)` — the first clause (line, sentence, `;` part) with a sync verb (merge, pull, rebase, cherry-pick, catch up, up to date) and the integration branch as a whole token (bare or `origin/…`), or a `push` to a `milestone/*` branch. The verbs are whole words in their imperative or present form (`merged`, `pull request`, `merge train`, a bare `is up to date` describe, they prescribe nothing). Never caught: the PR's **own base** merged into it (for a landing PR the integration branch is its base), a push whose target — the first `milestone/*` branch within a few words after `push` — is the PR's own head (its base pushed to is caught; its base named as a merge source before the push is no target), a verb negated **just before it** (`not`, `never`, `don't`… within three words) or whose subject is the harness (within two words). A negation or the harness elsewhere in the clause clears nothing (`merge origin/main_agent into milestone/24, no other change` is caught). `decide` refuses an `answer` or a `repair` that holds one (`decision::parse`). |
 | `fake_github` | `#[cfg(test)]` — an in-memory `GitHub` shared by the workflows' tests. A fake adapter, not a mock. |
 | `fake_git` | `#[cfg(test)]` — an in-memory `Repos`: every verb recorded, the ones named failing fail, a merge conflicting on the files a test names (`FakeRepos::conflicting`). |
@@ -488,21 +489,54 @@ either: `AGENT_LOOP_STOP: task <slice JSON>` carries one slice, `tasks
 in one stop; `missing::asked_all`, at most `MAX_SLICES` (8), one title
 once), each in `split`'s own shape (`split::data::plan::TaskItem`), read by
 `dev_loop::data::missing` and judged by split's `spec_gaps` plus a unit, a
-system, a `produces` and a `<type>/<slug>` branch. `stop` opens it with
-split's renderer (`split::action::publish::body_and_labels`) — `## Scope`
+system, a `produces` (none needed for `infrastructure` or `tooling`, which
+ship no manifest id) and a `<type>/<slug>` branch. A unit outside
+`Unit::ALL` that a well-known spelling names — `server-fixtures`,
+`fixtures`, `seed-data`, `plumbing` (`missing::aliased`) — is read as
+`infrastructure`, the write side, and the opened task's brief says so (V,
+#219: a `server-fixtures` slice was dropped in silence). `stop` opens it
+through `common::missing_task::open_or_find` — the one opener `decide`'s
+approval uses too — with split's renderer
+(`split::action::publish::body_and_labels`) — `## Scope`
 with its `branch:` and a line back to the stopped task, `## Architecture`
 with `id:` (its first `produces`), `## Business Goal`, `## Acceptance
 Criteria`, `harness:agent` + `harness:ready` + its side (write side with
 `harness:data-layer`) — as a sub-issue of the task's milestone, or reuses the
 open `harness:agent` sub-issue of that milestone with the same title — or
 the same id while that one has not started (no `review-pending`, not
-`waiting-merge`: two changes to one unit are two tasks, #448/#473) — then
-parks the task on all of them at once (one blocker each, `kind: wait`,
+`waiting-merge`: two changes to one unit are two tasks, #448/#473), or the
+same `branch:` (one branch, one task, whatever its title) — never
+reopens a slice whose `branch:` a closed sibling carries
+(`missing::built_already`: landed, or closed by a person — one branch is
+one feature): it is refused back like a slice declared wrong ("#N built
+`feat/x` already (closed): build on it, or declare a new branch"), a
+round — then parks the task on all of them at once (one blocker each, `kind: wait`,
 `wait — until #a, #b land`, `TaskWaits` each), with or without a human
 gate. No session writes the SPEC: the stop carries it.
-The slices that are not whole, or a task with no milestone, open one
-`harness:human` "Missing task for #N" listing them, blocking the task — or,
-without a human gate, a decision asked only when nothing could be opened. Routed right after the rules' task,
+**Nothing declared is dropped in silence** (V): a slice declared wrong — a
+unit no key names, a field missing, JSON that does not read
+(`missing::Asked::Refused`) — is refused back to the session: a comment on
+the task names each slice and why (an unknown unit lists every key of
+`Unit::ALL`), and the task's `## Decision` says it too — `kind: wait` with
+the note under it when other slices were opened, else `kind: refused`
+(`decided-by: harness`, a round: the next stop counts it) — so the next
+session, whose code prompt lists the unit keys and reads a `refused`
+decision as "declare them again, fixed", re-declares instead of looping.
+Declared wrong `HUMAN_AT_ROUND` times, or only a person's (`needs_human`),
+or with no milestone, a slice opens one `harness:human` "Missing task for
+#N" listing them, blocking the task — or, without a human gate, a decision
+asked only when nothing could be opened, with `milestone:`, `declared:`
+(the slices' branches, or for a slice with none a comma-free slug of its
+words and a hash of them, `missing::key_of`) and the stop whole quoted
+under it; beside opened slices it is said in the note, asked again once
+they land. The same `declared:` keys stopped on again after `decide`
+ruled on them (`decided-by: ai`) are no new fact: no second decision —
+back to the session with the ruling quoted, and the `kind: refused`
+written then carries it (`ruled:`, `ruled-at:`), so every identical stop
+after it is refused on the same ruling, never decided again. Past
+`RULING_RESENT_MAX` (2) such refusals the next identical stop opens a
+"Missing task" `harness:human` task, gate or none: a session that ignores
+a ruling is no decision to pay for again. Routed right after the rules' task,
 before any work it unblocks; a task carrying the label is not runnable.
 State `DecideState`; `remaining` 1; core's `Round<S>`; stages `context`
 (reads the issue, its `## Decision`, its comments, the task's PR and review,
@@ -511,7 +545,19 @@ then takes the label — one label, one decision), `decide` (opus: `answer`,
 `wait` — `on: N`, a blocker on #N written once and a
 `<!-- harness-waits-on: #N -->` marker on the PR, so the PR waits whatever
 board the router reads (`common::contest::waiting`), no label calling
-`decide` again, no blocker on a milestone — or `cut`; the scope,
+`decide` again, no blocker on a milestone — `task` — the missing tasks a
+stop declared, approved: `tasks`, whole slices by the stop handler's own
+measure (`missing::judged`, the unit aliases included), opened under the
+question's `milestone:` by `common::missing_task::open_or_find` (found, not
+reopened, when decided twice; a slice a closed sibling built is not opened,
+said under the decision and in its comment) and the task blocked on them
+(`missing_task::block_on`); offered only for a `kind: stop` question with
+`declared:` keys and a milestone, no PR (`Scope::milestone`), and an
+`answer` there that approves a task in words does not parse — #219's four
+"the fixtures task is approved" answers opened nothing; only an approval of
+a task, clause by clause (`task is approved`, `task approval`, `approve the
+… task`), never a denial nor an approval of something else beside a task —
+or `cut`; the scope,
 `decision::Scope`: a PR into the integration branch that is not the rules'
 task's — a landing PR — is never `merge`d nor `cut`, and an `answer` or a
 `repair` that tells a session to merge, pull, rebase or catch up the

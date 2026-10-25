@@ -35,8 +35,17 @@
 //! renderer, a full SPEC, `harness:agent` and `harness:ready` — as a
 //! sub-issue of the milestone, or finds it among the milestone's open
 //! agent tasks when a stop named it already, and parks the task on it as on
-//! any wait. A slice the harness cannot write safely goes to a person
-//! (`harness:human`, blocking), or, without a human gate, asks a decision.
+//! any wait. Nothing declared is dropped in silence: a slice declared wrong
+//! is refused back to the session — a comment and the `## Decision` say
+//! which and why, the unit keys listed — and the next session re-declares
+//! it; one only a person can do, or declared wrong three times, goes to a
+//! person (`harness:human`, blocking), or, without a human gate, asks a
+//! decision once — `decide`'s `task` answer opens it through the same
+//! opener (`common::missing_task`). The refusals that follow a ruling carry
+//! it (`ruled:`), so the same declaration never pays a second decision; a
+//! session that declares it again past [`RULING_RESENT_MAX`] refusals goes
+//! to a person, gate or none. A slice whose branch a closed task built is
+//! never opened again — one branch is one feature — and is refused back.
 //!
 //! A halt of any other kind — a gate that refused, an unreadable input — is
 //! not a decision to take, and goes on as it was.
@@ -50,12 +59,11 @@ use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
 use crate::common::decision::Question;
-use crate::common::{contract_ask, labels, sections};
+use crate::common::{contract_ask, labels, missing_task, sections};
 use crate::contract_manager::data::request as contract;
 use crate::dev_loop::data::missing::{self, Asked};
 use crate::dev_loop::data::state::Loop;
 use crate::dev_loop::data::{tasks, waits};
-use crate::split::action::publish::body_and_labels;
 
 /// Whether a stop's reason asks for a decision in so many words.
 #[must_use]
@@ -116,6 +124,130 @@ fn one_line(reason: &str) -> String {
     line.chars().take(REASON_MAX).collect()
 }
 
+/// The `## Decision` section: the question, then `extra` — words for the
+/// next session or the decision — under it.
+fn with_extra(question: &Question, extra: &str) -> String {
+    if extra.is_empty() {
+        question.render()
+    } else {
+        format!("{}\n\n{extra}", question.render())
+    }
+}
+
+/// What a stop declared, sorted by what becomes of it.
+struct Sorted {
+    /// Whole slices, to open under the milestone.
+    writable: Vec<crate::split::data::plan::TaskItem>,
+    /// Slices refused back to the session: title, why.
+    unopened: Vec<(String, String)>,
+    /// Slices a person must open, or decide on: what was said, why.
+    personal: Vec<(String, String)>,
+}
+
+/// Sorts a stop's slices: whole ones to open (with a milestone to open
+/// under), wrong ones refused back to the session — a person's once
+/// declared wrong [`HUMAN_AT_ROUND`] times — and a person's own.
+fn sorted(asked: Vec<Asked>, milestone: Option<u64>, round: u32) -> Sorted {
+    let mut found = Sorted {
+        writable: Vec::new(),
+        unopened: Vec::new(),
+        personal: Vec::new(),
+    };
+    for one in asked {
+        match (one, milestone) {
+            (Asked::Task(item), Some(_)) => found.writable.push(*item),
+            (Asked::Task(item), None) => found.personal.push((
+                item.title.clone(),
+                "the task's milestone is not known, so the missing task would belong to none"
+                    .to_string(),
+            )),
+            (Asked::Refused { said, why, .. }, _) if round >= HUMAN_AT_ROUND => {
+                found.personal.push((
+                    said,
+                    format!("{why} — declared wrong {round} times, the session cannot fix it"),
+                ));
+            }
+            (Asked::Refused { title, why, .. }, _) => found.unopened.push((title, why)),
+            (Asked::Unwritable { said, why }, _) => found.personal.push((said, why)),
+        }
+    }
+    found
+}
+
+/// A ruling `decide` gave on a declaration: its verdict, and its round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Ruling {
+    /// What `decide` decided.
+    verdict: String,
+    /// The round it decided at.
+    at: u32,
+}
+
+/// The most times a ruling goes back to a session that declares the same
+/// tasks again; the next identical stop is a person's, gate or none — a
+/// session that ignores a ruling is no decision to pay for again.
+const RULING_RESENT_MAX: u32 = 2;
+
+/// What `decide` ruled on these very slices: the task's last `## Decision`
+/// is its answer to the same declaration, or a refusal that carried that
+/// answer back to the session.
+fn ruled_on(previous: Option<&Question>, declared: &[String]) -> Option<Ruling> {
+    let q = previous.filter(|q| !q.declared.is_empty() && q.declared == declared)?;
+    if q.decided_by.as_deref() == Some("ai") {
+        return Some(Ruling {
+            verdict: q.verdict.clone().unwrap_or_default(),
+            at: q.round,
+        });
+    }
+    q.ruled.clone().map(|verdict| Ruling {
+        verdict,
+        at: q.ruled_at.unwrap_or(q.round),
+    })
+}
+
+/// The note, then the stop whole, quoted, for the decision to read the
+/// slices from.
+fn with_the_stop(note: &str, whole: &str) -> String {
+    let quoted: Vec<String> = whole.lines().map(|line| format!("> {line}")).collect();
+    format!(
+        "{note}{}The stop, whole:\n\n{}",
+        if note.is_empty() { "" } else { "\n\n" },
+        quoted.join("\n")
+    )
+}
+
+/// The issues waited on, as a sentence names them: `#1, #2`.
+fn waited(on: &[u64]) -> String {
+    on.iter()
+        .map(|n| format!("#{n}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What the session is told of the declared tasks the harness did not
+/// open, one line each — its title and why — or nothing when all were.
+fn refusal_note(unopened: &[(String, String)]) -> String {
+    if unopened.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = unopened
+        .iter()
+        .map(|(title, why)| {
+            format!(
+                "- \"{title}\": {}",
+                why.split_whitespace().collect::<Vec<_>>().join(" ")
+            )
+        })
+        .collect();
+    format!(
+        "**Declared tasks the harness did not open** — declare each again, fixed, in one \
+         `AGENT_LOOP_STOP: tasks [...]` (the unit one of: {}), or build on without it if it \
+         is not missing after all:\n\n{}",
+        missing::unit_keys(),
+        lines.join("\n")
+    )
+}
+
 /// Hands a stopped task over: a decision asked, or a human task opened.
 pub struct RaiseDecision {
     /// What reads the task and writes its decision.
@@ -146,13 +278,15 @@ impl RaiseDecision {
         };
         let reason = one_line(halt.reason());
         // Whole, not cut: a missing task's slice is longer than a question.
-        let task_asked = missing::asked_all(halt.reason());
+        let whole = halt.reason().to_string();
+        let task_asked = missing::asked_all(&whole);
         let issue = self.gh.issue(number).await?;
-        let asked = sections::parse(&issue.body)
+        let previous = sections::parse(&issue.body)
             .get(sections::DECISION)
             .and_then(|text| Question::parse(text));
-        let round = asked.map_or(1, |q| match q.kind.as_deref() {
-            Some("stop" | "breaker") => q.round.saturating_add(1),
+        let round = previous.as_ref().map_or(1, |q| match q.kind.as_deref() {
+            // A refusal sent the session back to declare again: a round.
+            Some("stop" | "breaker" | "refused") => q.round.saturating_add(1),
             // A wait decided nothing: the round it kept is this stop's, so
             // the third stop still goes to a human.
             Some("wait") => q.round,
@@ -191,11 +325,19 @@ impl RaiseDecision {
                 self.contract_answered(ctx, number, &issue.body, &id, &need, &why)
                     .await?;
             }
-        } else if let Some(asked) = task_asked {
+        } else if let Some(declared) = task_asked {
             // A missing task is the harness's own work, with or without a
             // human gate: it opens it, and the task waits on it.
-            self.missing_task(ctx, &issue, asked, round, &reason)
-                .await?;
+            self.missing_task(
+                ctx,
+                &issue,
+                declared,
+                previous.as_ref(),
+                round,
+                &reason,
+                &whole,
+            )
+            .await?;
         } else if let Some(port) = port {
             self.port_to_approve(ctx, number, &issue.title, &issue.body, port)
                 .await?;
@@ -214,7 +356,7 @@ impl RaiseDecision {
             // which is no issue a dependency can point at) is no wait: the
             // stop asks a decision as before, the round is not lost.
             if let Err(refused) = self
-                .wait_for(ctx, number, &issue.body, &[on], round, &reason)
+                .wait_for(ctx, number, &issue.body, &[on], round, &reason, "")
                 .await
             {
                 ctx.traces.warn(&format!(
@@ -251,11 +393,27 @@ impl RaiseDecision {
             round,
             ..Question::default()
         };
-        let body = sections::replace(body, &[(sections::DECISION, &question.render())]);
+        self.write_asked(ctx, number, body, &question, "").await
+    }
+
+    /// Writes `question`, `extra` under it, as the task's `## Decision`, and
+    /// asks `decide` for an answer at the next tick.
+    async fn write_asked(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        body: &str,
+        question: &Question,
+        extra: &str,
+    ) -> Outcome<()> {
+        let body = sections::replace(body, &[(sections::DECISION, &with_extra(question, extra))]);
         self.gh.set_body(number, &body).await?;
         self.gh.add_label(number, labels::NEEDS_DECISION).await?;
         ctx.traces.say(&format!(
-            "#{number}: the session stopped ({kind}, round {round}) — a decision is asked: {reason}"
+            "#{number}: the session stopped ({}, round {}) — a decision is asked: {}",
+            question.kind.as_deref().unwrap_or("stop"),
+            question.round,
+            question.blocks
         ));
         Ok(())
     }
@@ -293,8 +451,9 @@ impl RaiseDecision {
 
     /// Parks the task until every issue of `on` lands: a GitHub blocker
     /// each, written once, the stop kept under `## Decision` (`kind: wait`,
-    /// carrying `round` so the stops decided before it still count), and
-    /// nothing to decide.
+    /// carrying `round` so the stops decided before it still count), `extra`
+    /// under it, and nothing to decide.
+    #[allow(clippy::too_many_arguments)] // The stop, and what it waits on.
     async fn wait_for(
         &self,
         ctx: &Context<Loop>,
@@ -303,13 +462,9 @@ impl RaiseDecision {
         on: &[u64],
         round: u32,
         reason: &str,
+        extra: &str,
     ) -> Outcome<()> {
-        let blocked_by = self.gh.blocked_by(number).await?;
-        for blocker in on {
-            if !blocked_by.iter().any(|known| known.number == *blocker) {
-                self.gh.add_blocked_by(number, *blocker).await?;
-            }
-        }
+        missing_task::block_on(self.gh.as_ref(), number, on).await?;
         let named: Vec<String> = on.iter().map(|n| format!("#{n}")).collect();
         let question = Question {
             kind: Some("wait".to_string()),
@@ -323,7 +478,7 @@ impl RaiseDecision {
             )),
             ..Question::default()
         };
-        let kept = sections::replace(body, &[(sections::DECISION, &question.render())]);
+        let kept = sections::replace(body, &[(sections::DECISION, &with_extra(&question, extra))]);
         self.gh.set_body(number, &kept).await?;
         for blocker in on {
             ctx.traces.event(&Event::TaskWaits {
@@ -415,122 +570,214 @@ impl RaiseDecision {
 
     /// The missing tasks a stop named: each opened under the milestone — or
     /// found there, named by an earlier stop — and the task parked on all of
-    /// them, in one round. What the harness cannot write goes to a person in
-    /// one task listing them all, or, without a human gate, is asked as a
-    /// decision when nothing could be opened — otherwise its words stay in
-    /// the `## Decision` the wait keeps, and the next stop asks it again.
+    /// them, in one round. Nothing declared is dropped in silence:
+    ///
+    /// - a slice declared wrong, or whose branch a closed task built
+    ///   already, is refused back to the session — a comment and the task's
+    ///   `## Decision` say which and why, and the next session re-declares
+    ///   it — until it is asked [`HUMAN_AT_ROUND`] times;
+    /// - one only a person can do, or refused that often, goes to a person
+    ///   in one task listing them all, or, without a human gate, is asked as
+    ///   a decision when nothing could be opened — once: the same
+    ///   declaration again after `decide` ruled on it is no new fact, and
+    ///   goes back to the session with the ruling, which every refusal
+    ///   carries; [`RULING_RESENT_MAX`] times, then it is a person's.
+    #[allow(clippy::too_many_arguments)] // The stop, as on_halt read it.
     async fn missing_task(
         &self,
         ctx: &Context<Loop>,
         issue: &Issue,
         asked: Vec<Asked>,
+        previous: Option<&Question>,
         round: u32,
         reason: &str,
+        whole: &str,
     ) -> Outcome<()> {
         let number = issue.number;
         let milestone = ctx.state.milestone.number.parse::<u64>().ok();
-        let mut writable = Vec::new();
-        let mut unwritable: Vec<(String, String)> = Vec::new();
-        for one in asked {
-            match (one, milestone) {
-                (Asked::Task(item), Some(_)) => writable.push(*item),
-                (Asked::Task(item), None) => unwritable.push((
-                    item.title.clone(),
-                    "the task's milestone is not known, so the missing task would belong to none"
-                        .to_string(),
+        let declared = missing::declared(&asked);
+        let ruled = ruled_on(previous, &declared);
+        let Sorted {
+            writable,
+            mut unopened,
+            mut personal,
+        } = sorted(asked, milestone, round);
+        let found = match milestone {
+            Some(milestone) => {
+                missing_task::open_or_find(
+                    self.gh.as_ref(),
+                    number,
+                    milestone,
+                    &writable,
+                    &ctx.traces,
+                )
+                .await?
+            }
+            None => missing_task::Found::default(),
+        };
+        let on = found.on;
+        // Built already is declared wrong: a round, and a person's at the
+        // third, as any refusal.
+        for (title, why) in found.built {
+            if round >= HUMAN_AT_ROUND {
+                personal.push((
+                    title,
+                    format!("{why} — declared {round} times, the session cannot fix it"),
+                ));
+            } else {
+                unopened.push((title, why));
+            }
+        }
+        let (asks, carried) = self
+            .personal(ctx, issue, personal, ruled, round, &on, &mut unopened)
+            .await?;
+        let note = refusal_note(&unopened);
+        self.say_unopened(ctx, number, &unopened, &note).await?;
+        if !on.is_empty() {
+            // The wait keeps the stop's whole reason, and what was not
+            // opened in words: the next stop declares it again.
+            self.wait_for(ctx, number, &issue.body, &on, round, reason, &note)
+                .await
+        } else if asks {
+            let question = Question {
+                kind: Some("stop".to_string()),
+                blocks: reason.to_string(),
+                round,
+                milestone,
+                declared,
+                ..Question::default()
+            };
+            let extra = with_the_stop(&note, whole);
+            self.write_asked(ctx, number, &issue.body, &question, &extra)
+                .await
+        } else if !unopened.is_empty() {
+            let (ruled, ruled_at) = carried.map_or((None, None), |ruling| {
+                (Some(ruling.verdict), Some(ruling.at))
+            });
+            let question = Question {
+                kind: Some("refused".to_string()),
+                blocks: reason.to_string(),
+                round,
+                decided_by: Some("harness".to_string()),
+                verdict: Some(format!(
+                    "refused — re-declare {} declared task{}, as said below",
+                    unopened.len(),
+                    if unopened.len() == 1 { "" } else { "s" }
                 )),
-                (Asked::Unwritable { said, why }, _) => unwritable.push((said, why)),
-            }
+                declared,
+                ruled,
+                ruled_at,
+                ..Question::default()
+            };
+            let body = sections::replace(
+                &issue.body,
+                &[(sections::DECISION, &with_extra(&question, &note))],
+            );
+            self.gh.set_body(number, &body).await
+        } else {
+            Ok(())
         }
-        let mut on: Vec<u64> = Vec::new();
-        if let Some(milestone) = milestone
-            && !writable.is_empty()
-        {
-            let siblings = self.gh.sub_issues(milestone).await?;
-            for item in &writable {
-                let found = siblings.iter().find(|sibling| {
-                    sibling.number != number && missing::is_the_same(sibling, item)
-                });
-                let task = if let Some(found) = found {
-                    ctx.traces.say(&format!(
-                        "#{number}: the missing task is #{} already — parked on it",
-                        found.number
-                    ));
-                    found.number
-                } else {
-                    let opened = self.open_missing(number, milestone, item).await?;
-                    ctx.traces.say(&format!(
-                        "#{number}: opened #{opened} for the missing task ({}) under milestone \
-                         #{milestone}",
-                        item.title
-                    ));
-                    opened
-                };
-                if !on.contains(&task) {
-                    on.push(task);
-                }
-            }
+    }
+
+    /// What becomes of the slices only a person can do, or refused too
+    /// often: a person's task with a human gate; without, a decision asked
+    /// when nothing was opened (`true`), or the ruling already given sent
+    /// back (the ruling, carried), or said in the note beside the opened
+    /// ones — and a person's once the ruling was ignored too often.
+    #[allow(clippy::too_many_arguments)] // The sorted stop, as missing_task holds it.
+    async fn personal(
+        &self,
+        ctx: &Context<Loop>,
+        issue: &Issue,
+        personal: Vec<(String, String)>,
+        ruled: Option<Ruling>,
+        round: u32,
+        on: &[u64],
+        unopened: &mut Vec<(String, String)>,
+    ) -> Outcome<(bool, Option<Ruling>)> {
+        if personal.is_empty() {
+            return Ok((false, None));
         }
-        if !unwritable.is_empty() && (!self.autonomous || on.is_empty()) {
-            self.unwritable(ctx, issue, &unwritable, round, reason)
-                .await?;
+        if !self.autonomous {
+            self.unwritable(ctx, issue, &personal).await?;
+            return Ok((false, None));
+        }
+        let Some(ruling) = ruled else {
             if on.is_empty() {
-                return Ok(());
+                return Ok((true, None));
             }
+            let landing = waited(on);
+            unopened.extend(personal.into_iter().map(|(said, why)| {
+                (
+                    missing::title_of(&said),
+                    format!("{why} — asked again once {landing} land"),
+                )
+            }));
+            return Ok((false, None));
+        };
+        let again = round.saturating_sub(ruling.at);
+        if again > RULING_RESENT_MAX {
+            let ignored: Vec<(String, String)> = personal
+                .into_iter()
+                .map(|(said, why)| {
+                    (
+                        said,
+                        format!(
+                            "{why} — declared again {again} times after the harness decided: {}",
+                            ruling.verdict
+                        ),
+                    )
+                })
+                .collect();
+            self.unwritable(ctx, issue, &ignored).await?;
+            return Ok((false, None));
         }
-        if on.is_empty() {
+        unopened.extend(personal.into_iter().map(|(said, why)| {
+            (
+                missing::title_of(&said),
+                format!(
+                    "{why} — the harness decided on it already: {}",
+                    ruling.verdict
+                ),
+            )
+        }));
+        Ok((false, Some(ruling)))
+    }
+
+    /// Says, in the journal and in a comment on the task, each declared
+    /// task the harness did not open, and why.
+    async fn say_unopened(
+        &self,
+        ctx: &Context<Loop>,
+        number: u64,
+        unopened: &[(String, String)],
+        note: &str,
+    ) -> Outcome<()> {
+        if unopened.is_empty() {
             return Ok(());
         }
-        // The wait keeps the stop's whole reason, the unwritable slices'
-        // words included: the next stop asks them again.
-        self.wait_for(ctx, number, &issue.body, &on, round, reason)
+        for (title, why) in unopened {
+            ctx.traces.warn(&format!(
+                "#{number}: the declared task \"{title}\" is not opened — {why}"
+            ));
+        }
+        self.gh
+            .post_issue_comment(
+                number,
+                &format!("{note}\n\nThe next session of #{number} reads this under `## Decision`."),
+            )
             .await
     }
 
-    /// Opens the missing task: split's body and labels, its `id:`, and a
-    /// line back to the task that stopped on it.
-    async fn open_missing(
-        &self,
-        number: u64,
-        milestone: u64,
-        item: &crate::split::data::plan::TaskItem,
-    ) -> Outcome<u64> {
-        let mut item = item.clone();
-        item.brief = format!(
-            "{}\n\nOpened by the harness for #{number}, whose session stopped on it: #{number} \
-             waits on this task.",
-            item.brief.trim()
-        );
-        let declaration = item.declaration();
-        let (body, labels) =
-            body_and_labels(&item, &declaration, labels::AGENT, declaration.side());
-        let rendered = declaration.render();
-        let body = missing::id(&item).map_or_else(
-            || body.clone(),
-            |id| body.replacen(&rendered, &missing::with_id(&rendered, id), 1),
-        );
-        let opened = self.gh.create_issue(&item.title, &body, &labels).await?;
-        self.gh.create_sub_issue_link(milestone, opened).await?;
-        Ok(opened)
-    }
-
     /// The missing tasks with no SPEC to write: a person's to open, in one
-    /// task blocking the stopped one — or, without a human gate, a decision
-    /// asked.
+    /// task blocking the stopped one.
     async fn unwritable(
         &self,
         ctx: &Context<Loop>,
         issue: &Issue,
         unwritable: &[(String, String)],
-        round: u32,
-        reason: &str,
     ) -> Outcome<()> {
         let number = issue.number;
-        if self.autonomous {
-            return self
-                .ask(ctx, number, &issue.body, "stop", round, reason)
-                .await;
-        }
         let listed: Vec<String> = unwritable
             .iter()
             .map(|(said, why)| format!("- {why}:\n\n  > {said}"))
@@ -1691,20 +1938,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_missing_task_with_no_spec_to_write_goes_to_a_person() {
+    async fn a_slice_declared_wrong_is_refused_to_the_session_then_goes_to_a_person() {
         let vague = || {
             Halt::Halted(
                 "AGENT_LOOP_STOP: task the BattlemapInstance projection (/code)".to_string(),
             )
         };
-        let first = gh("## Scope\n\nbranch: feat/pay\n\npay");
-        let mut context = ctx(false);
-        raise(&first, false)
-            .on_halt(&mut context, vague())
+        // Round 1, gate or none: refused back to the session, loudly.
+        for autonomous in [false, true] {
+            let first = gh("## Scope\n\nbranch: feat/pay\n\npay");
+            let mut context = ctx(false);
+            raise(&first, autonomous)
+                .on_halt(&mut context, vague())
+                .await
+                .expect("handed over");
+            assert!(context.state.handed_over);
+            let writes = first.writes();
+            assert!(created(&writes).is_empty(), "nobody asked: {writes:?}");
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::Label(..) | Wrote::BlockedByLink(..)))
+            );
+            assert!(
+                writes.iter().any(|w| matches!(w, Wrote::Comment(11, said)
+                    if said.contains("- \"the BattlemapInstance projection (/code)\": the stop \
+                                      carries no slice that reads")
+                    && said.contains("reads this under `## Decision`"))),
+                "{writes:?}"
+            );
+            let refused = decision_of(&writes);
+            assert_eq!(refused.kind.as_deref(), Some("refused"));
+            assert_eq!(refused.round, 1);
+            assert_eq!(refused.decided_by.as_deref(), Some("harness"));
+            assert_eq!(
+                refused.verdict.as_deref(),
+                Some("refused — re-declare 1 declared task, as said below")
+            );
+            assert_eq!(
+                refused.declared,
+                [missing::key_of("the BattlemapInstance projection (/code)")]
+            );
+        }
+
+        // Refused twice already: the third is a person's.
+        let twice = "## Scope\n\nbranch: feat/pay\n\npay\n\n## Decision\n\nkind: refused\nblocks: \
+                     x\nround: 2\ndecided-by: harness\nverdict: refused";
+        let third = gh(twice);
+        raise(&third, false)
+            .on_halt(&mut ctx(false), vague())
             .await
             .expect("handed over");
-        assert!(context.state.handed_over);
-        let writes = first.writes();
+        let writes = third.writes();
         let opened = created(&writes);
         assert_eq!(opened.len(), 1, "{writes:?}");
         let (title, body, labels) = &opened[0];
@@ -1718,6 +2003,7 @@ mod tests {
             body.contains("could not open it itself:\n\n- the stop carries no slice that reads"),
             "says why: {body}"
         );
+        assert!(body.contains("declared wrong 3 times"), "{body}");
         assert!(
             body.contains("> the BattlemapInstance projection"),
             "{body}"
@@ -1726,8 +2012,9 @@ mod tests {
         assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
         assert!(!writes.iter().any(|w| matches!(w, Wrote::Body(..))));
 
-        // Without a human gate, nobody would come: a decision is asked.
-        let free = gh("pay");
+        // Without a human gate, nobody would come: a decision is asked, with
+        // the milestone, the declaration and the stop whole.
+        let free = gh(twice);
         raise(&free, true)
             .on_halt(&mut ctx(false), vague())
             .await
@@ -1735,9 +2022,24 @@ mod tests {
         let writes = free.writes();
         assert!(created(&writes).is_empty(), "{writes:?}");
         assert!(writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
-        assert_eq!(decision_of(&writes).kind.as_deref(), Some("stop"));
+        let asked = decision_of(&writes);
+        assert_eq!(asked.kind.as_deref(), Some("stop"));
+        assert_eq!(asked.round, 3);
+        assert_eq!(asked.milestone, Some(4));
+        assert_eq!(
+            asked.declared,
+            [missing::key_of("the BattlemapInstance projection (/code)")]
+        );
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Body(11, body)
+                if body.contains("The stop, whole:\n\n> AGENT_LOOP_STOP: task the \
+                                   BattlemapInstance projection (/code)"))),
+            "{writes:?}"
+        );
+    }
 
-        // A whole slice with no milestone to belong to is no task either.
+    #[tokio::test]
+    async fn a_whole_slice_with_no_milestone_to_belong_to_goes_to_a_person() {
         let lone = gh("pay");
         let mut orphan = ctx(false);
         orphan.state.milestone.number = String::new();
@@ -1841,32 +2143,418 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_mixed_stop_opens_the_writable_and_hands_the_rest_to_a_person() {
-        let gated = gh("## Scope\n\nbranch: feat/pay\n\npay");
-        raise(&gated, false)
-            .on_halt(&mut ctx(false), many(&["Unit A", ""]))
+    async fn a_mixed_stop_opens_the_writable_and_refuses_the_rest_out_loud() {
+        for autonomous in [false, true] {
+            let gh = gh("## Scope\n\nbranch: feat/pay\n\npay");
+            raise(&gh, autonomous)
+                .on_halt(&mut ctx(false), many(&["Unit A", ""]))
+                .await
+                .expect("handed over");
+            let writes = gh.writes();
+            let opened = created(&writes);
+            assert_eq!(
+                opened.len(),
+                1,
+                "no person for a slice to re-declare: {writes:?}"
+            );
+            assert_eq!(opened[0].0, "Unit A");
+            assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
+            assert!(!writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+            let wait = decision_of(&writes);
+            assert_eq!(wait.kind.as_deref(), Some("wait"));
+            assert!(
+                writes.iter().any(|w| matches!(w, Wrote::Body(11, body)
+                    if body.contains("**Declared tasks the harness did not open**")
+                    && body.contains("- \"half a slice\": a slice that does not read"))),
+                "{writes:?}"
+            );
+            assert!(
+                writes.iter().any(
+                    |w| matches!(w, Wrote::Comment(11, said) if said.contains("half a slice"))
+                ),
+                "{writes:?}"
+            );
+        }
+    }
+
+    // --- #219, 2026-10-25: a slice dropped, a decision that opened nothing --
+
+    const STOP_219_ROUND_1: &str = include_str!("../../../tests/fixtures/stop-219-round-1.txt");
+    const STOP_219_ROUND_2: &str = include_str!("../../../tests/fixtures/stop-219-round-2.txt");
+
+    #[tokio::test]
+    async fn the_two_stops_of_219_open_both_slices_and_park_on_both() {
+        for (stop, fixtures) in [
+            (STOP_219_ROUND_1, "plumbing"),
+            (STOP_219_ROUND_2, "server-fixtures"),
+        ] {
+            for autonomous in [false, true] {
+                let gh = gh("## Scope\n\nbranch: feat/preparation-seance\n\nprepare");
+                raise(&gh, autonomous)
+                    .on_halt(&mut ctx(false), Halt::Halted(stop.trim().to_string()))
+                    .await
+                    .expect("handed over");
+                let writes = gh.writes();
+                let opened = created(&writes);
+                assert_eq!(opened.len(), 2, "{fixtures}: {writes:?}");
+                assert!(writes.contains(&Wrote::BlockedByLink(11, 1)), "{writes:?}");
+                assert!(writes.contains(&Wrote::BlockedByLink(11, 2)), "{writes:?}");
+                assert!(writes.contains(&Wrote::SubIssueLink(4, 1)));
+                assert!(writes.contains(&Wrote::SubIssueLink(4, 2)));
+                assert!(
+                    !writes
+                        .iter()
+                        .any(|w| matches!(w, Wrote::Label(..) | Wrote::Comment(..)))
+                );
+                assert_eq!(
+                    decision_of(&writes).verdict.as_deref(),
+                    Some("wait — until #1, #2 land")
+                );
+                let (title, body, labels) = &opened[0];
+                assert!(title.starts_with("Server fixtures: load"), "{title}");
+                assert!(
+                    labels.contains(&labels::WRITE_SIDE.to_string()),
+                    "{labels:?}"
+                );
+                let found = sections::parse(body);
+                assert!(
+                    found
+                        .get(sections::ARCHITECTURE)
+                        .is_some_and(|a| a.starts_with("unit: infrastructure")),
+                    "{body}"
+                );
+                assert!(
+                    body.contains(&format!("The stop declared its unit as `{fixtures}`")),
+                    "{body}"
+                );
+                assert!(body.contains("so this task is on the write side"), "{body}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_unit_no_key_names_holds_the_task_with_the_slice_the_unit_and_the_keys() {
+        let stop = STOP_219_ROUND_2.replace(r#""unit": "server-fixtures""#, r#""unit": "widget""#);
+        for autonomous in [false, true] {
+            let gh = gh("## Scope\n\nbranch: feat/preparation-seance\n\nprepare");
+            raise(&gh, autonomous)
+                .on_halt(&mut ctx(false), Halt::Halted(stop.trim().to_string()))
+                .await
+                .expect("handed over");
+            let writes = gh.writes();
+            assert!(created(&writes).is_empty(), "{writes:?}");
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::Label(..) | Wrote::BlockedByLink(..))),
+                "no decision paid, no wait: {writes:?}"
+            );
+            let comment = writes
+                .iter()
+                .find_map(|w| match w {
+                    Wrote::Comment(11, said) => Some(said.clone()),
+                    _ => None,
+                })
+                .expect("a comment on the task");
+            for said in [
+                "- \"Server fixtures: load the Session aggregate's scenes",
+                "- \"Server fixtures: load the BattlemapInstance rows",
+                r#"its `unit` ("widget") is no unit of the architecture — one of: "#,
+                &missing::unit_keys(),
+            ] {
+                assert!(comment.contains(said), "{said}: {comment}");
+            }
+            let refused = decision_of(&writes);
+            assert_eq!(refused.kind.as_deref(), Some("refused"));
+            assert_eq!(
+                refused.verdict.as_deref(),
+                Some("refused — re-declare 2 declared tasks, as said below")
+            );
+            assert!(
+                writes.iter().any(|w| matches!(w, Wrote::Body(11, body)
+                    if body.contains("its `unit` (\"widget\") is no unit"))),
+                "the next session reads it: {writes:?}"
+            );
+        }
+        // The next stop counts the refusal as a round.
+        let again = gh("## Decision\n\nkind: refused\nblocks: x\nround: 1\ndecided-by: harness");
+        raise(&again, true)
+            .on_halt(&mut ctx(false), Halt::Halted(stop.trim().to_string()))
             .await
             .expect("handed over");
-        let writes = gated.writes();
-        let opened = created(&writes);
-        assert_eq!(opened.len(), 2, "{writes:?}");
-        assert_eq!(opened[0].0, "Unit A");
-        assert!(
-            opened[1].0.starts_with("Missing task for #11"),
-            "{:?}",
-            opened[1]
+        assert_eq!(decision_of(&again.writes()).round, 2);
+    }
+
+    #[tokio::test]
+    async fn a_person_s_slice_beside_opened_ones_is_said_not_dropped() {
+        let stop = STOP_219_ROUND_1.replacen(
+            r#""unit": "micro-ui""#,
+            r#""needs_human": true, "unit": "micro-ui""#,
+            1,
         );
+        let gh = gh("## Scope\n\nbranch: feat/preparation-seance\n\nprepare");
+        raise(&gh, true)
+            .on_halt(&mut ctx(false), Halt::Halted(stop.trim().to_string()))
+            .await
+            .expect("handed over");
+        let writes = gh.writes();
+        assert_eq!(created(&writes).len(), 1, "{writes:?}");
         assert!(writes.contains(&Wrote::BlockedByLink(11, 1)));
-        assert!(writes.contains(&Wrote::BlockedByLink(11, 2)));
-        // Without a human gate, what was opened is waited on and the rest
-        // stays in the stop's words: no decision paid.
-        let free = gh("## Scope\n\nbranch: feat/pay\n\npay");
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(11, said)
+                if said.contains("Micro-UI PreviousSummary")
+                && said.contains("only a person can do it — asked again once #1 land"))),
+            "{writes:?}"
+        );
+    }
+
+    /// The stop's writes, without a human gate, on a task whose body is
+    /// `body`.
+    async fn stopped_free(body: &str, stop: &str) -> Vec<Wrote> {
+        let free = gh(body);
         raise(&free, true)
-            .on_halt(&mut ctx(false), many(&["Unit A", ""]))
+            .on_halt(&mut ctx(false), Halt::Halted(stop.to_string()))
+            .await
+            .expect("handed over");
+        free.writes()
+    }
+
+    /// The task's body once `writes` are done: the last one written.
+    fn body_after(body: &str, writes: &[Wrote]) -> String {
+        writes
+            .iter()
+            .rev()
+            .find_map(|w| match w {
+                Wrote::Body(11, body) => Some(body.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| body.to_string())
+    }
+
+    fn decisions_asked(writes: &[Wrote]) -> usize {
+        writes
+            .iter()
+            .filter(|w| **w == Wrote::Label(11, labels::NEEDS_DECISION.to_string()))
+            .count()
+    }
+
+    const VAGUE: &str = "AGENT_LOOP_STOP: task the BattlemapInstance projection (/code)";
+
+    #[tokio::test]
+    async fn the_same_declaration_after_a_decision_never_asks_a_second_one() {
+        let ruled = format!(
+            "## Scope\n\nbranch: feat/pay\n\npay\n\n## Decision\n\nkind: stop\nblocks: x\nround: \
+             3\ndecided-by: ai\nverdict: answer — build it in this task (4/5)\nmilestone: \
+             #4\ndeclared: {}",
+            missing::key_of("the BattlemapInstance projection (/code)")
+        );
+        let writes = stopped_free(&ruled, VAGUE).await;
+        assert_eq!(
+            decisions_asked(&writes),
+            0,
+            "no second decision: {writes:?}"
+        );
+        assert!(created(&writes).is_empty(), "{writes:?}");
+        let refused = decision_of(&writes);
+        assert_eq!(refused.kind.as_deref(), Some("refused"));
+        assert_eq!(
+            refused.ruled.as_deref(),
+            Some("answer — build it in this task (4/5)"),
+            "the ruling carried on"
+        );
+        assert_eq!(refused.ruled_at, Some(3));
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(11, said)
+                if said.contains("the harness decided on it already: answer — build it in this task"))),
+            "{writes:?}"
+        );
+        // A new declaration is a new fact: decided again.
+        let other = ruled.replace("declared: the-battlemapinstance", "declared: another");
+        assert_eq!(decisions_asked(&stopped_free(&other, VAGUE).await), 1);
+        // A person's choice, decided by its owner, is no ruling by `decide`.
+        let answered = ruled.replace("decided-by: ai", "decided-by: owner");
+        assert_eq!(decisions_asked(&stopped_free(&answered, VAGUE).await), 1);
+        // A refusal that carries no ruling is none either.
+        let bare = ruled.replace("decided-by: ai", "decided-by: harness");
+        assert_eq!(decisions_asked(&stopped_free(&bare, VAGUE).await), 1);
+    }
+
+    #[tokio::test]
+    async fn identical_stops_without_a_gate_pay_one_decision_then_go_to_a_person() {
+        let body = "## Scope\n\nbranch: feat/pay\n\npay\n\n## Decision\n\nkind: refused\nblocks: \
+                    x\nround: 2\ndecided-by: harness\nverdict: refused";
+        // Round 3: a decision asked.
+        let first = stopped_free(body, VAGUE).await;
+        let body = body_after(body, &first);
+        // `decide` answers it.
+        let asked = Question::parse(
+            sections::parse(&body)
+                .get(sections::DECISION)
+                .map_or("", String::as_str),
+        )
+        .expect("a question");
+        let decided = crate::decide::data::decision::Decided {
+            action: crate::decide::data::decision::Action::Answer,
+            summary: "build it in this task".to_string(),
+            answer: String::new(),
+            confidence: 4,
+            tasks: Vec::new(),
+        };
+        let section = crate::decide::data::decision::section(Some(&asked), "stop", &decided);
+        let body = sections::replace(&body, &[(sections::DECISION, &section)]);
+        // Rounds 4 and 5: the same stop, the ruling sent back each time.
+        let second = stopped_free(&body, VAGUE).await;
+        let body = body_after(&body, &second);
+        let third = stopped_free(&body, VAGUE).await;
+        let body = body_after(&body, &third);
+        assert_eq!(
+            [&first, &second, &third]
+                .iter()
+                .map(|writes| decisions_asked(writes))
+                .sum::<usize>(),
+            1,
+            "{second:?}\n{third:?}"
+        );
+        let carried = decision_of(&third);
+        assert_eq!((carried.round, carried.ruled_at), (5, Some(3)));
+        assert!(created(&second).is_empty() && created(&third).is_empty());
+        // Round 6: the session ignored the ruling twice — a person's.
+        let fourth = stopped_free(&body, VAGUE).await;
+        assert_eq!(decisions_asked(&fourth), 0);
+        let opened = created(&fourth);
+        assert_eq!(opened.len(), 1, "{fourth:?}");
+        assert_eq!(opened[0].2, [labels::HUMAN.to_string()]);
+        assert!(
+            opened[0].1.contains(
+                "declared again 3 times after the harness decided: answer — build it in this \
+                 task (4/5)"
+            ),
+            "{}",
+            opened[0].1
+        );
+        assert!(fourth.contains(&Wrote::BlockedByLink(11, 1)));
+    }
+
+    #[tokio::test]
+    async fn a_slice_a_closed_task_built_is_refused_not_opened_again() {
+        // One branch is one feature: #300 landed it, the stop declares it again.
+        let landed = Issue {
+            number: 300,
+            title: "Battlemap rows projected".to_string(),
+            state: "closed".to_string(),
+            labels: vec![labels::AGENT.to_string()],
+            body: "## Scope\n\nbranch: feat/table-battlemap-instance-projection\n".to_string(),
+            ..Issue::default()
+        };
+        let board = |body: &str| {
+            Rc::new(FakeGitHub {
+                issues: gh(body).issues.clone(),
+                subs: vec![(4, vec![landed.clone()])],
+                ..FakeGitHub::default()
+            })
+        };
+        let refusal = "#300 built `feat/table-battlemap-instance-projection` already (closed): \
+                       build on it, or declare a new branch";
+        for autonomous in [false, true] {
+            let gh = board("## Scope\n\nbranch: feat/pay\n\npay");
+            raise(&gh, autonomous)
+                .on_halt(&mut ctx(false), missing_stop())
+                .await
+                .expect("handed over");
+            let writes = gh.writes();
+            assert!(created(&writes).is_empty(), "{writes:?}");
+            assert!(
+                !writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::Label(..) | Wrote::BlockedByLink(..))),
+                "{writes:?}"
+            );
+            assert!(
+                writes
+                    .iter()
+                    .any(|w| matches!(w, Wrote::Comment(11, said) if said.contains(refusal))),
+                "{writes:?}"
+            );
+            let refused = decision_of(&writes);
+            assert_eq!(refused.kind.as_deref(), Some("refused"));
+            assert_eq!(refused.round, 1);
+            assert_eq!(
+                refused.declared,
+                ["feat/table-battlemap-instance-projection"]
+            );
+        }
+        // Declared again a third time: a person's, or one decision without
+        // a gate — never a second issue on the branch.
+        let twice = "## Scope\n\nbranch: feat/pay\n\npay\n\n## Decision\n\nkind: refused\nblocks: \
+                     x\nround: 2\ndecided-by: harness\nverdict: refused";
+        let gated = board(twice);
+        raise(&gated, false)
+            .on_halt(&mut ctx(false), missing_stop())
+            .await
+            .expect("handed over");
+        let opened = created(&gated.writes());
+        assert_eq!(opened.len(), 1);
+        assert_eq!(opened[0].2, [labels::HUMAN.to_string()]);
+        assert!(
+            opened[0].1.contains(refusal) && opened[0].1.contains("declared 3 times"),
+            "{}",
+            opened[0].1
+        );
+        let free = board(twice);
+        raise(&free, true)
+            .on_halt(&mut ctx(false), missing_stop())
             .await
             .expect("handed over");
         let writes = free.writes();
-        assert_eq!(created(&writes).len(), 1, "{writes:?}");
-        assert!(!writes.contains(&Wrote::Label(11, labels::NEEDS_DECISION.to_string())));
+        assert!(created(&writes).is_empty(), "{writes:?}");
+        assert_eq!(decisions_asked(&writes), 1);
+    }
+
+    #[test]
+    fn a_ruling_is_the_ai_s_answer_or_a_refusal_carrying_it() {
+        let declared = vec!["feat/a".to_string()];
+        let question = |decided_by: &str, ruled: Option<&str>, ruled_at: Option<u32>| Question {
+            kind: Some("refused".to_string()),
+            blocks: "x".to_string(),
+            round: 5,
+            decided_by: Some(decided_by.to_string()),
+            verdict: Some("v".to_string()),
+            declared: declared.clone(),
+            ruled: ruled.map(ToString::to_string),
+            ruled_at,
+            ..Question::default()
+        };
+        let ruling = |verdict: &str, at: u32| {
+            Some(Ruling {
+                verdict: verdict.to_string(),
+                at,
+            })
+        };
+        assert_eq!(
+            ruled_on(Some(&question("ai", None, None)), &declared),
+            ruling("v", 5)
+        );
+        assert_eq!(
+            ruled_on(Some(&question("harness", Some("r"), Some(3))), &declared),
+            ruling("r", 3)
+        );
+        assert_eq!(
+            ruled_on(Some(&question("harness", Some("r"), None)), &declared),
+            ruling("r", 5),
+            "no round kept: this one"
+        );
+        assert_eq!(
+            ruled_on(Some(&question("harness", None, Some(3))), &declared),
+            None
+        );
+        assert_eq!(
+            ruled_on(Some(&question("ai", None, None)), &["feat/b".to_string()]),
+            None
+        );
+        assert_eq!(ruled_on(Some(&question("ai", None, None)), &[]), None);
+        let mut nothing_declared = question("ai", None, None);
+        nothing_declared.declared.clear();
+        assert_eq!(ruled_on(Some(&nothing_declared), &[]), None);
+        assert_eq!(ruled_on(None, &declared), None);
     }
 }

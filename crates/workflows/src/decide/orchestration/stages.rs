@@ -75,6 +75,15 @@ already landed, or about to land, `wait` on the issue that produces it.
   — lands; give N in `on`. A GitHub blocker then holds the task, for free,
   until #N lands: never `answer` "keep waiting", which pays a session every
   tick to learn the same thing.
+- `task` (only when listed above: a stop that declared missing tasks,
+  quoted whole in the body's `## Decision`): approve them. Give `tasks`, one
+  object per task as /split writes it — title, branch (`feat/<slug>`),
+  brief, unit (one of: {unit_keys} — fixtures or seed data the server
+  loads are `infrastructure`), system, aggregate, produces (its ids),
+  needs, goal, acceptance (given/when/then criteria) — fixing what the
+  stop declared wrong. The harness opens each under the milestone and
+  blocks this task on them until they land. Approving a task is never an
+  `answer`: an answer opens nothing, and the session stops on it again.
 For a port a person refused (`port`, the refusal in the comments): `answer`
 how the task does without it — inside the product, or through a port
 ports.json already has — or `cut` it when nothing of it stands without.
@@ -90,7 +99,7 @@ name it.
 Answer with ONLY a JSON object:
 {"action": "answer", "summary": "the decision, one sentence", "answer": "what the next session reads: the choices made, markdown", "confidence": 4}
 `confidence` is how sure you are, 1 to 5. A `wait` adds `"on": N`, the
-number of the issue waited for."#;
+number of the issue waited for; a `task` adds `"tasks": [slice, …]`."#;
 
 /// The free stage: read the case, then take the request.
 #[must_use]
@@ -189,6 +198,7 @@ mod tests {
             "{pr}",
             "{review}",
             "{actions}",
+            "{unit_keys}",
             "{integration}",
         ] {
             assert!(DECIDE_PROMPT.contains(placeholder), "{placeholder}");
@@ -201,6 +211,7 @@ mod tests {
             "`repair`",
             "Never prescribe a merge",
             "nor a push to a `milestone/*` branch",
+            "Approving a task is never an\n  `answer`",
         ] {
             assert!(DECIDE_PROMPT.contains(said), "{said}");
         }

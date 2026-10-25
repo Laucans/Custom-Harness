@@ -57,8 +57,10 @@ has stopped this way yet.
 - [x] A second stop naming the same task while it is open opens nothing:
       the journal says `the missing task is #M already — parked on it`. (seen 2026-10-24 09:14 Paris: run 20261024-071156-448 `#448: the missing task is #473 already — parked on it`)
 - [ ] A session that writes a vague `AGENT_LOOP_STOP: task …` (no JSON, or
-      a slice without goal/criteria/unit/system/produces/branch) gives a
-      `harness:human` "Missing task for #N: …" whose body says why.
+      a slice without goal/criteria/unit/system/produces/branch) is refused
+      back to the session (a comment on the task, `kind: refused`). Only at
+      the third round does it give a `harness:human` "Missing task for #N: …"
+      whose body says why. Since V this is checked in `v-missing-task.md`.
 - [x] Sessions do write the JSON on the stop line, as the prompt asks
       (`CODE`, `CODE_WRITE_SIDE`), rather than opening a human issue. If a
       factory keeps a prompt book (`.llocal/prompts.json`) with an older

@@ -5,6 +5,8 @@ use serde::Deserialize;
 
 use crate::common::decision::Question;
 use crate::common::json_reply::{self, ParseError};
+use crate::dev_loop::data::missing::{self, Asked};
+use crate::split::data::plan::TaskItem;
 
 /// What a decision may do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +25,10 @@ pub enum Action {
         /// The issue waited for.
         on: u64,
     },
+    /// The missing tasks a stop declared are approved: each opened under
+    /// the milestone, and the task blocked on them until they land — the
+    /// stop handler's own opener (`common::missing_task`).
+    Open,
 }
 
 impl Action {
@@ -35,6 +41,7 @@ impl Action {
             Self::Repair => "repair",
             Self::Cut => "cut",
             Self::Wait { .. } => "wait",
+            Self::Open => "task",
         }
     }
 }
@@ -51,6 +58,9 @@ struct Answered {
     /// For a `wait`: the issue waited for, as a number or as `#20`.
     #[serde(default)]
     on: Option<serde_json::Value>,
+    /// For a `task`: the slices to open, as `/split` writes them.
+    #[serde(default)]
+    tasks: Vec<serde_json::Value>,
 }
 
 /// An issue number as a session writes it: `20`, `"20"` or `"#20"`.
@@ -74,6 +84,8 @@ pub struct Decided {
     pub answer: String,
     /// How sure it was, 1 to 5.
     pub confidence: u8,
+    /// For a `task`: the slices to open, each whole.
+    pub tasks: Vec<TaskItem>,
 }
 
 /// What a decision may do on the issue it is about: its number, its PR, and
@@ -89,6 +101,9 @@ pub struct Scope<'a> {
     /// The rules' task: its PR into the integration branch is the one a
     /// decision may merge as it is (`review::decided_to_merge`).
     pub rules: bool,
+    /// For a stop that declared missing tasks, the milestone they would
+    /// open under: what lets a decision approve them (`task`).
+    pub milestone: Option<u64>,
 }
 
 impl Scope<'_> {
@@ -104,7 +119,9 @@ impl Scope<'_> {
     /// The actions this scope allows, as the prompt lists them.
     #[must_use]
     pub fn actions(&self) -> &'static str {
-        if self.pr.is_none() {
+        if self.pr.is_none() && self.milestone.is_some() {
+            "`task`, `answer`, `wait` or `cut`"
+        } else if self.pr.is_none() {
             "`answer`, `wait` or `cut`"
         } else if self.lands_on_integration() {
             "`repair`, `wait` or `answer` — this PR lands a milestone on the integration \
@@ -146,13 +163,26 @@ pub fn parse(text: &str, scope: &Scope<'_>) -> Result<Decided, String> {
             }
             Action::Wait { on }
         }
+        "task" | "open" => Action::Open,
         _ => {
             return Err(format!(
-                "`{}` is no action: answer, merge, repair, wait or cut",
+                "`{}` is no action: answer, merge, repair, wait, cut or task",
                 answered.action
             ));
         }
     };
+    let tasks = if action == Action::Open {
+        approved(&answered.tasks, scope)?
+    } else {
+        Vec::new()
+    };
+    if action == Action::Answer && scope.milestone.is_some() && approves_in_words(&answered) {
+        return Err(
+            "it approves a declared task in an `answer`, which opens nothing: approve it with \
+             `task` and its slices in `tasks`, or answer how the task does without it"
+                .to_string(),
+        );
+    }
     if !has_pr && matches!(action, Action::Merge | Action::Repair) {
         return Err(format!(
             "`{}` needs a pull request, and this issue has none",
@@ -191,8 +221,124 @@ pub fn parse(text: &str, scope: &Scope<'_>) -> Result<Decided, String> {
         summary: answered.summary.trim().to_string(),
         answer: answered.answer.trim().to_string(),
         confidence: answered.confidence.clamp(1, 5),
+        tasks,
     })
 }
+
+/// The slices a `task` decision approves, each whole by the stop
+/// handler's own measure — or why it cannot open them.
+fn approved(tasks: &[serde_json::Value], scope: &Scope<'_>) -> Result<Vec<TaskItem>, String> {
+    if scope.milestone.is_none() || scope.pr.is_some() {
+        return Err(
+            "`task` approves the missing tasks a stop declared, and this issue's stop declared \
+             none under a known milestone"
+                .to_string(),
+        );
+    }
+    if tasks.is_empty() {
+        return Err("`task` gives no slice: give `tasks`, each as /split writes it".to_string());
+    }
+    if tasks.len() > missing::MAX_SLICES {
+        return Err(format!(
+            "`task` gives {} slices — at most {}",
+            tasks.len(),
+            missing::MAX_SLICES
+        ));
+    }
+    let mut whole = Vec::new();
+    let mut gaps = Vec::new();
+    for slice in tasks {
+        let text = slice.to_string();
+        match serde_json::from_value::<TaskItem>(slice.clone()) {
+            Ok(item) => match missing::judged(item, &text) {
+                Asked::Task(item) => whole.push(*item),
+                Asked::Refused { title, why, .. } => gaps.push(format!("\"{title}\": {why}")),
+                Asked::Unwritable { why, .. } => gaps.push(why),
+            },
+            Err(error) => gaps.push(format!(
+                "\"{}\": a slice that does not read ({error})",
+                missing::title_of(&text)
+            )),
+        }
+    }
+    if gaps.is_empty() {
+        Ok(whole)
+    } else {
+        Err(format!(
+            "`task` gives slices it cannot open: {}",
+            gaps.join("; ")
+        ))
+    }
+}
+
+/// Whether an answer approves a declared task in words — what only `task`
+/// carries out (`ForgeDesMondes`' #219: "the fixtures task is approved",
+/// four times, and nothing opened).
+///
+/// Only an approval of a task, clause by clause: `task is approved`,
+/// `task approval`, `approve the … task` — never a task and an approval of
+/// something else side by side, nor a denial.
+fn approves_in_words(answered: &Answered) -> bool {
+    let said = format!("{}\n{}", answered.summary, answered.answer).to_lowercase();
+    said.split(['.', ';', ':', ',', '!', '?', '\n'])
+        .any(approves_a_task)
+}
+
+/// Whether one clause approves a task.
+fn approves_a_task(clause: &str) -> bool {
+    const DENIED: [&str; 6] = [
+        "not",
+        "never",
+        "no",
+        "disapprove",
+        "unapproved",
+        "disapproved",
+    ];
+    // The words a task and its approval may have between them.
+    const LINKS: [&str; 9] = [
+        "is", "are", "gets", "get", "got", "was", "were", "be", "now",
+    ];
+    // The words that end what an approval reaches.
+    const BREAKS: [&str; 8] = ["and", "but", "or", "so", "then", "while", "as", "because"];
+    let words: Vec<&str> = clause
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+        .filter(|word| !word.is_empty())
+        .collect();
+    let task = |word: &str| matches!(word, "task" | "tasks");
+    if words
+        .iter()
+        .any(|word| DENIED.contains(word) || word.ends_with("n't") || word.contains("disapprov"))
+    {
+        return false;
+    }
+    let approval = |word: &str| matches!(word, "approved" | "approval");
+    let approve = |word: &str| {
+        matches!(
+            word,
+            "approve" | "approves" | "approved" | "approving" | "approval"
+        )
+    };
+    words.iter().enumerate().any(|(at, word)| {
+        // `task is approved`, `task approval`.
+        let after_task = task(word)
+            && words
+                .iter()
+                .skip(at + 1)
+                .take(3)
+                .find(|next| !LINKS.contains(next))
+                .is_some_and(|next| approval(next));
+        // `approve the fixtures task`.
+        let before_task = approve(word)
+            && words
+                .iter()
+                .skip(at + 1)
+                .take(5)
+                .take_while(|next| !BREAKS.contains(next) && !approve(next))
+                .any(|next| task(next));
+        after_task || before_task
+    })
+}
+
 /// What kind of decision is asked.
 ///
 /// The `kind:` of `## Decision` when it says, else what the issue shows — a
@@ -262,6 +408,7 @@ mod tests {
             pr: has_pr.then(task_pr),
             integration: "main_agent",
             rules: false,
+            milestone: None,
         }
     }
 
@@ -359,6 +506,7 @@ mod tests {
             summary: "Stripe".to_string(),
             answer: "- test mode first".to_string(),
             confidence: 4,
+            tasks: Vec::new(),
         };
         let asked = Question {
             kind: Some("stop".to_string()),
@@ -396,6 +544,7 @@ mod tests {
             pr: Some(&landing),
             integration: "main_agent",
             rules: false,
+            milestone: None,
         };
         assert!(on.lands_on_integration());
         assert!(on.actions().contains("never `merge`"));
@@ -432,5 +581,154 @@ mod tests {
         assert!(parse(waits, &scope(true, 486)).is_ok());
         let own = r#"{"action":"repair","summary":"resolve","answer":"Merge origin/milestone/3-x into the branch and resolve Cargo.lock, then push."}"#;
         assert!(parse(own, &scope(true, 486)).is_ok(), "its own base");
+    }
+
+    /// The slice #219's decision approved in words, as `task` now carries it.
+    const FIXTURES: &str = r#"{"title": "Server fixtures: load the scenes", "branch": "feat/server-scene-fixtures", "brief": "Load the scenes from mock/fixtures.", "unit": "server-fixtures", "system": "session", "aggregate": "Session", "produces": ["server.fixtures.scenes"], "goal": "The scenes are on the real stack.", "acceptance": ["given the fixtures, when the server starts, then the scenes answer"]}"#;
+
+    fn declared_stop(has_pr: bool) -> Scope<'static> {
+        Scope {
+            milestone: Some(28),
+            ..scope(has_pr, 219)
+        }
+    }
+
+    #[test]
+    fn a_task_decision_carries_whole_slices_and_only_for_a_declared_stop() {
+        let text = format!(
+            r#"{{"action": "task", "summary": "open the fixtures task", "tasks": [{FIXTURES}], "confidence": 4}}"#
+        );
+        let read = parse(&text, &declared_stop(false)).expect("an approval");
+        assert_eq!(read.action, Action::Open);
+        assert_eq!(read.action.name(), "task");
+        assert_eq!(read.tasks.len(), 1);
+        assert_eq!(read.tasks[0].unit, "infrastructure", "the alias read");
+        let opened = parse(
+            &text.replace(r#""task""#, r#""open""#),
+            &declared_stop(false),
+        );
+        assert_eq!(opened.expect("an alias").action, Action::Open);
+        assert!(
+            parse(&text, &scope(false, 219))
+                .expect_err("no declaration")
+                .contains("declared none under a known milestone")
+        );
+        assert!(
+            parse(&text, &declared_stop(true))
+                .expect_err("a PR")
+                .contains("declared none")
+        );
+        let widget = text.replace("server-fixtures", "widget");
+        let refused = parse(&widget, &declared_stop(false)).expect_err("no unit");
+        assert!(
+            refused.contains("cannot open")
+                && refused.contains(r#""Server fixtures: load the scenes""#)
+                && refused.contains("one of: capability"),
+            "{refused}"
+        );
+        assert!(
+            parse(
+                r#"{"action": "task", "summary": "x", "tasks": []}"#,
+                &declared_stop(false)
+            )
+            .expect_err("empty")
+            .contains("gives no slice")
+        );
+        let nine = format!(
+            r#"{{"action": "task", "summary": "x", "tasks": [{}]}}"#,
+            [FIXTURES; 9].join(",")
+        );
+        assert!(
+            parse(&nine, &declared_stop(false))
+                .expect_err("too many")
+                .contains("at most 8")
+        );
+        let eight = format!(
+            r#"{{"action": "task", "summary": "x", "tasks": [{}]}}"#,
+            [FIXTURES; 8].join(",")
+        );
+        assert_eq!(
+            parse(&eight, &declared_stop(false))
+                .expect("eight, the most")
+                .tasks
+                .len(),
+            8
+        );
+        let unread = parse(
+            r#"{"action": "task", "summary": "x", "tasks": [{"title": "half"}]}"#,
+            &declared_stop(false),
+        )
+        .expect_err("half a slice");
+        assert!(
+            unread.contains(r#""half": a slice that does not read"#),
+            "{unread}"
+        );
+        let human = text.replace(r#""unit""#, r#""needs_human": true, "unit""#);
+        assert!(
+            parse(&human, &declared_stop(false))
+                .expect_err("a person's")
+                .contains("only a person")
+        );
+        assert!(declared_stop(false).actions().starts_with("`task`"));
+        assert!(!scope(false, 219).actions().contains("`task`"));
+        assert!(!declared_stop(true).actions().contains("`task`"));
+    }
+
+    #[test]
+    fn an_answer_approving_a_declared_task_in_words_does_not_parse() {
+        // #219, rounds 1–4: "the fixtures task is approved", nothing opened.
+        let approved = r#"{"action": "answer", "summary": "The fixtures task is approved: it becomes a write-side task of milestone #28 that blocks #219"}"#;
+        assert!(
+            parse(approved, &declared_stop(false))
+                .expect_err("words")
+                .contains("approve it with `task`")
+        );
+        assert!(
+            parse(approved, &scope(false, 219)).is_ok(),
+            "no declaration, nothing to approve"
+        );
+        let in_answer =
+            r#"{"action": "answer", "summary": "go", "answer": "The missing TASK is APPROVED."}"#;
+        assert!(parse(in_answer, &declared_stop(false)).is_err());
+    }
+
+    #[test]
+    fn only_an_approval_of_a_task_is_one() {
+        let words = |summary: &str| Answered {
+            action: "answer".to_string(),
+            summary: summary.to_string(),
+            answer: String::new(),
+            confidence: 3,
+            on: None,
+            tasks: Vec::new(),
+        };
+        for approves in [
+            "The fixtures task is approved: it becomes a write-side task",
+            "the missing task is approved",
+            "both tasks are now approved",
+            "task approval granted",
+            "I approve the fixtures task",
+            "approve this task",
+            "approval of the seed data task",
+            "go.\nThe declared tasks get approved",
+        ] {
+            assert!(approves_in_words(&words(approves)), "{approves}");
+        }
+        for not in [
+            "build this task as the approved mock-up shows",
+            "the owner approved the port; the task uses it",
+            "the owner approved the port and the task uses it",
+            "I disapprove opening a task",
+            "the task is not approved: build it here",
+            "we don't approve this task",
+            "approved: build it in this one",
+            "build the task here",
+            "the task is never approved",
+            "approved, the task stays as it is",
+            "a task with no approval",
+            "the task waits for the approved port",
+        ] {
+            assert!(!approves_in_words(&words(not)), "{not}");
+        }
     }
 }
