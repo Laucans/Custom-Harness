@@ -166,13 +166,19 @@ not close the issue yourself.
 If the SPEC has a `## Rules` section, the tests of those rules, under
 tests/rules/ (contract P), are written already and are what this task
 turns green: start the product with `bash scripts/rules-runtime.sh serve`
-(export the KEY=value lines it prints), run `cargo test --manifest-path
+(export the KEY=value lines it prints), clear a past run's outcomes with
+`rm -f target/rules-status.jsonl`, run `cargo test --manifest-path
 tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
-test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
-rule stays pending while a unit its test needs is not built. Never change
-rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
-A rule's test you cannot meet is contested: write CONTEST.md at the root
-(the rule, the test, why it cannot hold) and say so in your reply. The
+test` in tests/rules/journey, then `node scripts/rules-gate.mjs status`
+(never commit the rules-status.json it writes), then
+`bash scripts/rules-runtime.sh stop`. A rule stays pending while a unit its
+test needs is not built. Never change rules.json, tests/rules/ or
+scripts/rules-runtime.sh — a gate refuses it. A rule's test you cannot
+meet is contested: write CONTEST.md at the root (the rule, the test, why
+it cannot hold) and say so in your reply. A passing test can be mounted
+wrong, and only status shows it: a rule it says mis-mounted is its test's
+mounting, never your code — copy its line into CONTEST.md as it is, and
+change nothing for it; the red tests listed under it are yours to fix. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
 Everything outside the product — a provider's API, payment, mail, storage,
@@ -266,13 +272,19 @@ failure. Do not close the issue yourself.
 If the SPEC has a `## Rules` section, the tests of those rules, under
 tests/rules/ (contract P), are written already and are what this task
 turns green: start the product with `bash scripts/rules-runtime.sh serve`
-(export the KEY=value lines it prints), run `cargo test --manifest-path
+(export the KEY=value lines it prints), clear a past run's outcomes with
+`rm -f target/rules-status.jsonl`, run `cargo test --manifest-path
 tests/rules/business/Cargo.toml` and, for a journey rule, `npx playwright
-test` in tests/rules/journey, then `bash scripts/rules-runtime.sh stop`. A
-rule stays pending while a unit its test needs is not built. Never change
-rules.json, tests/rules/ or scripts/rules-runtime.sh — a gate refuses it.
-A rule's test you cannot meet is contested: write CONTEST.md at the root
-(the rule, the test, why it cannot hold) and say so in your reply. The
+test` in tests/rules/journey, then `node scripts/rules-gate.mjs status`
+(never commit the rules-status.json it writes), then
+`bash scripts/rules-runtime.sh stop`. A rule stays pending while a unit its
+test needs is not built. Never change rules.json, tests/rules/ or
+scripts/rules-runtime.sh — a gate refuses it. A rule's test you cannot
+meet is contested: write CONTEST.md at the root (the rule, the test, why
+it cannot hold) and say so in your reply. A passing test can be mounted
+wrong, and only status shows it: a rule it says mis-mounted is its test's
+mounting, never your code — copy its line into CONTEST.md as it is, and
+change nothing for it; the red tests listed under it are yours to fix. The
 server is crates/server, the frontend's host apps/shell, as the layout of
 CLAUDE.md says: the runtime starts them from there.
 Everything outside the product — a provider's API, payment, mail, storage,
@@ -571,6 +583,19 @@ mod tests {
         Settings {
             dry_run: false,
             stages: stages.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_rules_status_runs_on_fresh_outcomes_after_the_suites_before_the_stop() {
+        for text in [CODE, CODE_WRITE_SIDE] {
+            let at = |needle: &str| text.find(needle).expect(needle);
+            let clear = at("rm -f target/rules-status.jsonl");
+            let suite = at("cargo test --manifest-path");
+            let journey = at("npx playwright");
+            let status = at("node scripts/rules-gate.mjs status");
+            let stop = at("rules-runtime.sh stop");
+            assert!(clear < suite && suite < journey && journey < status && status < stop);
         }
     }
 

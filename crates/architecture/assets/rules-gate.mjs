@@ -14,9 +14,20 @@
 //   node scripts/rules-gate.mjs status [--strict] [<status.jsonl>…]
 //       Reads what the rules' tests wrote (RULES_STATUS, by default
 //       target/rules-status.jsonl) and says each rule's state: pending (a
-//       unit it needs is not built), green, red. Writes rules-status.json.
-//       Fails on a red rule — but a rule marked `conform` (it changed, its
-//       tests ahead of the code) only with --strict: where a milestone lands.
+//       unit it needs is not built), green, red, or mis-mounted. Writes
+//       rules-status.json. Fails on a red rule — but a rule marked `conform`
+//       (it changed, its tests ahead of the code) only with --strict: where
+//       a milestone lands.
+//       Mis-mounted, apart: a test that ran reached the product off its
+//       mounting — a unit its needs do not name, a read's variable its
+//       capability.json `input` does not take, a payload key its
+//       data-capability.json does not declare (the kits check it, once the
+//       units are built). Its red or green proves nothing: the test is
+//       mounted wrong, not the product. It fails always, `conform` or not,
+//       said apart: the rules' task fixes the test before anything is
+//       contested, and a development only copies the line into CONTEST.md.
+//       The rule's other red tests are listed under it: those are the
+//       product's, fixed in the same pass.
 //
 //   node scripts/rules-gate.mjs untouched <base>
 //       A change measured against <base> leaves tests/rules/ and rules.json
@@ -107,15 +118,38 @@ function status(args) {
   const all = rules() || [];
   const told = all.map((r) => {
     const own = outcomes.filter((o) => o.rule === r.id);
-    const state = !own.length ? 'untested' : own.some((o) => o.state === 'red') ? 'red' : own.some((o) => o.state === 'green') ? 'green' : 'pending';
+    const state = !own.length
+      ? 'untested'
+      : own.some((o) => o.state === 'mis-mounted')
+        ? 'mis-mounted'
+        : own.some((o) => o.state === 'red')
+          ? 'red'
+          : own.some((o) => o.state === 'green')
+            ? 'green'
+            : 'pending';
     return { id: r.id, title: r.title, family: r.family, conform: r.state === 'conform', state, tests: own.map((o) => ({ test: o.test, state: o.state, why: o.why || '' })) };
   });
   writeFileSync(join(root, 'rules-status.json'), JSON.stringify({ at: new Date().toISOString(), rules: told }, null, 2) + '\n');
   let failed = 0;
-  for (const r of told) {
+  const blocks = (r) => !r.conform || strict;
+  for (const r of told.filter((r) => r.state !== 'mis-mounted')) {
     const why = r.tests.map((t) => t.why).filter(Boolean)[0] || '';
     say(`${r.id} ${r.state}${r.conform ? ' (to conform)' : ''}${why ? ` — ${why}` : ''}`);
-    if (r.state === 'red' && (!r.conform || strict)) { fail(`${r.id} does not hold${why ? `: ${why}` : ''}`); failed += 1; }
+    if (r.state === 'red' && blocks(r)) { fail(`${r.id} does not hold${why ? `: ${why}` : ''}`); failed += 1; }
+  }
+  const misMounted = told.filter((r) => r.state === 'mis-mounted');
+  if (misMounted.length) {
+    say('');
+    say(`mis-mounted: ${misMounted.length} rule(s) whose test is mounted wrong, not the product — the rules' task fixes the test before anything is contested; a development copies the line into CONTEST.md and changes nothing for it`);
+  }
+  // A mounting defect is never legitimate: it fails whatever the rule's
+  // `conform` flag, so it shows on the first pull request, not at landing.
+  for (const r of misMounted) {
+    const why = r.tests.filter((t) => t.state === 'mis-mounted').map((t) => t.why).filter(Boolean)[0] || '';
+    fail(`${r.id} mis-mounted${r.conform ? ' (to conform)' : ''}${why ? ` — ${why}` : ''}`);
+    failed += 1;
+    // Its red tests are the product's: a development fixes them in the same pass.
+    for (const t of r.tests.filter((t) => t.state === 'red')) say(`  ${r.id} also red: ${t.test}${t.why ? ` — ${t.why}` : ''} (the product's, fix it now)`);
   }
   return failed ? 1 : 0;
 }

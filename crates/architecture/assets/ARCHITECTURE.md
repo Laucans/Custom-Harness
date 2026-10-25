@@ -665,13 +665,22 @@ them; every development after conforms to them:
   does — **by identifier**, over the shell's wire protocol
   (`POST /capabilities/<id>`, `POST /commands`, `GET /commands/<id>`) and by
   screen name — through the kit installed beside them;
-- every test names its rule (`rule("R3", needs, …)`), the units it needs
-  (`data-capability:ArchiveCampaign`, `capability:ListCampaigns`,
-  `micro-ui:…`, `screen:…`, `aggregate:…`) and copies the criterion as it is,
-  in three comment lines `given: …`, `when: …`, `then: …`;
+- every test names its rule (`rule("R3", needs, …)`), the units it needs by
+  their ids (`data-capability:campaign.archiveCampaign`,
+  `capability:campaign.listCampaigns`, `micro-ui:…`, `screen:…`,
+  `aggregate:…`) and copies the criterion as it is, in three comment lines
+  `given: …`, `when: …`, `then: …`;
 - a test is **pending** while a unit it needs is not built (no manifest names
   it) or the product is not served yet: it passes, and says so. Once
   everything it needs exists, it runs and must hold;
+- a running test is **mis-mounted** when it reaches the product off its
+  mounting — a unit its needs do not cover, a read's variable its
+  `capability.json` `input` does not take, a payload key its
+  `data-capability.json` does not declare (the kits check it at its first
+  real run). Neither red nor contested: its outcome proves nothing, the
+  rules' gate says it apart and fails on it, and the rules' task fixes the
+  test before anything is contested — a development only copies the line
+  into `CONTEST.md`;
 - the product is served by `scripts/rules-runtime.sh`, installed whole and
   changed by nobody (the gate *Rule tests untouched*). It starts what the
   layout fixes: `crates/server`, the one binary serving the wire protocol

@@ -63,7 +63,10 @@ const WELL_KNOWN: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 /// one macOS ships, refuses `globstar`, associative arrays, `${x,,}`.
 const BASH_AT_LEAST: u32 = 5;
 
-/// The oldest node the mock-up's scripts run on: ESM syntax detection.
+/// The oldest node the product's scripts run on: the mock-up's (ESM syntax
+/// detection), `scripts/rules-gate.mjs`, and the rules' journey kit (node
+/// strips its TypeScript from 22.6 on). Sessions run them on the node this
+/// shim puts first.
 const NODE_AT_LEAST: u32 = 22;
 
 /// The file that pins a product's Rust channel.

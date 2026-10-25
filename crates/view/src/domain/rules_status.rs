@@ -16,8 +16,10 @@ use serde_json::Value;
 /// One rule's state.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct RuleState {
-    /// `green`, `red`, `pending` (a unit it needs is not built) or
-    /// `untested`, as the CI said; `unknown` when it said nothing of it.
+    /// `green`, `red`, `pending` (a unit it needs is not built),
+    /// `mis-mounted` (a test reached the product off its needs or its
+    /// manifests: the rules' task fixes it) or `untested`, as the CI said;
+    /// `unknown` when it said nothing of it.
     pub state: String,
     /// Changed, its tests ahead of the code: red is expected until its
     /// conformity task lands.
@@ -88,22 +90,26 @@ pub fn status(kept: Option<&Kept>, rules_issues: &[Issue]) -> Status {
             let Some(id) = rule.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            let why = rule
-                .get("tests")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|t| t.get("why").and_then(Value::as_str))
-                .find(|why| !why.is_empty())
-                .unwrap_or_default();
+            let state = rule
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let tests = rule.get("tests").and_then(Value::as_array);
+            let why_of = |same: bool| {
+                tests
+                    .into_iter()
+                    .flatten()
+                    .filter(|t| !same || t.get("state").and_then(Value::as_str) == Some(state))
+                    .filter_map(|t| t.get("why").and_then(Value::as_str))
+                    .find(|why| !why.is_empty())
+            };
+            // The reason of a test in the rule's own state first: a
+            // mis-mounted rule says its mounting, not a sibling's red.
+            let why = why_of(true).or_else(|| why_of(false)).unwrap_or_default();
             status.rules.insert(
                 id.to_string(),
                 RuleState {
-                    state: rule
-                        .get("state")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_string(),
+                    state: state.to_string(),
                     conform: rule.get("conform").and_then(Value::as_bool) == Some(true),
                     contested: None,
                     why: why.to_string(),
@@ -188,6 +194,32 @@ mod tests {
         assert_eq!(read.rules["R30"].state, "unknown");
         assert_eq!(read.rules["R30"].contested, Some(9));
         assert_eq!(read.rules.len(), 4, "CR3 names no rule");
+    }
+
+    #[test]
+    fn a_rule_says_the_reason_of_a_test_in_its_own_state() {
+        let kept = Kept {
+            text: r#"{"rules": [
+                {"id": "R2", "state": "mis-mounted", "tests": [
+                    {"test": "r2a", "state": "red", "why": "still listed"},
+                    {"test": "r2b", "state": "mis-mounted", "why": "no input id"}
+                ]},
+                {"id": "R4", "state": "red", "tests": [
+                    {"test": "r4a", "state": "green", "why": "fine"},
+                    {"test": "r4b", "state": "red", "why": ""}
+                ]}
+            ]}"#
+            .to_string(),
+            run_url: String::new(),
+            at: String::new(),
+        };
+        let read = status(Some(&kept), &[]);
+        assert_eq!(read.rules["R2"].state, "mis-mounted");
+        assert_eq!(read.rules["R2"].why, "no input id");
+        assert_eq!(
+            read.rules["R4"].why, "fine",
+            "no reason in its own state: any test's"
+        );
     }
 
     #[test]

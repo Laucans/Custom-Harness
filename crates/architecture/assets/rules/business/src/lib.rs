@@ -14,6 +14,17 @@
 //! hold. Each outcome is written, one JSON line, to `RULES_STATUS` (default
 //! `target/rules-status.jsonl`), which `scripts/rules-gate.mjs` reads.
 //!
+//! A running test is also checked for how it is mounted (`mounting`): a
+//! unit it reaches that its needs do not name, a read's variable its
+//! `capability.json` `input` does not take, a payload key its
+//! `data-capability.json` does not declare (the engine's warning). Any of
+//! them makes the rule **mis-mounted** — neither red nor contested, and the
+//! test passes, saying so: the rules' task fixes it, never the product.
+//!
+//! Needs are ids, as the manifests and `plan/graph.json` give them:
+//! `capability:<system>.<name>`, `data-capability:<system>.<name>` (no
+//! version), `micro-ui:<Name>`, `screen:<name>`, `aggregate:<Name>`.
+//!
 //! ```ignore
 //! use rules_business::{rule, fixture};
 //!
@@ -22,22 +33,26 @@
 //!     // given: a campaign in the list
 //!     // when: the DM archives it
 //!     // then: it is no longer listed
-//!     rule("R3", &["data-capability:ArchiveCampaign", "capability:ListCampaigns"], |s| {
+//!     rule("R3", &["data-capability:campaign.archiveCampaign", "capability:campaign.listCampaigns"], |s| {
 //!         let campaign = fixture("campaigns")[0].clone();
-//!         s.command("ArchiveCampaign@1", serde_json::json!({}), campaign["id"].as_str())?;
-//!         let listed = s.read("ListCampaigns", serde_json::json!({}))?;
+//!         s.command("campaign.archiveCampaign@1", serde_json::json!({}), campaign["id"].as_str())?;
+//!         let listed = s.read("campaign.listCampaigns", serde_json::json!({}))?;
 //!         rules_business::check(!listed.to_string().contains(campaign["id"].as_str().unwrap_or("")), "still listed")
 //!     });
 //! }
 //! ```
 
+use std::cell::RefCell;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+mod mounting;
 
 /// How long a command may take to settle before the test says so.
 const SETTLE: Duration = Duration::from_secs(20);
@@ -48,18 +63,48 @@ pub fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
-/// The product's server, as the shell's wire protocol reaches it.
+/// The product's server, as the shell's wire protocol reaches it — and
+/// what the running test reached off its mounting.
 pub struct Server {
     base: String,
+    /// The test's needs, as `rule` was given them.
+    needs: Vec<String>,
+    /// Each way the test is mis-mounted, in the order found.
+    mis_mounted: RefCell<Vec<String>>,
 }
 
 impl Server {
+    /// Keeps what is wrong with the test's mounting; refuses the call when
+    /// anything is.
+    fn mounted(&self, problems: Vec<String>) -> Result<(), String> {
+        let Some(first) = problems.first().cloned() else {
+            return Ok(());
+        };
+        self.mis_mounted.borrow_mut().extend(problems);
+        Err(format!("mis-mounted: {first}"))
+    }
+
     /// Reads a Capability by its identifier; answers its `data`.
     ///
     /// # Errors
     ///
-    /// The server refused it or answered no data.
+    /// The server refused it or answered no data; or the test is
+    /// mis-mounted: its needs do not name the Capability, or a variable is
+    /// not in its manifest's `input` — then nothing is sent.
     pub fn read(&self, capability: &str, variables: Value) -> Result<Value, String> {
+        let mut problems: Vec<String> =
+            mounting::unnamed_need(&self.needs, "capability", capability)
+                .into_iter()
+                .collect();
+        if let Some((path, manifest)) = named(&format!("capability:{capability}")) {
+            problems.extend(mounting::off_input(
+                capability,
+                &variables,
+                &manifest,
+                &relative(&path),
+            ));
+        }
+        self.mounted(problems)?;
         let url = format!("{}/capabilities/{capability}", self.base);
         let answer: Value = ureq::post(&url)
             .send_json(json!({ "variables": variables }))
@@ -74,13 +119,21 @@ impl Server {
     ///
     /// # Errors
     ///
-    /// The server refused it, or it did not settle in time.
+    /// The server refused it, or it did not settle in time; or the test is
+    /// mis-mounted: its needs do not name the `DataCapability` (nothing is
+    /// sent), or the engine warned of a payload key its manifest does not
+    /// declare.
     pub fn command(
         &self,
         data_capability: &str,
         payload: Value,
         target: Option<&str>,
     ) -> Result<Value, String> {
+        self.mounted(
+            mounting::unnamed_need(&self.needs, "data-capability", data_capability)
+                .into_iter()
+                .collect(),
+        )?;
         let name = if data_capability.contains('@') {
             data_capability.to_string()
         } else {
@@ -95,6 +148,7 @@ impl Server {
             .map_err(|e| format!("commanding {data_capability}: {e}"))?
             .into_json()
             .map_err(|e| format!("commanding {data_capability}: {e}"))?;
+        self.mounted(mounting::off_payload(&accepted))?;
         let mut result = accepted.get("result").cloned().unwrap_or(Value::Null);
         let id = accepted
             .get("commandId")
@@ -181,31 +235,56 @@ fn manifests(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// A unit the product has built: a manifest names it. `kind:name`, as a
-/// rule's test declares what it needs.
-#[must_use]
-pub fn built(need: &str) -> bool {
-    let Some((kind, name)) = need.split_once(':') else {
-        return false;
-    };
-    let Some((_, file, field)) = KINDS.iter().find(|(k, _, _)| *k == kind) else {
-        return false;
-    };
-    let mut found = Vec::new();
-    manifests(&root().join("crates"), &mut found);
-    manifests(&root().join("apps"), &mut found);
-    found.iter().any(|path| {
+/// Every manifest of the product, read once per process: the units do not
+/// change while the suite runs, and a test polling the server reads them
+/// on every request.
+fn index() -> &'static [(PathBuf, Value)] {
+    static INDEX: OnceLock<Vec<(PathBuf, Value)>> = OnceLock::new();
+    INDEX.get_or_init(|| {
+        let mut found = Vec::new();
+        manifests(&root().join("crates"), &mut found);
+        manifests(&root().join("apps"), &mut found);
+        found
+            .into_iter()
+            .filter_map(|path| {
+                let manifest = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<Value>(&t).ok())?;
+                Some((path, manifest))
+            })
+            .collect()
+    })
+}
+
+/// The manifest that names a unit (`kind:name`, as a rule's test declares
+/// what it needs): where it is, and what it says.
+fn named(need: &str) -> Option<(PathBuf, Value)> {
+    let (kind, name) = need.split_once(':')?;
+    let (_, file, field) = KINDS.iter().find(|(k, _, _)| *k == kind)?;
+    index().iter().find_map(|(path, manifest)| {
         let named = if file.is_empty() {
             path.parent().is_some_and(|p| p.ends_with("apps/screens"))
         } else {
             path.file_name().is_some_and(|n| n == *file)
         };
-        named
-            && fs::read_to_string(path)
-                .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .is_some_and(|m| m.get(*field).and_then(Value::as_str) == Some(name))
+        (named && manifest.get(*field).and_then(Value::as_str) == Some(name))
+            .then(|| (path.clone(), manifest.clone()))
     })
+}
+
+/// A path under the repository's root, as a line names it.
+fn relative(path: &Path) -> String {
+    path.strip_prefix(root())
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+/// A unit the product has built: a manifest names it. `kind:name`, as a
+/// rule's test declares what it needs.
+#[must_use]
+pub fn built(need: &str) -> bool {
+    named(need).is_some()
 }
 
 /// Writes one outcome where the rules' gate reads it.
@@ -218,13 +297,17 @@ fn record(id: &str, state: &str, why: &str) {
     }
     let line =
         json!({ "rule": id, "family": "business", "test": test, "state": state, "why": why });
+    // One write per line: tests run in parallel, and a line written in
+    // pieces would interleave with another test's.
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(file, "{line}");
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
 }
 
 /// Proves rule `id`: pending while a unit it `needs` is not built or no
-/// server answers; else `body` runs on the server, and must hold.
+/// server answers; else `body` runs on the server, and must hold. A test
+/// that reached the server off its mounting is mis-mounted whatever its
+/// body answered: it passes, saying so, and the rules' gate fails it apart.
 ///
 /// # Panics
 ///
@@ -245,8 +328,20 @@ pub fn rule(id: &str, needs: &[&str], body: impl FnOnce(&Server) -> Result<(), S
     };
     let server = Server {
         base: base.trim_end_matches('/').to_string(),
+        needs: needs.iter().map(ToString::to_string).collect(),
+        mis_mounted: RefCell::default(),
     };
-    match panic::catch_unwind(AssertUnwindSafe(|| body(&server))) {
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| body(&server)));
+    let mis_mounted = server.mis_mounted.take();
+    if !mis_mounted.is_empty() {
+        let why = mis_mounted.join(" · ");
+        eprintln!(
+            "{id} mis-mounted: {why} — the test is mounted wrong, not the product: the rules' task fixes it"
+        );
+        record(id, "mis-mounted", &why);
+        return;
+    }
+    match outcome {
         Ok(Ok(())) => record(id, "green", ""),
         Ok(Err(why)) => {
             record(id, "red", &why);

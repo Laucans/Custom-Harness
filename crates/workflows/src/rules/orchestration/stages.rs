@@ -61,10 +61,12 @@ branch out and answer its review; otherwise branch off:
    A test reaches the product only by identifier, the way a Micro-UI does:
    the Capabilities, DataCapabilities, Micro-UIs and screens the
    architecture (`ARCHITECTURE.md`) and the mock-up (`mock/pages.json`)
-   name. It lists every unit it uses in its needs (`capability:<Id>`,
-   `data-capability:<Name>`, `micro-ui:<name>`, `screen:<name>`,
-   `aggregate:<Name>`), so it stays pending until they are built. Its given
-   comes from the mock-up's fixtures (`fixture("<name>")`).
+   name. It lists every unit it uses in its needs, by the id a manifest or
+   `plan/graph.json` gives it — `capability:<system>.<name>`,
+   `data-capability:<system>.<name>` (never a short name, never a version),
+   `micro-ui:<Name>`, `screen:<name>`, `aggregate:<Name>` — so it stays
+   pending until they are built. Its given comes from the mock-up's
+   fixtures (`fixture("<name>")`).
    A rule no longer in the list has its tests removed; a changed rule's
    tests are rewritten to its new criterion.
 3. Prove it: `node scripts/rules-gate.mjs coverage` passes; the business
@@ -72,6 +74,15 @@ branch out and answer its review; otherwise branch off:
    tests/rules/business/Cargo.toml`, a pending test passes); the journey
    suite lists its tests (`cd tests/rules/journey && npm install && npx
    playwright test --list`).
+   Once its units are built a test runs, and the kit checks how it is
+   mounted: a unit it reaches that its needs do not name, a read's variable
+   its capability.json `input` does not take, a payload key its
+   data-capability.json does not declare. Such a rule is **mis-mounted**
+   (`node scripts/rules-gate.mjs status` says it apart, with the line):
+   fix its test to the manifests before anything else — a mis-mounted test
+   is never contested and never kept. Here nothing serves the product, so
+   every test is pending and none can show mis-mounted: it shows only on
+   the pull request's `rules-hold--status` step.
 4. Open the change, and do not merge it — another reader judges it:
      git add rules.json tests/rules
      git commit -m "test(rules): the rules and their tests (#{num})"
@@ -109,6 +120,15 @@ What the issue's comments say, oldest first:
 You decide; the human is warned and may act afterwards. Read `rules.json`,
 the rule's criterion, its tests under `tests/rules/`, and the development's
 pull request (`gh pr view <n>`, `gh pr diff <n>`).
+
+First, a mis-mounted test: what the development said, or the `rules-hold`
+check of its pull request (`gh pr checks <n>`, then the step's log), may
+name a rule **mis-mounted** — its test reaches a unit its needs do not
+name, sends a variable its capability.json `input` does not take, or a
+payload key its data-capability.json does not declare. Fix that test to
+the manifests as they are built (answer a) before anything is contested:
+a mis-mounted test is never answer c. Then weigh whatever else is
+contested.
 
 One answer only:
 a. **The test misreads its rule** — it asserts more, less or other than its
@@ -159,7 +179,9 @@ For each rule of the pull request's `rules.json`, read its tests
    when never performed), nothing more (an assertion the criterion does
    not make).
 3. It reaches the product only by identifier, and lists in its needs every
-   unit it uses.
+   unit it uses, by its id (`<system>.<name>` for a Capability or a
+   DataCapability, never a short name). The pull request's `rules-hold`
+   check reports no rule mis-mounted.
 4. The pull request touches `rules.json` and `tests/rules/` only.
 
 Every test faithful: comment on the pull request one line saying so, and
@@ -333,5 +355,25 @@ mod tests {
         );
         assert!(WRITE_PROMPT.contains("node scripts/rules-gate.mjs coverage"));
         assert!(CONTEST_PROMPT.contains("Never weaken a test"));
+    }
+
+    #[test]
+    fn a_mis_mounted_test_is_fixed_first_and_needs_name_ids() {
+        let flat = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let write = flat(WRITE_PROMPT);
+        assert!(
+            write.contains(
+                "`data-capability:<system>.<name>` (never a short name, never a version)"
+            )
+        );
+        assert!(write.contains("node scripts/rules-gate.mjs status"));
+        assert!(write.contains("**mis-mounted**"));
+        assert!(write.contains("it shows only on the pull request's `rules-hold--status` step"));
+        let contest = flat(CONTEST_PROMPT);
+        let first = contest.find("First, a mis-mounted test");
+        assert!(first.is_some() && first < contest.find("One answer only"));
+        assert!(contest.contains("before anything is contested"));
+        assert!(contest.contains("never answer c"));
+        assert!(flat(FIDELITY_PROMPT).contains("reports no rule mis-mounted"));
     }
 }

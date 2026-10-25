@@ -1042,8 +1042,9 @@
   }
   // ---- each rule's state, as the factory last judged it ----------------------
   // Once the factory runs, the CI's rules' gate says of each rule's tests:
-  // green, red, pending (a unit it needs is not built yet) — and a test a
-  // development contested. Read at most once a minute, shown in place.
+  // green, red, pending (a unit it needs is not built yet), mis-mounted (a
+  // test that reached the product off its needs or its manifests: the
+  // rules' task fixes it) — and a test a development contested. Read at most once a minute, shown in place.
   const RULES_EVERY = 60000;
   function issueUrl(r, number) {
     return String(r.rules_issue || '').replace(/\/issues\/\d+$/, `/issues/${number}`);
@@ -1054,6 +1055,7 @@
     const r = record();
     if (st.contested) return `<a class="tag warn" href="${esc(issueUrl(r, st.contested))}" target="_blank" rel="noopener" title="A development contests one of its tests: the rules' task decides">contested ↗</a>`;
     const why = st.why ? ` title="${esc(st.why)}"` : '';
+    if (st.state === 'mis-mounted') return `<span class="tag bad" title="${esc(`Its test is mounted wrong, not the product — the rules' task fixes it${st.why ? `: ${st.why}` : ''}`)}">mis-mounted</span>`;
     if (st.state === 'red') return st.conform ? `<span class="tag warn"${why}>to conform</span>` : `<span class="tag bad"${why}>red</span>`;
     if (st.state === 'green') return '<span class="tag ok">green</span>';
     if (st.state === 'pending') return `<span class="tag"${why}>pending</span>`;
@@ -1067,10 +1069,11 @@
     const red = count((x) => x.state === 'red' && !x.conform);
     const conform = count((x) => x.state === 'red' && x.conform);
     const green = count((x) => x.state === 'green');
+    const misMounted = count((x) => x.state === 'mis-mounted');
     const contested = count((x) => x.contested);
     const run = st.run_url ? `<a href="${esc(st.run_url)}" target="_blank" rel="noopener" title="${esc(st.at)}">the factory's last run ↗</a>` : '<span class="muted">no run of the rules\' gate yet</span>';
     const waits = st.tasks.length ? `<span class="tag warn" title="No development task starts while a rules' task is open">development waits on ${st.tasks.map((n) => `#${n}`).join(', ')}</span>` : '';
-    return `${green ? `<span class="tag ok">${green} green</span>` : ''}${red ? `<span class="tag bad">${red} red</span>` : ''}${conform ? `<span class="tag warn">${conform} to conform</span>` : ''}${contested ? `<span class="tag warn">${contested} contested</span>` : ''}${waits} ${run}`;
+    return `${green ? `<span class="tag ok">${green} green</span>` : ''}${red ? `<span class="tag bad">${red} red</span>` : ''}${conform ? `<span class="tag warn">${conform} to conform</span>` : ''}${misMounted ? `<span class="tag bad" title="Tests mounted wrong, not the product: the rules' task fixes them">${misMounted} mis-mounted</span>` : ''}${contested ? `<span class="tag warn">${contested} contested</span>` : ''}${waits} ${run}`;
   }
   function refreshRulesStatus(r) {
     if (DEMO || !r || !r.rules_issue) return;

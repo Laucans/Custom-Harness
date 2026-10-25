@@ -61,7 +61,9 @@ Hard rules, and they are the point of this run:
   name in your answer, not something you commit here.
 - **The rules' tests are not yours.** A red `rules-hold` is fixed in the
   product's code, never in `rules.json`, `tests/rules/` or
-  `scripts/rules-runtime.sh` (a gate refuses it). When
+  `scripts/rules-runtime.sh` (a gate refuses it). A rule it reports
+  mis-mounted is its test's mounting, never the product's: copy its line
+  into `CONTEST.md` as it is, and change nothing for it. When
   `rule-tests-untouched` says a contest was settled, read the decision on
   the issue it names, remove `CONTEST.md`, and conform to the test as it
   stands; one that still cannot hold is a finding to report.

@@ -71,7 +71,7 @@ pub const DUMP_SCHEMA: &str = include_str!("../assets/dump-schema.sh");
 /// once and the product's from then on), the contracts A–R, the ports
 /// and the secrets' scaffolding, the rules' gate, runtime and suites, and
 /// the root `.gitignore` that keeps build outputs out of a round's changes.
-pub const FILES: [Asset; 73] = [
+pub const FILES: [Asset; 74] = [
     Asset {
         path: "docs/ARCHITECTURE.md",
         content: include_str!("../assets/ARCHITECTURE.md"),
@@ -339,6 +339,10 @@ pub const FILES: [Asset; 73] = [
     Asset {
         path: "tests/rules/business/src/lib.rs",
         content: include_str!("../assets/rules/business/src/lib.rs"),
+    },
+    Asset {
+        path: "tests/rules/business/src/mounting.rs",
+        content: include_str!("../assets/rules/business/src/mounting.rs"),
     },
     Asset {
         path: "tests/rules/journey/package.json",
@@ -705,6 +709,7 @@ mod tests {
             "scripts/rules-runtime.sh",
             "tests/rules/business/Cargo.toml",
             "tests/rules/business/src/lib.rs",
+            "tests/rules/business/src/mounting.rs",
             "tests/rules/journey/kit.ts",
             "tests/rules/journey/status-reporter.ts",
         ] {

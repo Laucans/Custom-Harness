@@ -47,7 +47,9 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
                     gates_parity.rs: gates.yml's gates (each a step, found by its id) and tree::violations on the same fixture workspaces, one verdict for both
                     queries_script.rs: the installed queries.sh against a golden registry (tests/golden/) written by the GNU path — and on macOS, under PATH=/usr/bin:/bin with /bin/bash 3.2 and BSD sed, byte for byte
                     mock_server.rs: the installed server.js on node — the engine's behaviour, handlers from their own file imported once, an id defined twice an error naming both files (at startup for a declared id, breaking every call; on first use otherwise), an undeclared payload key warned in the engine's words (top-level keys, the target's key exempt, an empty payload unchecked, any version), never refused; the graph read beside the page (__product/) or at the repository's root
-                    journey_kit.rs: the installed rules' kit.ts on node (types stripped, Playwright stubbed) — a running journey fails once its body ran on the engine's undeclared-key warning in a POST /commands answer, "not a rule contest" in its first line, and on nothing else, an answer after the body, from a second context, or cut by a close included; the page's in-flight counter; a pending one stays on the plain test; the engine's warning, the kit's pattern and the mock's words checked against each other; red when CI has no node that strips TypeScript
+                    journey_kit.rs: the installed rules' kit.ts on node (types stripped, Playwright stubbed) — a running journey fails once its body ran on the engine's undeclared-key warning in a POST /commands answer, "not a rule contest" in its first line, and on nothing else, an answer after the body, from a second context, or cut by a close included; the page's in-flight counter; a pending one stays on the plain test; the engine's warning, the kit's pattern and the mock's words checked against each other; the mounting on a throwaway product's manifests — a screen or a unit its needs do not cover is mis-mounted (annotated, never thrown), what a screen's Micro-UIs declare covered, a page's read off its input red, a link the shell does not serve (a mock-up file name, a 404) red and never a mis-mount; the status reporter writing mis-mounted whatever the outcome; red when CI has no node that strips TypeScript
+                    business_kit.rs: the installed business kit's mounting.rs compiled as it is — a unit reached its needs do not name (the version no part of a need, a short name no id), a variable off the input with what the manifest takes (dotted heads, a fixture id a value), only the engine's undeclared-key warning; lib.rs wires them and judges the mounting before the body's outcome
+                    rules_gate_status.rs: the installed rules-gate.mjs status on a throwaway repository — a mis-mounted test said apart after the other rules, winning over its rule's red (listed under it), failing always, a conform rule too; skips name the node that answered
                     split_handlers.rs: the installed split-handlers.mjs on a throwaway product — byte-for-byte split, idempotent, deterministic, every refusal with nothing written (guarded destructuring and for-of assignments, `this`), a file without semicolons, a handler file a merge already brought, the self-check catching a helper reached through eval
                     mock_handlers_gate.rs: the gate `mock-handlers` from gates.yml on a throwaway repository — ids twice, another id's key, a new legacy key on a pull request once mock/handlers/ holds a handler file (its README and _lib/ do not count)
                     skeleton_product.rs (ignored, on demand): the test kit and both skeletons rendered in a throwaway product — rustfmt-clean, `cargo check --all-targets`, the kit's clippy and tests (its Scratch with SCRATCH_DB_URL), the frames green, the holes red, the filled manifest planted through Bench
@@ -115,6 +117,38 @@ tests/              test_scope_script.rs, dead_code_script.rs, mutants_rotation_
   skipped, when `CI` is set and no node strips TypeScript.
   Generated command types and a CI typecheck of every Micro-UI are a later
   lot.
+- **A rule's test is checked for its mounting at its first real run, in
+  the kits, and a fault there is the test's (H5 v1).** Once the units it
+  needs are built the manifests exist, so the kits judge what the test
+  reached against them, with no mock and no host of their own:
+  `assets/rules/business/src/mounting.rs` (std and serde_json only, wired
+  into `Server::read`/`command` of the business kit's `lib.rs`) refuses,
+  before sending, a unit the test's needs do not name and a read's variable
+  its `capability.json` `input` does not take (a dotted input declaring its
+  head), and reads the engine's undeclared-key warning back from the
+  command's answer — the engine stays the one grammar of a payload. The
+  journey kit (`kit.ts`) sees what the pages reach (it already answers
+  every `POST /commands`; it now looks at each `POST /capabilities/<id>`
+  and each screen route, then lets them go): a screen its needs do not
+  name, or a unit none of its needs covers — named, or in the
+  `needs`/`actions` of a Micro-UI it needs or one its screens lay out — is
+  the test's; a page's read off its input is the Micro-UI's, red with "fix
+  the read, this is not a rule contest", as H3's payload is. Values are
+  never typed: a fixture's id where a manifest says `uuid` is accepted. A
+  test's fault records the state `mis-mounted` and passes — never red,
+  never a contest: its outcome proves nothing. `scripts/rules-gate.mjs
+  status` says those rules apart, after the others, each with its rule's
+  red tests listed under it, and fails on every one, `conform` or not; a
+  screen counts as opened only by a valid name the shell answers (a link
+  like `/screens/x.html`, or a 404, is the product's, red); the rules' task fixes the
+  test before anything is contested (WRITE step 3, CONTEST's first step,
+  FIDELITY's check 3), and a development or a repair copies the line into
+  `CONTEST.md` — the one road from a development's PR to the rules' task.
+  The mock rehearsal of the design (an HTTP host for the mock, a CI step)
+  is not built: it waits for a measurement that contests survive this.
+  The business kit's `record` writes each line in one `write_all`, so the
+  suite's parallel tests no longer interleave their status lines, and it
+  indexes the manifests once per process, as `kit.ts` does.
 - **A unit's mock handlers are its own file.** The mock server
   (`assets/mock/src/server.js`) imports `mock/handlers/<id>.js` the first
   time `<id>` is read or commanded — never bundled, so a handler file is no

@@ -15,6 +15,7 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const KIT: &str = include_str!("../assets/rules/journey/kit.ts");
+const REPORTER: &str = include_str!("../assets/rules/journey/status-reporter.ts");
 const SERVER: &str = include_str!("../assets/mock/src/server.js");
 const ENGINE: &str = include_str!("../../dataguard/src/engine.rs");
 
@@ -133,7 +134,7 @@ const quietBrowser = browser();
 const original = quietBrowser.newContext;
 const seen = [];
 await payloads({ context: quiet, browser: quietBrowser }, async () => {
-  expect(quiet.routes() === 1 && quietBrowser.newContext !== original, 'the default context and new ones are watched');
+  expect(quiet.routes() === 3 && quietBrowser.newContext !== original, 'the default context and new ones are watched: screens, reads, commands');
   expect(quiet.scripts.length === 1 && quiet.scripts[0] === IN_FLIGHT && quiet.listeners() === 1 && quiet.page.close !== quietPageClose, 'its pages count their commands, and a page closing waits for them');
   const declared = warned('a value is declared ahead: confirm or cancel');
   seen.push(await quiet.send('POST', 'http://app/commands', reply(declared)));
@@ -144,7 +145,7 @@ await payloads({ context: quiet, browser: quietBrowser }, async () => {
   seen.push(await quiet.send('POST', 'http://app/commands', reply({ warnings: [], then: [{ submitted: warned('payload key(s) seal not declared by a.c') }] })));
   seen.push(await quiet.send('POST', 'http://app/commands', unreachable));
   expect(seen[0] && typeof seen[0].json === 'function', 'the page gets the server\'s answer: ' + JSON.stringify(seen[0]));
-  expect(seen.slice(1, 4).join() === 'fallback,network,network', 'only a POST /commands is answered through the kit: ' + seen.slice(1, 4).join());
+  expect(seen.slice(1, 4).join() === 'fallback,fallback,network', 'only a POST /commands is answered through the kit, a read only looked at: ' + seen.slice(1, 4).join());
   expect(seen[6] === 'aborted failed', 'a request the server never answered fails for the page: ' + seen[6]);
 });
 expect(quiet.routes() === 0 && quiet.close === quietClose && quiet.page.close === quietPageClose && quiet.listeners() === 0 && quietBrowser.newContext === original, 'the kit goes with the test');
@@ -191,7 +192,7 @@ let secondFailure;
 try {
   await payloads({ context: first, browser: second }, async () => {
     const other = await second.newContext();
-    expect(other.routes() === 1, 'a context the test opens is watched');
+    expect(other.routes() === 3, 'a context the test opens is watched');
     void other.send('POST', 'http://app/commands', reply(warned('payload key(s) conditions not declared by table.resetBattlemap'), 30), 10);
     await other.close();
   });
@@ -278,6 +279,176 @@ expect(count() === 0, 'until its loadend: ' + count());
 console.log('ok');
 ";
 
+/// The mounting: what a running journey's pages reached, against its needs
+/// and the manifests a throwaway product holds (`mounted`, below); and the
+/// status reporter writing a mis-mounted test so.
+const MOUNTING_DRIVER: &str = r"
+process.env.RULES_APP_URL = 'http://app';
+const kit = await import('./kit.ts');
+const { declared, fixtures } = await import('@playwright/test');
+const { default: StatusReporter } = await import('./status-reporter.ts');
+const { readFileSync, rmSync } = await import('node:fs');
+const expect = (cond, what) => { if (!cond) { console.error('FAILED: ' + what); process.exit(1); } };
+
+// Where a screen is opened.
+expect(kit.screenOf(new URL('http://app/screens/fiche-entite?id=1')) === 'fiche-entite', 'the default route, a query kept apart');
+expect(kit.screenOf(new URL('http://app/screens/a%20b/x.css')) === 'a b', 'decoded, and what the page loads under it');
+expect(kit.screenOf(new URL('http://app/capabilities/a.b')) === undefined && kit.screenOf(new URL('http://app/screensaver')) === undefined, 'nothing else');
+process.env.RULES_SCREEN_ROUTE = '/app?screen=<screen>';
+expect(kit.screenOf(new URL('http://app/app?screen=dm-view&q=1')) === 'dm-view', 'where the runtime says');
+delete process.env.RULES_SCREEN_ROUTE;
+
+// What needs cover.
+const covers = kit.covered(['screen:fiche-entite', 'capability:campaign.listCampaigns', 'data-capability:campaign.archiveCampaign@1', 'nonsense']);
+for (const id of ['screen:fiche-entite', 'micro-ui:EntityEditor', 'micro-ui:VersionHistory', 'capability:campaign.getEntity', 'data-capability:campaign.saveEntity', 'capability:campaign.listEntityVersions', 'capability:campaign.listCampaigns', 'data-capability:campaign.archiveCampaign']) {
+  expect(covers.has(id), 'covered: ' + id + ' in ' + [...covers].join());
+}
+const editor = kit.covered(['micro-ui:EntityEditor']);
+expect(editor.has('capability:campaign.getEntity') && !editor.has('capability:campaign.listEntityVersions'), 'a Micro-UI covers its own manifest only');
+expect(kit.covered(['screen:nowhere', 'micro-ui:Nowhere']).size === 2, 'an unbuilt unit covers itself only');
+
+// A read's variables against its manifest.
+const versions = kit.manifestOf('capability', 'campaign.listEntityVersions');
+expect(versions && versions.path === 'crates/campaign/capabilities/list-entity-versions/capability.json', 'found by its field: ' + JSON.stringify(versions));
+expect(kit.offInput('campaign.listEntityVersions', { id: 'x' }, versions) === 'campaign.listEntityVersions has no input ' + String.fromCharCode(34) + 'id' + String.fromCharCode(34) + '; its capability.json takes entity (crates/campaign/capabilities/list-entity-versions/capability.json)', 'R9 (#470): ' + kit.offInput('campaign.listEntityVersions', { id: 'x' }, versions));
+expect(kit.offInput('campaign.listEntityVersions', { entity: 'elowen' }, versions) === undefined, 'a fixture id is a value');
+const entity = kit.manifestOf('capability', 'campaign.getEntity');
+expect(kit.offInput('campaign.getEntity', { filter: {}, id: 'x' }, entity) === undefined, 'a dotted input declares its head');
+expect(kit.offInput('campaign.listCampaigns', { a: 1 }, kit.manifestOf('capability', 'campaign.listCampaigns')) === undefined, 'no input object, nothing judged');
+expect(kit.offInput('a.b', { a: 1 }, { path: 'p', manifest: { input: {} } }).endsWith('takes no input (p)'), 'an empty input takes nothing');
+expect(kit.offInput('a.b', null, versions) === undefined && kit.offInput('a.b', [1], versions) === undefined, 'no variables, nothing judged');
+expect(kit.manifestOf('micro-ui', 'Broken') === undefined, 'a manifest that is no JSON names nothing');
+
+// A running test carries its needs; a pending one does not.
+kit.rule('R9', ['screen:fiche-entite'], 'mounted', async () => {});
+const needsSaid = declared[0].options.annotation.find((a) => a.type === 'needs');
+expect(needsSaid && needsSaid.description === JSON.stringify(['screen:fiche-entite']), 'its needs ride on the test: ' + JSON.stringify(declared[0].options));
+
+const [watch] = fixtures.payloadsDeclared;
+// A context: routes tried last-registered first, as Playwright does.
+const context = () => {
+  const routes = [];
+  const ctx = {
+    addInitScript: async () => {},
+    route: async (matcher, handler) => { routes.push([matcher, handler]); },
+    unroute: async (matcher, handler) => {
+      const at = routes.findIndex(([m, h]) => m === matcher && h === handler);
+      if (at >= 0) routes.splice(at, 1);
+    },
+    pages: () => [],
+    responses: new Set(),
+    on: (event, l) => { if (event === 'response') ctx.responses.add(l); },
+    off: (event, l) => { if (event === 'response') ctx.responses.delete(l); },
+    close: async () => {},
+    routes: () => routes.length,
+    answer: (url, status) => { for (const l of ctx.responses) l({ url: () => url, status: () => status }); },
+    send: async (method, url, body, answer = { warnings: [] }) => {
+      const match = [...routes].reverse().find(([m]) => m(new URL(url)));
+      if (!match) return 'network';
+      let seen = 'nothing';
+      await match[1]({
+        request: () => ({ method: () => method, url: () => url, postDataJSON: () => { if (body instanceof Error) throw body; return body; } }),
+        fallback: async () => { seen = 'fallback'; },
+        abort: async () => { seen = 'aborted'; },
+        fetch: async () => ({ json: async () => answer }),
+        fulfill: async () => { seen = 'fulfilled'; },
+      });
+      return seen;
+    },
+  };
+  return ctx;
+};
+const browser = () => ({ newContext: async () => context() });
+const info = (needs) => ({ annotations: [{ type: 'rule', description: 'R9' }, ...(needs ? [{ type: 'needs', description: JSON.stringify(needs) }] : [])] });
+const run = async (needs, body) => {
+  const ctx = context();
+  const testInfo = info(needs);
+  let error;
+  try {
+    await watch({ context: ctx, browser: browser() }, () => body(ctx), testInfo);
+  } catch (e) {
+    error = e;
+  }
+  expect(ctx.routes() === 0 && ctx.responses.size === 0, 'every route and listener goes with the test');
+  return { error, misMounted: testInfo.annotations.find((a) => a.type === 'mis-mounted') };
+};
+
+// Mounted: the screen it names, what its screen's Micro-UIs read and send.
+const fine = await run(['screen:fiche-entite'], async (ctx) => {
+  expect(await ctx.send('GET', 'http://app/screens/fiche-entite?id=1') === 'fallback', 'a screen goes on its way');
+  expect(await ctx.send('POST', 'http://app/capabilities/campaign.getEntity', { sha256: 'x', variables: { id: 'elowen' } }) === 'fallback', 'a read goes on its way');
+  expect(await ctx.send('POST', 'http://app/commands', { dataCapability: 'campaign.saveEntity@1', payload: {} }) === 'fulfilled', 'a command is answered through the kit');
+  await ctx.send('GET', 'http://app/capabilities/campaign.listCampaigns');
+  await ctx.send('POST', 'http://app/capabilities/campaign.getEntity', new Error('no body'));
+});
+expect(!fine.error && !fine.misMounted, 'a mounted journey: ' + (fine.error || JSON.stringify(fine.misMounted)));
+
+// Mis-mounted: a screen and units its needs do not cover — said, never thrown.
+const off = await run(['screen:fiche-entite'], async (ctx) => {
+  await ctx.send('GET', 'http://app/screens/campagne');
+  await ctx.send('POST', 'http://app/capabilities/campaign.listCampaigns', { variables: {} });
+  await ctx.send('POST', 'http://app/commands', { dataCapability: 'campaign.archiveCampaign@1', payload: {} });
+});
+expect(!off.error, 'a mis-mounted journey is not red: ' + off.error);
+const parts = off.misMounted ? off.misMounted.description.split(' · ') : [];
+expect(parts.length === 3, 'each way, once: ' + JSON.stringify(off.misMounted));
+expect(parts[0] === 'opens screen:campagne, which its needs do not name: a journey lists every screen it walks through', parts[0]);
+expect(parts[1] === 'reaches capability:campaign.listCampaigns, which none of its needs covers (named, or in the needs or actions of a Micro-UI it needs or one its screens lay out): a journey lists every unit it uses', parts[1]);
+expect(parts[2].startsWith('reaches data-capability:campaign.archiveCampaign, which none'), parts[2]);
+
+// A link named like a mock-up file, or a screen the shell answers 404, is
+// the product's link: red, never a mis-mount.
+const link = await run(['screen:campagne'], async (ctx) => {
+  await ctx.send('GET', 'http://app/screens/campagne');
+  ctx.answer('http://app/screens/campagne', 200);
+  await ctx.send('GET', 'http://app/screens/x.html');
+  ctx.answer('http://app/screens/x.html', 404);
+  await ctx.send('GET', 'http://app/screens/nowhere?id=1');
+  ctx.answer('http://app/screens/nowhere?id=1', 404);
+  ctx.answer('not a url', 404);
+});
+expect(!link.misMounted, 'a link the shell does not serve is no mis-mount: ' + JSON.stringify(link.misMounted));
+const linkLines = link.error ? link.error.message.split('\n') : [];
+expect(linkLines[0] === 'a link to /screens/x.html, which the shell does not serve', 'the link said: ' + linkLines.join('|'));
+expect(linkLines[1] === 'a link to /screens/nowhere?id=1, which the shell does not serve', linkLines[1]);
+expect(linkLines.length === 3 && linkLines[2].includes('contract E'), linkLines.join('|'));
+
+// A page's read off its input is the Micro-UI's: red, never a contest.
+const read = await run(['screen:fiche-entite'], async (ctx) => {
+  await ctx.send('POST', 'http://app/capabilities/campaign.listEntityVersions', { variables: { id: 'x' } });
+  await ctx.send('POST', 'http://app/commands', { dataCapability: 'campaign.saveEntity' }, { warnings: ['payload key(s) portrait not declared by campaign.saveEntity'] });
+});
+expect(!read.misMounted, 'a page read off its input is no mis-mount');
+const lines = read.error ? read.error.message.split('\n') : [];
+expect(lines[0] === 'payload off the manifest — fix the payload, this is not a rule contest: payload key(s) portrait not declared by campaign.saveEntity', lines[0]);
+const at = lines.findIndex((l) => l.startsWith('variables off the manifest'));
+expect(at > 0 && lines[at] === 'variables off the manifest — fix the read, this is not a rule contest: ' + kit.offInput('campaign.listEntityVersions', { id: 'x' }, versions), 'the read said: ' + lines[at]);
+expect(lines[at + 1].startsWith('  - campaign.listEntityVersions has no input') && lines[at + 2].includes('by its owner'), lines.slice(at).join('|'));
+expect(kit.offRead(['a', 'b']).split('\n').length === 4, 'each read, then what to do');
+
+// No needs said (an older test): only the payloads and reads are judged.
+const legacy = await run(undefined, async (ctx) => {
+  await ctx.send('GET', 'http://app/screens/campagne');
+});
+expect(!legacy.error && !legacy.misMounted, 'nothing to judge the mounting against');
+
+// The status reporter writes what the kit found.
+const status = process.env.RULES_STATUS;
+const reporter = new StatusReporter();
+const test = (annotations) => ({ title: 'R9 mounted', annotations: [{ type: 'rule', description: 'R9' }, ...annotations] });
+reporter.onTestEnd(test([]), { status: 'passed', annotations: [{ type: 'mis-mounted', description: 'reaches x' }] });
+reporter.onTestEnd(test([{ type: 'mis-mounted', description: 'opens y' }]), { status: 'failed', error: { message: 'red\nmore' } });
+reporter.onTestEnd(test([]), { status: 'failed', error: { message: 'still listed\nmore' } });
+reporter.onTestEnd(test([]), { status: 'passed' });
+reporter.onTestEnd(test([{ type: 'pending', description: 'waiting for micro-ui:X' }]), { status: 'skipped' });
+reporter.onTestEnd({ title: 'not a rule', annotations: [] }, { status: 'passed' });
+const written = readFileSync(status, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+rmSync(status);
+expect(written.map((w) => w.state).join() === 'mis-mounted,mis-mounted,red,green,pending', 'states: ' + JSON.stringify(written));
+expect(written[0].why === 'reaches x' && written[1].why === 'opens y' && written[2].why === 'still listed', 'whys: ' + JSON.stringify(written));
+console.log('ok');
+";
+
 struct Dir(PathBuf);
 
 impl Drop for Dir {
@@ -304,24 +475,57 @@ fn strips_types() -> bool {
         .is_ok_and(|out| out.status.success())
 }
 
-#[test]
-fn a_journey_fails_on_the_engine_s_undeclared_key_warning_and_only_on_it() {
-    if !strips_types() {
-        // CI pins node (`.github/workflows/ci.yml`): a missing runtime there
-        // would make this gate vacuous, so it is red, never skipped.
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "journey_kit: no node on the path strips TypeScript (node 22.6 or later), and CI is set"
+/// Which node answered and from where: its version, its path, the PATH
+/// searched — what a skip or a CI failure says.
+fn which_node() -> String {
+    let version = Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map_or_else(
+            || "none".to_string(),
+            |out| String::from_utf8_lossy(&out.stdout).trim().to_string(),
         );
-        eprintln!("journey_kit: no node on the path strips TypeScript, skipped");
-        return;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let found = std::env::split_paths(&path)
+        .map(|dir| dir.join("node"))
+        .find(|node| node.is_file())
+        .map_or_else(
+            || "not found".to_string(),
+            |node| node.display().to_string(),
+        );
+    format!(
+        "node {version} ({found}) on PATH={}",
+        path.to_string_lossy()
+    )
+}
+
+/// Whether this run may drive the kit: a node that strips TypeScript, or
+/// — with `CI` set, where node is pinned — red, never skipped.
+fn node_ready(test: &str) -> bool {
+    if strips_types() {
+        return true;
     }
+    let which = which_node();
+    // CI pins node (`.github/workflows/ci.yml`): a missing runtime there
+    // would make this gate vacuous, so it is red, never skipped.
+    assert!(
+        std::env::var_os("CI").is_none(),
+        "journey_kit: no node strips TypeScript (22.6 or later), and CI is set: {which}"
+    );
+    eprintln!("journey_kit {test}: no node strips TypeScript (22.6 or later), skipped: {which}");
+    false
+}
+
+/// A throwaway repository holding the kit, Playwright stubbed, and `files`.
+fn product(case: &str, files: &[(&str, &str)]) -> Dir {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
     let dir = Dir(std::env::temp_dir().join(format!(
-        "harness-journey-kit-{}-{stamp}",
+        "harness-journey-kit-{case}-{}-{stamp}",
         std::process::id()
     )));
     let root = &dir.0;
@@ -333,11 +537,21 @@ fn a_journey_fails_on_the_engine_s_undeclared_key_warning_and_only_on_it() {
     );
     write(root, "node_modules/@playwright/test/index.js", PLAYWRIGHT);
     write(root, "tests/rules/journey/kit.ts", KIT);
-    write(root, "tests/rules/journey/driver.mjs", DRIVER);
+    for (path, text) in files {
+        write(root, path, text);
+    }
+    dir
+}
+
+/// Runs a driver of the kit's folder; asserts it said `ok`.
+fn drive(root: &Path, driver: &str) {
+    let status = root.join("target/rules-status.jsonl");
     let output = Command::new("node")
         .arg("--experimental-strip-types")
         .arg("--no-warnings")
-        .arg(root.join("tests/rules/journey/driver.mjs"))
+        .arg(root.join("tests/rules/journey").join(driver))
+        .env("RULES_STATUS", &status)
+        .env_remove("RULES_SCREEN_ROUTE")
         .output()
         .expect("node runs");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -346,6 +560,62 @@ fn a_journey_fails_on_the_engine_s_undeclared_key_warning_and_only_on_it() {
         output.status.success() && stdout.contains("ok"),
         "stdout: {stdout}\nstderr: {stderr}"
     );
+}
+
+#[test]
+fn a_journey_fails_on_the_engine_s_undeclared_key_warning_and_only_on_it() {
+    if !node_ready("payloads") {
+        return;
+    }
+    let dir = product("payloads", &[("tests/rules/journey/driver.mjs", DRIVER)]);
+    drive(&dir.0, "driver.mjs");
+}
+
+#[test]
+fn a_journey_off_its_needs_is_mis_mounted_and_a_read_off_its_input_is_red() {
+    if !node_ready("mounting") {
+        return;
+    }
+    // The reporter imports the kit as Playwright resolves it; node wants the file.
+    let reporter = REPORTER.replace("from './kit';", "from './kit.ts';");
+    assert_ne!(reporter, REPORTER, "the reporter reads the kit");
+    let dir = product(
+        "mounting",
+        &[
+            ("tests/rules/journey/status-reporter.ts", &reporter),
+            ("tests/rules/journey/driver.mjs", MOUNTING_DRIVER),
+            (
+                "crates/campaign/capabilities/list-entity-versions/capability.json",
+                r#"{"capability":"campaign.listEntityVersions","input":{"entity":"string"}}"#,
+            ),
+            (
+                "crates/campaign/capabilities/get-entity/capability.json",
+                r#"{"capability":"campaign.getEntity","input":{"id":"string","filter.kind":"string"}}"#,
+            ),
+            (
+                "crates/campaign/capabilities/list-campaigns/capability.json",
+                r#"{"capability":"campaign.listCampaigns"}"#,
+            ),
+            (
+                "apps/campaign/entity-editor/micro-ui.json",
+                r#"{"microUi":"EntityEditor","needs":["campaign.getEntity"],"actions":["campaign.saveEntity"]}"#,
+            ),
+            (
+                "apps/campaign/version-history/micro-ui.json",
+                r#"{"microUi":"VersionHistory","needs":["campaign.listEntityVersions"]}"#,
+            ),
+            ("apps/campaign/broken/micro-ui.json", "{ not json"),
+            (
+                "apps/screens/fiche-entite.json",
+                r#"{"screen":"fiche-entite","layout":[{"EntityEditor":{}},{"VersionHistory":{"entity":"$ctx.entity"}}]}"#,
+            ),
+            (
+                "apps/screens/campagne.json",
+                r#"{"screen":"campagne","layout":[]}"#,
+            ),
+        ],
+    );
+    drive(&dir.0, "driver.mjs");
 }
 
 /// The kit and the mock quote the engine's words: a change to the

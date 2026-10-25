@@ -369,7 +369,15 @@ merges) and `fidelity` (a fresh session judges each test against its
 criterion only, merges when all are faithful, hands the issue to a human
 otherwise), both gated by `AsksSomething`; lock per issue; no resume, no
 tolerance. The body's format is `rules::data::request` — the view writes
-it with `body`, the workflow reads it with `read`.
+it with `body`, the workflow reads it with `read`. A test the kits flag
+**mis-mounted** at its first real run (a unit its needs do not cover, a
+variable or a payload key off its manifest) is the rules' task's to fix
+before anything is contested: WRITE fixes it before its PR, CONTEST fixes
+it first (answer a, never c), FIDELITY finds the PR unfaithful while
+`rules-hold` reports one; a development runs `rules-gate.mjs status` on
+fresh outcomes before its PR (a mis-mounted test passes `cargo test`), and
+it or `pr_fix` only copies the line into `CONTEST.md`, the road to this
+task.
 
 **The one that decides where a human was asked:** `decide` — any open
 issue carrying `harness:needs-decision`: the business advice wanted a
