@@ -26,8 +26,9 @@ src/cli.rs        what a human types: the arguments and their environment variab
 src/router/       what decides on its own: `harness watch`
   mod.rs            the loop: a tick, its reads of the board, the rest after a `QUOTA` stop — and, starting, the prompt drafts applied (`shared::apply_drafts`)
   routes.rs         what a tick decided, run in this process: the route's workflow, the merges, a refinement round, the record a failed dispatch leaves for the doctor
-  lanes.rs          the lanes of a parallel watch filled: a `harness` child per runnable task, split or refinement, in a checkout of its own
-src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change, or a blocker holding it lands
+  lanes.rs          the lanes of a parallel watch filled: a `harness` child per runnable task, split or refinement, in a checkout of its own — the slot's two build folders pruned first (`prune_slot`)
+  floor.rs          the disk floor: under `DISK_FLOOR_GB` free on the lanes' volume (core's `Volume` port, `Statvfs`), no lane starts; each crossing said once
+src/dispatch/lanes.rs  the lanes of a parallel watch: one `harness --task <n>` child per runnable task, up to `--parallel`; a lane that stops (exit 1) parks its task until the issue's body or labels change, or a blocker holding it lands; `prune_target`, through the `Disk` port, keeps a lane's `target` under `LANE_TARGET_CAP_GB`
 
 src/dispatch/     one module per thing that can be run, plus what they share
   dev_loop.rs       the first workflow: an exclusive workspace, several sessions deep (`--no-scaffold`: no unit skeleton before `code`)
@@ -84,7 +85,8 @@ src/toolchain.rs  the one toolchain resolver: the `PATH` and `SHELL` a product's
                   and every session get (shims for GNU sed/grep, bash ≥ 5, node ≥ 22; the
                   product's pinned cargo, else rustup's proxies; then the inherited `PATH`),
                   handed to the adapters the launcher builds (`processes()`,
-                  `environment()`: `with_env`) and said as `Event::ToolchainResolved` when
+                  `environment()`: `with_env`), with the shared compilation cache's variables
+                  when sccache is found, and said as `Event::ToolchainResolved` when
                   the watch starts and when a run mounts its checkout; `harness toolchain`
                   prints the same line
 
@@ -157,6 +159,38 @@ lanes from being refilled. One job per issue or PR at a time; the technical
 refinement, the test debt and the planner one at a time each (an exclusive
 group a lane holds). With one lane, `routing::decide` — the schedule's
 first job — runs in the tick, as before.
+
+**The disk budget.** Five lanes each build the product in their own
+checkout; a cold build is 3.4 GB of `target`, one with incremental on grew to
+8.2 GB, and four cold builds at once took the disk to 1 GB (2026-10-24
+22:28). Three answers, each its own:
+
+- *a shared compilation cache* (`toolchain.rs`, below): sccache, incremental
+  off — a cold product build 54 s, warm 44 s;
+- *a floor* (`router/floor.rs`): every tick measures the free space of the
+  lanes' workspaces folder (else the factory), one `statvfs` through core's
+  `Volume` port. Under `DISK_FLOOR_GB` (default 12, `0` none) no lane starts
+  — the free work, the merges, goes on; with one lane nothing is dispatched.
+  `Event::DiskUnderFloor` is said when it falls and notify raises it (an
+  error, `disk-floor`); `DiskAboveFloor` when it is back, which clears it,
+  and that tick reads the board like a freed lane. Under the floor the free
+  slots' targets are pruned first (`prune_slot` on every idle slot) and
+  the volume measured again, so space the watch owns never holds it. A
+  volume that cannot be asked changes nothing: unheld it holds nothing
+  back, held it stays held. A new watch starts unheld, and notify clears
+  `disk-floor` on `WatchStarted`;
+- *a cap* (`dispatch/lanes.rs::prune_target`, called by
+  `router/lanes.rs::prune_slot` on the slot about to be taken, so nothing
+  builds there): over `LANE_TARGET_CAP_GB` (default 6, `0` never) a lane's
+  `target` — its task checkout's `lane-<k>` and its route checkout's
+  `router-lane-<k>` — loses `debug/incremental` and every executable a
+  later build session superseded (`<name>-<16 hex>` in `debug/deps` more
+  than six hours older than the newest of its name, with the files cargo
+  wrote beside it; a name cargo uplifted into `debug/` — a bin — is never
+  touched); over twice the cap the build profiles go (`debug`, `release`),
+  what is not cargo's staying (`target/rules-runtime`, a server's pids).
+  Said as `Event::LaneTargetPruned` when something went or was refused. A
+  dry run prunes nothing.
 
 **Every line of the watch and its lanes is an event first**
 (`Logbook::event`): the sink of a `run.log` or of `watch.log`
@@ -382,6 +416,26 @@ checkout's own pin, `at_run_start`, from `shared::mount_named` and
 `dev_loop`'s mount): every lane's `run.log` carries it. `harness toolchain`
 prints it (exit 1 on a problem). Never the rest of the environment.
 
+**The shared compilation cache.** When `sccache` is found — on the composed
+`PATH`, else in `/opt/homebrew/bin` or `/usr/local/bin` — every spawned
+process also gets `RUSTC_WRAPPER` (that sccache, by its full path),
+`SCCACHE_DIR` (`SCCACHE_DIR`, a relative one read from the home; empty:
+`~/.harness/sccache`, one cache for every factory), `SCCACHE_CACHE_SIZE`
+(empty: `15G`), `CARGO_INCREMENTAL=0` — sccache caches no incremental
+crate, and incremental is what grew a lane's `target` — and
+`SCCACHE_IGNORE_SERVER_IO_ERROR=1`, a server out of reach falling back to
+rustc. Only a sccache whose `--version` exits 0 is wired. `SCCACHE=off` in
+`.env.local` sets none of them; off, or without a sccache that runs, an
+inherited `RUSTC_WRAPPER` is cleared (set empty). The line names every
+variable a process gets, values in full: the shell's (`SHELL=…
+CLAUDE_CODE_SHELL=…`), then the cache's (`build cache: sccache 0.18.0 —
+RUSTC_WRAPPER=/…/sccache SCCACHE_DIR=/…/sccache SCCACHE_CACHE_SIZE=15G
+CARGO_INCREMENTAL=0 SCCACHE_IGNORE_SERVER_IO_ERROR=1`, or `off`, or `none,
+sccache not found`, or `none, sccache does not run (…)`), then the
+inherited build variables passing through (`; inherited: …`), then the
+`PATH`. sccache missing is not a problem — a build without it is only
+slower.
+
 **How it reaches the adapters — a decision.** The adapters take it by
 injection (`Processes::with_env`, `ClaudeCliFactory::with_env`); the launcher
 hands it to every one it builds after a start, through
@@ -396,7 +450,7 @@ harness's own environment; a command run by hand (`init-repo`, `doctor`)
 before any start gets none.
 
 Composition-root code by nature — it reads `PATH`, `HOME`, `RUSTUP_HOME`,
-`CARGO_HOME`, the disk — and only the launcher has it; `core` and `workflows`
+`CARGO_HOME`, `SCCACHE`, `SCCACHE_DIR`, `SCCACHE_CACHE_SIZE`, the disk — and only the launcher has it; `core` and `workflows`
 never see it. The pure parts (`channel_of`, `version_in`, `major`, `Pin`) and
 `resolve` over folders a test builds are tested here;
 `at_watch_start`/`product_file`/`by_hand` wire `gh` and are excluded from the

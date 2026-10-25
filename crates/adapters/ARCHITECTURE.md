@@ -27,7 +27,10 @@ shell/    process      the only place in the crate that spawns a subprocess; `Pr
                        launcher's toolchain `PATH`) to every child it spawns
           git          GitCli, GitRepos — every call names the repo with `-C <root>`
           github       GhCli — issues go through `gh api`, not `gh issue`
-          disk         RealDisk
+          disk         RealDisk — a folder's size is its tree's blocks, links never followed
+                       (what `du` counts)
+          volume       Statvfs — `statvfs(3)` through rustix's safe wrapper (`f_bavail` ×
+                       `f_frsize`), so no `unsafe`
           database     whether the product's database answers (a TCP connect), and
                        PgDatabases — the databases the factory's role owns and a plain
                        DROP DATABASE that keeps one in use, a sweep's drops on one

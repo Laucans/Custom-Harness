@@ -24,9 +24,22 @@
 //!    cargo that is not rustup's is a problem that names its fix;
 //! 3. then the inherited `PATH`, in its own order, every folder once.
 //!
+//! The product's builds share one compilation cache: when `sccache` is
+//! found and runs, every spawned process also gets `RUSTC_WRAPPER` (that
+//! sccache), `SCCACHE_DIR` (`~/.harness/sccache` unless the owner names
+//! another), `SCCACHE_CACHE_SIZE` (`15G` unless named),
+//! `CARGO_INCREMENTAL=0` — sccache caches no incremental build, and
+//! incremental is what grew a lane's `target` to 8.2 GB — and
+//! `SCCACHE_IGNORE_SERVER_IO_ERROR=1`, so a server that cannot be reached
+//! makes a build run rustc itself instead of failing. `SCCACHE=off` in
+//! `.env.local` turns it off; off, or without a sccache that runs, an
+//! inherited `RUSTC_WRAPPER` is cleared, so no build goes through a
+//! wrapper the line does not say.
+//!
 //! What it found is said once per start — the watch's, every run's — as
 //! [`Event::ToolchainResolved`]: each tool with its version and where it
-//! is, then the whole `PATH`. `harness toolchain` prints the same line.
+//! is, the build cache's variables, then the whole `PATH`. `harness
+//! toolchain` prints the same line.
 
 use std::cell::RefCell;
 use std::os::unix::fs::PermissionsExt;
@@ -55,6 +68,14 @@ const NODE_AT_LEAST: u32 = 22;
 
 /// The file that pins a product's Rust channel.
 const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
+
+/// The compilation cache's size when the owner names none: room for every
+/// lane's artefacts of the product (a cold build is 3.4 GB of `target`).
+const CACHE_SIZE: &str = "15G";
+
+/// The compilation cache's folder under the home when the owner names none:
+/// one cache for every factory of the machine.
+const CACHE_DIR: &str = ".harness/sccache";
 
 /// The GNU tools Homebrew installs under a `g` prefix, by the name a script
 /// calls them, with the formula that installs each.
@@ -117,6 +138,48 @@ impl Pin {
     }
 }
 
+/// What the owner asks of the compilation cache, read from the process:
+/// `.env.local` reaches the watch, and its lanes, as their environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CacheWish {
+    /// `SCCACHE`: `off` turns the cache off; empty or anything else leaves
+    /// it on when sccache is found.
+    pub switch: String,
+    /// `SCCACHE_DIR`; empty: `~/.harness/sccache`. A relative folder is read
+    /// from the home folder, never from where a process happens to run.
+    pub dir: String,
+    /// `SCCACHE_CACHE_SIZE`; empty: [`CACHE_SIZE`].
+    pub size: String,
+    /// The build variables this process inherited, which reach every child
+    /// unless the cache sets them: `RUSTC_WRAPPER`, `CARGO_INCREMENTAL` and
+    /// every `SCCACHE_*`, by name.
+    pub inherited: Vec<(String, String)>,
+}
+
+impl CacheWish {
+    /// This process's own: `SCCACHE`, `SCCACHE_DIR`, `SCCACHE_CACHE_SIZE`,
+    /// and the build variables it inherited.
+    fn of_process() -> Self {
+        let read = |variable: &str| std::env::var(variable).unwrap_or_default();
+        let mut inherited: Vec<(String, String)> = std::env::vars()
+            // An unfilled `.env.local` line sets an empty one: nothing to say.
+            .filter(|(name, value)| {
+                !value.is_empty()
+                    && (name == "RUSTC_WRAPPER"
+                        || name == "CARGO_INCREMENTAL"
+                        || name.starts_with("SCCACHE_"))
+            })
+            .collect();
+        inherited.sort();
+        Self {
+            switch: read("SCCACHE"),
+            dir: read("SCCACHE_DIR"),
+            size: read("SCCACHE_CACHE_SIZE"),
+            inherited,
+        }
+    }
+}
+
 /// What the resolver reads of the process, given rather than read, so a
 /// test hands it folders of its own.
 pub struct Inputs {
@@ -134,6 +197,8 @@ pub struct Inputs {
     pub pin: Pin,
     /// The folder the shims are written in.
     pub shims: PathBuf,
+    /// What the owner asks of the compilation cache.
+    pub cache: CacheWish,
 }
 
 impl Inputs {
@@ -157,6 +222,7 @@ impl Inputs {
             shims: Workspace::new(here)
                 .state_root()
                 .join(".llocal/toolchain/bin"),
+            cache: CacheWish::of_process(),
         }
     }
 }
@@ -172,6 +238,11 @@ pub struct Toolchain {
     shell: Option<String>,
     /// What is missing or too old, each naming its fix.
     problems: Vec<String>,
+    /// The compilation cache's variables: its own when on, an inherited
+    /// wrapper cleared when not.
+    cache: Vec<(String, String)>,
+    /// The compilation cache, as the line says it.
+    cache_said: String,
 }
 
 impl Toolchain {
@@ -179,6 +250,12 @@ impl Toolchain {
     pub fn event(&self) -> Event {
         Event::ToolchainResolved {
             tools: self.tools.clone(),
+            shell: self
+                .shell
+                .as_ref()
+                .map(|shell| format!("SHELL={shell} CLAUDE_CODE_SHELL={shell}"))
+                .unwrap_or_default(),
+            cache: self.cache_said.clone(),
             path: self.path.clone(),
             problems: self.problems.clone(),
         }
@@ -187,13 +264,15 @@ impl Toolchain {
     /// What every spawned process gets on top of the harness's own
     /// environment: the `PATH`, and when a bash 5 was found, `SHELL` and
     /// Claude Code's own override of its shell detection
-    /// (`CLAUDE_CODE_SHELL`), so a session's Bash tool runs it.
+    /// (`CLAUDE_CODE_SHELL`), so a session's Bash tool runs it; then the
+    /// compilation cache's variables — on, or an inherited wrapper cleared.
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut env = vec![("PATH".to_string(), self.path.clone())];
         if let Some(shell) = &self.shell {
             env.push(("SHELL".to_string(), shell.clone()));
             env.push(("CLAUDE_CODE_SHELL".to_string(), shell.clone()));
         }
+        env.extend(self.cache.iter().cloned());
         env
     }
 }
@@ -275,12 +354,130 @@ pub async fn resolve(inputs: &Inputs) -> Toolchain {
         &mut problems,
     )
     .await;
+    // On the `PATH` a process gets, else where Homebrew links it: the
+    // wrapper is named by its full path, so either reaches every build.
+    let sccache = which("sccache", &composed).or_else(|| which("sccache", &searched));
+    let (cache, cache_said) = build_cache(&inputs.cache, sccache.as_deref(), seen).await;
     Toolchain {
         tools,
         path,
         shell,
         problems,
+        cache,
+        cache_said,
     }
+}
+
+/// The compilation cache's variables and how the line says them, every
+/// value in full: `off` when the owner turned it off, none when sccache is
+/// not found or does not run — never a problem, a build without it is only
+/// slower. Without the cache an inherited `RUSTC_WRAPPER` is cleared (cargo
+/// reads an empty one as none); the inherited build variables the cache
+/// does not set pass through, and are said.
+async fn build_cache(
+    wish: &CacheWish,
+    sccache: Option<&Path>,
+    seen: Seen<'_>,
+) -> (Vec<(String, String)>, String) {
+    let (mut set, head) = if wish.switch.trim().eq_ignore_ascii_case("off") {
+        (Vec::new(), "build cache: off (SCCACHE=off)".to_string())
+    } else {
+        match sccache {
+            None => (
+                Vec::new(),
+                "build cache: none, sccache not found (brew install sccache)".to_string(),
+            ),
+            Some(sccache) => match runs(sccache).await {
+                Err(why) => (
+                    Vec::new(),
+                    format!("build cache: none, sccache does not run ({why})"),
+                ),
+                Ok(version) => (
+                    cache_variables(wish, sccache, seen),
+                    format!("build cache: sccache {version}"),
+                ),
+            },
+        }
+    };
+    let mut said: Vec<String> = set
+        .iter()
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    let wrapper = wish
+        .inherited
+        .iter()
+        .find(|(name, value)| name == "RUSTC_WRAPPER" && !value.is_empty());
+    if set.is_empty()
+        && let Some((_, value)) = wrapper
+    {
+        set.push(("RUSTC_WRAPPER".to_string(), String::new()));
+        said.push(format!("RUSTC_WRAPPER= (inherited {value} cleared)"));
+    }
+    let passed: Vec<String> = wish
+        .inherited
+        .iter()
+        .filter(|(name, _)| !set.iter().any(|(own, _)| own == name))
+        .map(|(name, value)| format!("{name}={value}"))
+        .collect();
+    let mut line = head;
+    if !said.is_empty() {
+        line = format!("{line} — {}", said.join(" "));
+    }
+    if !passed.is_empty() {
+        line = format!("{line}; inherited: {}", passed.join(" "));
+    }
+    (set, line)
+}
+
+/// The variables of a cache that runs: the wrapper, its folder and size,
+/// incremental off, and a server out of reach falling back to rustc.
+fn cache_variables(wish: &CacheWish, sccache: &Path, seen: Seen<'_>) -> Vec<(String, String)> {
+    let named = wish.dir.trim();
+    let dir = if named.is_empty() {
+        seen.home.map(|home| home.join(CACHE_DIR))
+    } else {
+        let named = Path::new(named.strip_prefix("~/").unwrap_or(named));
+        // A relative folder is the home's: a build runs in many folders.
+        match seen.home {
+            Some(home) if named.is_relative() => Some(home.join(named)),
+            _ => Some(named.to_path_buf()),
+        }
+    };
+    let size = match wish.size.trim() {
+        "" => CACHE_SIZE,
+        size => size,
+    };
+    let mut env = vec![("RUSTC_WRAPPER", sccache.display().to_string())];
+    if let Some(dir) = &dir {
+        env.push(("SCCACHE_DIR", dir.display().to_string()));
+    }
+    env.push(("SCCACHE_CACHE_SIZE", size.to_string()));
+    env.push(("CARGO_INCREMENTAL", "0".to_string()));
+    env.push(("SCCACHE_IGNORE_SERVER_IO_ERROR", "1".to_string()));
+    env.into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect()
+}
+
+/// The version `sccache --version` names when it exits 0, or why it does
+/// not run: a wrapper that fails would fail every build it wraps.
+async fn runs(sccache: &Path) -> Result<String, String> {
+    let asked = format!("{} --version", sccache.display());
+    let ran = process::run(
+        &sccache.display().to_string(),
+        &["--version".to_string()],
+        Path::new("/"),
+    )
+    .await
+    .map_err(|halt| halt.reason().to_string())?;
+    if !ran.ok() {
+        return Err(ran.code.map_or_else(
+            || format!("`{asked}` was killed"),
+            |code| format!("`{asked}` exited {code}"),
+        ));
+    }
+    version_in(ran.stdout.lines().next().unwrap_or_default())
+        .ok_or_else(|| format!("`{asked}` names no version"))
 }
 
 /// The `bin` of rustup's toolchain for the channel the product pins, or the
@@ -852,6 +1049,7 @@ mod tests {
             home: Some(m.root.0.clone()),
             pin: channel.map_or(Pin::Unpinned, |c| Pin::Channel(c.to_string())),
             shims: m.root.0.join("factory/.llocal/toolchain/bin"),
+            cache: CacheWish::default(),
         }
     }
 
@@ -1095,6 +1293,214 @@ mod tests {
         );
     }
 
+    /// The variables of `toolchain`'s environment past the `PATH` and shell.
+    fn cache_env(toolchain: &Toolchain) -> Vec<(String, String)> {
+        toolchain
+            .environment()
+            .into_iter()
+            .filter(|(name, _)| !["PATH", "SHELL", "CLAUDE_CODE_SHELL"].contains(&name.as_str()))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_found_sccache_gives_every_build_the_shared_cache_and_incremental_off() {
+        let m = machine("sccache");
+        let sccache = tool(&m.brew, "sccache", "sccache 0.18.0");
+        let toolchain = resolve(&inputs(&m, Some("1.99.1"))).await;
+        let home = &m.root.0;
+        assert_eq!(
+            cache_env(&toolchain),
+            [
+                ("RUSTC_WRAPPER", sccache.display().to_string()),
+                (
+                    "SCCACHE_DIR",
+                    home.join(".harness/sccache").display().to_string()
+                ),
+                ("SCCACHE_CACHE_SIZE", "15G".to_string()),
+                ("CARGO_INCREMENTAL", "0".to_string()),
+                ("SCCACHE_IGNORE_SERVER_IO_ERROR", "1".to_string()),
+            ]
+            .map(|(name, value)| (name.to_string(), value))
+        );
+        // Every variable a process gets is named, its value in full.
+        let line = toolchain.event().line().expect("a line");
+        let shell = toolchain.shell.clone().expect("a bash 5");
+        assert!(
+            line.contains(&format!(
+                "node v22.14.0 (shim→~/nvm/v22/bin/node) · SHELL={shell} \
+                 CLAUDE_CODE_SHELL={shell} · build cache: sccache 0.18.0 — \
+                 RUSTC_WRAPPER={} SCCACHE_DIR={} SCCACHE_CACHE_SIZE=15G CARGO_INCREMENTAL=0 \
+                 SCCACHE_IGNORE_SERVER_IO_ERROR=1 · PATH=",
+                sccache.display(),
+                home.join(".harness/sccache").display()
+            )),
+            "{line}"
+        );
+        assert!(toolchain.problems.is_empty(), "{:?}", toolchain.problems);
+    }
+
+    #[tokio::test]
+    async fn the_owner_names_the_cache_s_folder_and_size_or_turns_it_off() {
+        let m = machine("sccache-named");
+        tool(&m.brew, "sccache", "sccache 0.18.0");
+        let named = |dir: &str, size: &str| Inputs {
+            cache: CacheWish {
+                switch: String::new(),
+                dir: dir.to_string(),
+                size: size.to_string(),
+                inherited: Vec::new(),
+            },
+            ..inputs(&m, None)
+        };
+        let env = cache_env(&resolve(&named("/Volumes/fast/sccache", " 40G ")).await);
+        assert!(
+            env.contains(&(
+                "SCCACHE_DIR".to_string(),
+                "/Volumes/fast/sccache".to_string()
+            )),
+            "{env:?}"
+        );
+        assert!(
+            env.contains(&("SCCACHE_CACHE_SIZE".to_string(), "40G".to_string())),
+            "{env:?}"
+        );
+        // Relative, or written from the home: the home's, never a build's folder.
+        for relative in ["caches/sccache", "~/caches/sccache"] {
+            let env = cache_env(&resolve(&named(relative, "")).await);
+            assert!(
+                env.contains(&(
+                    "SCCACHE_DIR".to_string(),
+                    m.root.0.join("caches/sccache").display().to_string()
+                )),
+                "{relative}: {env:?}"
+            );
+        }
+        for off in ["off", " OFF "] {
+            let toolchain = resolve(&Inputs {
+                cache: CacheWish {
+                    switch: off.to_string(),
+                    ..CacheWish::default()
+                },
+                ..inputs(&m, None)
+            })
+            .await;
+            assert_eq!(cache_env(&toolchain), [] as [(String, String); 0]);
+            assert!(
+                toolchain
+                    .event()
+                    .line()
+                    .is_some_and(|line| line.contains(" · build cache: off (SCCACHE=off) · PATH=")),
+                "{off}"
+            );
+        }
+        // Off, an inherited wrapper is cleared and the rest passes through,
+        // each said.
+        let inherited = |switch: &str| CacheWish {
+            switch: switch.to_string(),
+            dir: "/inherited/sccache".to_string(),
+            size: String::new(),
+            inherited: [
+                ("CARGO_INCREMENTAL", "1"),
+                ("RUSTC_WRAPPER", "/elsewhere/sccache"),
+                ("SCCACHE_DIR", "/inherited/sccache"),
+                ("SCCACHE_LOG", "debug"),
+            ]
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .to_vec(),
+        };
+        let off = resolve(&Inputs {
+            cache: inherited("off"),
+            ..inputs(&m, None)
+        })
+        .await;
+        assert_eq!(
+            cache_env(&off),
+            [("RUSTC_WRAPPER".to_string(), String::new())]
+        );
+        assert_eq!(
+            off.cache_said,
+            "build cache: off (SCCACHE=off) — RUSTC_WRAPPER= (inherited /elsewhere/sccache \
+             cleared); inherited: CARGO_INCREMENTAL=1 SCCACHE_DIR=/inherited/sccache \
+             SCCACHE_LOG=debug"
+        );
+        // On, the cache sets its own and only the others pass through.
+        let on = resolve(&Inputs {
+            cache: inherited(""),
+            ..inputs(&m, None)
+        })
+        .await;
+        assert!(
+            on.cache_said
+                .ends_with("SCCACHE_IGNORE_SERVER_IO_ERROR=1; inherited: SCCACHE_LOG=debug"),
+            "{}",
+            on.cache_said
+        );
+        // Any other word leaves it on.
+        let on = resolve(&Inputs {
+            cache: CacheWish {
+                switch: "on".to_string(),
+                ..CacheWish::default()
+            },
+            ..inputs(&m, None)
+        })
+        .await;
+        assert_eq!(cache_env(&on).len(), 5, "{:?}", cache_env(&on));
+    }
+
+    #[tokio::test]
+    async fn sccache_linked_by_homebrew_off_the_path_is_found_and_no_home_names_no_folder() {
+        let m = machine("sccache-extra");
+        let linked = m.root.0.join("opt/bin");
+        let sccache = tool(&linked, "sccache", "sccache 0.18.0");
+        let toolchain = resolve(&Inputs {
+            extra: vec![linked],
+            home: None,
+            ..inputs(&m, None)
+        })
+        .await;
+        assert_eq!(
+            cache_env(&toolchain),
+            [
+                ("RUSTC_WRAPPER", sccache.display().to_string()),
+                ("SCCACHE_CACHE_SIZE", "15G".to_string()),
+                ("CARGO_INCREMENTAL", "0".to_string()),
+                ("SCCACHE_IGNORE_SERVER_IO_ERROR", "1".to_string()),
+            ]
+            .map(|(name, value)| (name.to_string(), value)),
+            "no home, no default folder: sccache's own"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sccache_that_does_not_run_wires_nothing_and_says_why() {
+        let m = machine("sccache-broken");
+        std::fs::create_dir_all(&m.brew).expect("mkdir");
+        let broken = m.brew.join("sccache");
+        std::fs::write(&broken, "#!/bin/sh\necho 'sccache 0.18.0'\nexit 1\n").expect("stub");
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let toolchain = resolve(&inputs(&m, Some("1.99.1"))).await;
+        assert_eq!(cache_env(&toolchain), [] as [(String, String); 0]);
+        assert_eq!(
+            toolchain.cache_said,
+            format!(
+                "build cache: none, sccache does not run (`{} --version` exited 1)",
+                broken.display()
+            )
+        );
+        assert!(toolchain.problems.is_empty(), "{:?}", toolchain.problems);
+        // One that answers without a version runs no better.
+        std::fs::write(&broken, "#!/bin/sh\necho 'hello'\n").expect("stub");
+        let toolchain = resolve(&inputs(&m, Some("1.99.1"))).await;
+        assert_eq!(cache_env(&toolchain), [] as [(String, String); 0]);
+        assert!(
+            toolchain
+                .cache_said
+                .ends_with("--version` names no version)"),
+            "{}",
+            toolchain.cache_said
+        );
+    }
+
     #[tokio::test]
     async fn tools_absent_altogether_are_each_said_missing() {
         let empty = dir("empty");
@@ -1106,6 +1512,7 @@ mod tests {
             home: None,
             pin: Pin::Unpinned,
             shims: empty.0.join("shims"),
+            cache: CacheWish::default(),
         })
         .await;
         assert_eq!(
@@ -1128,6 +1535,12 @@ mod tests {
             ]
         );
         assert_eq!(toolchain.path, empty.0.display().to_string());
+        // No sccache: said, never a problem, and no variable set.
+        assert_eq!(
+            toolchain.cache_said,
+            "build cache: none, sccache not found (brew install sccache)"
+        );
+        assert_eq!(toolchain.cache, [] as [(String, String); 0]);
     }
 
     #[tokio::test]

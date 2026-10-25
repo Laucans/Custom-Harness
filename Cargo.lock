@@ -2845,6 +2845,7 @@ dependencies = [
  "async-trait",
  "harness-core",
  "rusqlite",
+ "rustix 1.1.5",
  "serde",
  "serde_json",
  "tokio",
