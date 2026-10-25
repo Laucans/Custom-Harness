@@ -221,9 +221,13 @@ SPEC against the code before you stop, not the first gap only — then stop
 once: `AGENT_LOOP_STOP: tasks [` followed, on that same line, by one JSON
 object per missing unit and `]` (`AGENT_LOOP_STOP: task ` and one object
 when there is one), each the slice as /split writes it: title, branch
-(`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
-goal, acceptance (given/when/then criteria). The harness opens them under
-the milestone and parks this task until they land. If an assumption would make
+(`feat/<slug>`), brief, unit (one of: {unit_keys} — fixtures or seed
+data the server loads are `infrastructure`), system, aggregate, produces
+(its ids), needs, goal, acceptance (given/when/then criteria). The harness
+opens them under the milestone and parks this task until they land. A
+`## Decision` of kind `refused` lists the declared tasks it refused and
+why: declare them again, fixed, in one stop — or build on if one is not
+missing after all. If an assumption would make
 the task useless or harmful when wrong — a paid service, a schema decision
 later tasks depend on, a credential only the human holds — that is
 ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
@@ -335,9 +339,13 @@ SPEC against the code before you stop, not the first gap only — then stop
 once: `AGENT_LOOP_STOP: tasks [` followed, on that same line, by one JSON
 object per missing unit and `]` (`AGENT_LOOP_STOP: task ` and one object
 when there is one), each the slice as /split writes it: title, branch
-(`feat/<slug>`), brief, unit, system, aggregate, produces (its ids), needs,
-goal, acceptance (given/when/then criteria). The harness opens them under
-the milestone and parks this task until they land. If an assumption would make
+(`feat/<slug>`), brief, unit (one of: {unit_keys} — fixtures or seed
+data the server loads are `infrastructure`), system, aggregate, produces
+(its ids), needs, goal, acceptance (given/when/then criteria). The harness
+opens them under the milestone and parks this task until they land. A
+`## Decision` of kind `refused` lists the declared tasks it refused and
+why: declare them again, fixed, in one stop — or build on if one is not
+missing after all. If an assumption would make
 the task useless or harmful when wrong — a paid service, a schema decision
 later tasks depend on, a credential only the human holds — that is
 ambiguity, not a default: AGENT_LOOP_STOP instead of guessing; the harness
@@ -362,9 +370,11 @@ in your reply.";
 /// without braces, and `{num}`/`{title}`/`{milestone}` remain literal for
 /// `prompts::extra_for` to fill in later.
 fn with_labels(text: &str) -> String {
+    let unit_keys = crate::dev_loop::data::missing::unit_keys();
     splice(
         text,
         &[
+            ("unit_keys", &unit_keys),
             ("agent", labels::AGENT),
             ("human", labels::HUMAN),
             ("ready", labels::READY),
@@ -775,6 +785,17 @@ mod tests {
             assert!(said.contains("Find EVERY such missing unit first"));
             assert!(said.contains("the slice as /split writes it"));
             assert!(said.contains("no task of milestone #{milestone} builds"));
+            // ForgeDesMondes' #219: `server-fixtures` was no unit, and was
+            // dropped; the session is told the keys and the refusal.
+            assert!(
+                said.contains(&format!(
+                    "unit (one of: {} —",
+                    crate::dev_loop::data::missing::unit_keys()
+                )),
+                "{said}"
+            );
+            assert!(said.contains("are `infrastructure`"));
+            assert!(said.contains("of kind `refused` lists the declared tasks"));
         }
     }
 

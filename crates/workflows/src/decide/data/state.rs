@@ -40,6 +40,11 @@ impl DecideState {
             pr: self.pr.as_ref(),
             integration: &self.integration,
             rules: self.issue().has(crate::common::labels::RULES),
+            milestone: self
+                .question
+                .as_ref()
+                .filter(|q| q.kind.as_deref() == Some("stop") && !q.declared.is_empty())
+                .and_then(|q| q.milestone),
         }
     }
 
@@ -54,5 +59,42 @@ impl DecideState {
         self.issue
             .as_ref()
             .expect("precheck must set the issue before the stages run")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use harness_core::domain::Issue;
+
+    #[test]
+    fn only_a_stop_that_declared_tasks_lets_a_decision_open_them() {
+        let question = |kind: &str, declared: &[&str]| Question {
+            kind: Some(kind.to_string()),
+            blocks: "b".to_string(),
+            milestone: Some(28),
+            declared: declared.iter().map(ToString::to_string).collect(),
+            ..Question::default()
+        };
+        let state = |question: Option<Question>| DecideState {
+            issue: Some(Issue {
+                number: 219,
+                ..Issue::default()
+            }),
+            question,
+            ..DecideState::default()
+        };
+        assert_eq!(
+            state(Some(question("stop", &["feat/a"]))).scope().milestone,
+            Some(28)
+        );
+        assert_eq!(state(Some(question("stop", &[]))).scope().milestone, None);
+        assert_eq!(
+            state(Some(question("breaker", &["feat/a"])))
+                .scope()
+                .milestone,
+            None
+        );
+        assert_eq!(state(None).scope().milestone, None);
     }
 }

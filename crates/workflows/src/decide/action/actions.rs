@@ -147,6 +147,7 @@ fn values(state: &DecideState) -> Vec<(&'static str, String)> {
         ("review", review),
         ("actions", actions),
         ("integration", state.integration.clone()),
+        ("unit_keys", crate::dev_loop::data::missing::unit_keys()),
     ]
 }
 
@@ -162,7 +163,8 @@ impl SessionAction<DecideState> for AskDecider {
         if let Err(why) = decision::parse(&reply.text, &open.state.scope()) {
             let retry = format!(
                 "Your answer does not read as a decision: {why}. Answer again with ONLY the JSON \
-                 object — action, summary, answer, confidence, and `on` for a wait — no prose."
+                 object — action, summary, answer, confidence, `on` for a wait, `tasks` for a task — \
+                 no prose."
             );
             ask_and_record(open, &retry, &self.stage, 1, &task, self.spending.as_ref()).await?;
         }

@@ -13,7 +13,7 @@ use harness_core::execution::{Action, Context};
 use harness_core::ports::shell::github::GitHub;
 use harness_core::traces::Event;
 
-use crate::common::{contest, labels, review, sections};
+use crate::common::{contest, labels, missing_task, review, sections};
 use crate::decide::data::decision::{self, Action as Act, Decided};
 use crate::decide::data::state::DecideState;
 
@@ -145,6 +145,34 @@ impl Apply {
         Ok(Act::Merge)
     }
 
+    /// An approval of the missing tasks a stop declared: each opened under
+    /// the milestone the stop named — or found there — and the task blocked
+    /// on them, by the stop handler's own opener. A slice whose branch a
+    /// closed task built is not opened again, and said back to the session.
+    async fn open(
+        &self,
+        ctx: &Context<DecideState>,
+        decided: &Decided,
+    ) -> Outcome<missing_task::Found> {
+        let number = ctx.state.issue().number;
+        let Some(milestone) = ctx.state.scope().milestone else {
+            return Err(Halt::Failed(format!(
+                "#{number}: a `task` decision with no milestone to open under — the parse \
+                 should have refused it"
+            )));
+        };
+        let found = missing_task::open_or_find(
+            self.gh.as_ref(),
+            number,
+            milestone,
+            &decided.tasks,
+            &ctx.traces,
+        )
+        .await?;
+        missing_task::block_on(self.gh.as_ref(), number, &found.on).await?;
+        Ok(found)
+    }
+
     /// What the decision does beyond being written; the action carried out.
     /// A `merge` on a PR that conflicts, or whose checks failed, is a
     /// `repair`; one whose checks still run merges once they are green,
@@ -231,12 +259,38 @@ impl Apply {
 }
 
 /// What a comment adds for the action carried out: a wait names what the
-/// task is blocked by.
-fn carried(done: Act) -> String {
+/// task is blocked by, an approval the tasks it opened and those it did not.
+fn carried(done: Act, found: &missing_task::Found) -> String {
     match done {
         Act::Wait { on } => format!("\n\nBlocked by #{on} until it lands; no session before."),
+        Act::Open if found.on.is_empty() => built_note(&found.built),
+        Act::Open => {
+            let named: Vec<String> = found.on.iter().map(|n| format!("#{n}")).collect();
+            format!(
+                "\n\nThe approved tasks are {}; blocked by them until they land, no session \
+                 before.{}",
+                named.join(", "),
+                built_note(&found.built)
+            )
+        }
         _ => String::new(),
     }
+}
+
+/// The approved slices not opened, a closed task having built their branch:
+/// one line each, for the next session — or nothing.
+fn built_note(built: &[(String, String)]) -> String {
+    if built.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = built
+        .iter()
+        .map(|(title, why)| format!("- \"{title}\": {why}"))
+        .collect();
+    format!(
+        "\n\n**Approved tasks the harness did not open** — one branch is one feature:\n\n{}",
+        lines.join("\n")
+    )
 }
 
 /// The PR's number, as a label or a comment on it needs one.
@@ -268,10 +322,22 @@ impl Action<DecideState> for Apply {
             ));
             return Ok(Verdict::Continue);
         }
+        // An approval opens first: what it could not open is written under
+        // the decision, for the next session to read.
+        let found = if decided.action == Act::Open {
+            self.open(ctx, &decided).await?
+        } else {
+            missing_task::Found::default()
+        };
         let section = decision::section(ctx.state.question.as_ref(), &ctx.state.kind, &decided);
+        let section = format!("{section}{}", built_note(&found.built));
         let body = sections::replace(&issue.body, &[(sections::DECISION, &section)]);
         self.gh.set_body(issue.number, &body).await?;
-        let done = self.carry_out(ctx, &decided).await?;
+        let done = if decided.action == Act::Open {
+            Act::Open
+        } else {
+            self.carry_out(ctx, &decided).await?
+        };
         self.gh
             .post_issue_comment(
                 issue.number,
@@ -284,7 +350,7 @@ impl Action<DecideState> for Apply {
                     decided.summary,
                     decided.confidence,
                     decided.answer,
-                    carried(done),
+                    carried(done, &found),
                     labels::NEEDS_DECISION,
                     labels::AI_DECIDED
                 ),
@@ -897,5 +963,149 @@ mod tests {
             "{:?}",
             again.writes()
         );
+    }
+
+    /// `decide` approving #219's fixtures slice, declared under milestone #28.
+    fn decided_on(gh: &Rc<FakeGitHub>) -> (Apply, Context<DecideState>) {
+        let slice = r#"{"title": "Server fixtures: load the scenes", "branch": "feat/server-scene-fixtures", "brief": "Load the scenes.", "unit": "server-fixtures", "system": "session", "aggregate": "Session", "produces": ["server.fixtures.scenes"], "goal": "The scenes are on the real stack.", "acceptance": ["given the fixtures, when the server starts, then the scenes answer"]}"#;
+        let answer = format!(
+            r#"{{"action": "task", "summary": "open the fixtures task", "tasks": [{slice}], "confidence": 4}}"#
+        );
+        let mut context = ctx(&answer, None, &[]);
+        context.state.kind = "stop".to_string();
+        context.state.question = Some(crate::common::decision::Question {
+            kind: Some("stop".to_string()),
+            blocks: "AGENT_LOOP_STOP: tasks [...]".to_string(),
+            round: 3,
+            milestone: Some(28),
+            declared: vec!["feat/server-scene-fixtures".to_string()],
+            ..crate::common::decision::Question::default()
+        });
+        (apply(gh), context)
+    }
+
+    #[tokio::test]
+    async fn an_approved_declared_task_is_opened_once_and_blocks_the_task() {
+        // #219, 2026-10-25: four decisions approved the fixtures task in
+        // words; none opened it.
+        let gh = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            ..FakeGitHub::default()
+        });
+        let (apply_it, mut context) = decided_on(&gh);
+        apply_it.run(&mut context).await.expect("applied");
+        let writes = gh.writes();
+        let created: Vec<&Wrote> = writes
+            .iter()
+            .filter(|w| matches!(w, Wrote::CreatedIssue(..)))
+            .collect();
+        assert_eq!(created.len(), 1, "{writes:?}");
+        assert!(
+            matches!(created[0], Wrote::CreatedIssue(title, body, labels)
+                if title == "Server fixtures: load the scenes"
+                && body.contains("unit: infrastructure")
+                && body.contains("Opened by the harness for #15")
+                && labels.contains(&labels::WRITE_SIDE.to_string())),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::SubIssueLink(28, 1)), "{writes:?}");
+        assert!(writes.contains(&Wrote::BlockedByLink(15, 1)), "{writes:?}");
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(15, said)
+                if said.contains("(stop) — task: open the fixtures task")
+                && said.contains("The approved tasks are #1; blocked by them until they land"))),
+            "{writes:?}"
+        );
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Body(15, body)
+                if body.contains("verdict: task — open the fixtures task (4/5)")
+                && body.contains("declared: feat/server-scene-fixtures"))),
+            "{writes:?}"
+        );
+
+        // Decided again on the same slice: found under the milestone, not
+        // opened a second time.
+        let opened = Issue {
+            number: 1,
+            title: "Server fixtures: load the scenes".to_string(),
+            state: "open".to_string(),
+            labels: vec![labels::AGENT.to_string()],
+            ..Issue::default()
+        };
+        let again = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            subs: vec![(28, vec![opened])],
+            ..FakeGitHub::default()
+        });
+        let (apply_it, mut context) = decided_on(&again);
+        apply_it.run(&mut context).await.expect("applied");
+        let writes = again.writes();
+        assert!(
+            !writes
+                .iter()
+                .any(|w| matches!(w, Wrote::CreatedIssue(..) | Wrote::SubIssueLink(..))),
+            "{writes:?}"
+        );
+        assert!(writes.contains(&Wrote::BlockedByLink(15, 1)), "{writes:?}");
+    }
+
+    #[tokio::test]
+    async fn an_approved_slice_a_closed_task_built_is_refused_not_opened() {
+        // Its branch built by a closed task: never opened again, refused.
+        let landed = Issue {
+            number: 7,
+            title: "Scenes loaded".to_string(),
+            state: "closed".to_string(),
+            body: "## Scope\n\nbranch: feat/server-scene-fixtures\n".to_string(),
+            labels: vec![labels::AGENT.to_string()],
+            ..Issue::default()
+        };
+        let built = Rc::new(FakeGitHub {
+            issues: vec![fifteen()],
+            subs: vec![(28, vec![landed])],
+            ..FakeGitHub::default()
+        });
+        let (apply_it, mut context) = decided_on(&built);
+        apply_it.run(&mut context).await.expect("applied");
+        let writes = built.writes();
+        assert!(
+            !writes.iter().any(|w| matches!(
+                w,
+                Wrote::CreatedIssue(..) | Wrote::SubIssueLink(..) | Wrote::BlockedByLink(..)
+            )),
+            "{writes:?}"
+        );
+        let refusal = "- \"Server fixtures: load the scenes\": #7 built \
+                       `feat/server-scene-fixtures` already (closed): build on it, or declare a \
+                       new branch";
+        assert!(
+            writes.iter().any(|w| matches!(w, Wrote::Comment(15, said)
+                if said.contains("**Approved tasks the harness did not open**")
+                && said.contains(refusal)
+                && !said.contains("The approved tasks are"))),
+            "{writes:?}"
+        );
+        assert!(
+            writes
+                .iter()
+                .any(|w| matches!(w, Wrote::Body(15, body) if body.contains(refusal))),
+            "the next session reads it: {writes:?}"
+        );
+    }
+
+    #[test]
+    fn an_approval_names_what_it_opened_and_what_it_did_not() {
+        let found = missing_task::Found {
+            on: vec![3, 4],
+            built: vec![("A".to_string(), "#7 built `feat/a` already".to_string())],
+        };
+        assert_eq!(
+            carried(Act::Open, &found),
+            "\n\nThe approved tasks are #3, #4; blocked by them until they land, no session \
+             before.\n\n**Approved tasks the harness did not open** — one branch is one \
+             feature:\n\n- \"A\": #7 built `feat/a` already"
+        );
+        assert_eq!(built_note(&[]), "");
+        assert_eq!(carried(Act::Answer, &found), "");
     }
 }

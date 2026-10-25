@@ -30,6 +30,17 @@ pub struct Question {
     pub decided_by: Option<String>,
     /// What was decided.
     pub verdict: Option<String>,
+    /// The milestone the task belongs to, for a stop that declared missing
+    /// tasks: where a decision that approves them opens them.
+    pub milestone: Option<u64>,
+    /// What a stop declared missing, one key per slice (its branch): the
+    /// same keys asked again after a decision are no new fact.
+    pub declared: Vec<String>,
+    /// The verdict `decide` gave on `declared`, carried by the refusals
+    /// that send it back to the session: a ruling outlives the question.
+    pub ruled: Option<String>,
+    /// The round `ruled` was given at.
+    pub ruled_at: Option<u32>,
 }
 
 /// The line the question's reason is on; a section without it is no question.
@@ -65,6 +76,14 @@ impl Question {
                     Some(value.trim().to_string()).filter(|v| !v.is_empty() && v != "-");
             } else if let Some(value) = line.strip_prefix("verdict:") {
                 found.verdict = Some(value.trim().to_string()).filter(|v| !v.is_empty());
+            } else if let Some(value) = line.strip_prefix("milestone:") {
+                found.milestone = value.trim().trim_start_matches('#').parse().ok();
+            } else if let Some(value) = line.strip_prefix("declared:") {
+                found.declared = list(value);
+            } else if let Some(value) = line.strip_prefix("ruled:") {
+                found.ruled = Some(value.trim().to_string()).filter(|v| !v.is_empty());
+            } else if let Some(value) = line.strip_prefix("ruled-at:") {
+                found.ruled_at = value.trim().parse().ok();
             }
         }
         (seen && !found.blocks.is_empty()).then_some(found)
@@ -93,6 +112,18 @@ impl Question {
         }
         if let Some(verdict) = &self.verdict {
             lines.push(format!("verdict: {verdict}"));
+        }
+        if let Some(milestone) = self.milestone {
+            lines.push(format!("milestone: #{milestone}"));
+        }
+        if !self.declared.is_empty() {
+            lines.push(format!("declared: {}", self.declared.join(", ")));
+        }
+        if let Some(ruled) = &self.ruled {
+            lines.push(format!("ruled: {ruled}"));
+        }
+        if let Some(at) = self.ruled_at {
+            lines.push(format!("ruled-at: {at}"));
         }
         lines.join("\n")
     }
@@ -161,14 +192,48 @@ mod tests {
             round: 2,
             decided_by: Some("ai".to_string()),
             verdict: Some("chained on #12".to_string()),
+            milestone: Some(28),
+            declared: vec!["feat/a".to_string(), "feat/b".to_string()],
+            ruled: Some("answer — build it here (4/5)".to_string()),
+            ruled_at: Some(3),
         };
         let text = question.render();
         assert_eq!(
             text,
             "blocks: the list needs the campaign's characters\nneeds: Personnage, campagne.listPjs\n\
-             round: 2\ndecided-by: ai\nverdict: chained on #12"
+             round: 2\ndecided-by: ai\nverdict: chained on #12\nmilestone: #28\ndeclared: feat/a, \
+             feat/b\nruled: answer — build it here (4/5)\nruled-at: 3"
         );
         assert_eq!(Question::parse(&text), Some(question));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn a_declaration_and_its_ruling_round_trip(
+            declared in proptest::collection::vec("[a-z0-9][a-z0-9/_.-]{0,40}", 0..6),
+            milestone in proptest::option::of(1u64..100_000),
+            ruled in proptest::option::of("[a-z][a-z0-9 ,:#()/—-]{0,60}[a-z0-9)]"),
+            ruled_at in proptest::option::of(1u32..50),
+        ) {
+            let question = Question {
+                kind: Some("refused".to_string()),
+                blocks: "AGENT_LOOP_STOP: task x, y".to_string(),
+                round: 4,
+                milestone,
+                declared,
+                ruled,
+                ruled_at,
+                ..Question::default()
+            };
+            proptest::prop_assert_eq!(Question::parse(&question.render()), Some(question));
+        }
+    }
+
+    #[test]
+    fn an_empty_ruling_or_a_bad_round_is_none() {
+        let read = Question::parse("blocks: x\nruled:   \nruled-at: soon").expect("q");
+        assert_eq!(read.ruled, None);
+        assert_eq!(read.ruled_at, None);
     }
 
     #[test]
